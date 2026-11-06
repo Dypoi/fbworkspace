@@ -38,7 +38,7 @@ from .models import (
     FilterConfig,
     JobStatus,
 )
-from .normalize import parse_group_urls
+from .normalize import group_search_url, parse_group_urls
 from .ollama_client import (
     SUGGESTED_MODELS,
     OllamaConfig,
@@ -1017,7 +1017,15 @@ def _render_post_detail(db: Database, post_id: int, settings: Settings) -> None:
         if post.get("post_url"):
             links[0].markdown(f"🔗 [Buka postingan]({post['post_url']})")
         else:
-            links[0].caption("Tautan postingan: tidak diketahui.")
+            search_url = group_search_url(post.get("group_url"), post["text"])
+            if search_url:
+                links[0].markdown(f"🔎 [Cari postingan ini di grup]({search_url})")
+                links[0].caption(
+                    "Permalink tidak tersedia (kemungkinan postingan anonim). "
+                    "Tautan di atas membuka pencarian grup dengan potongan teks."
+                )
+            else:
+                links[0].caption("Tautan postingan: tidak diketahui.")
         if post.get("group_url"):
             links[1].markdown(f"👥 [Tautan grup]({post['group_url']})")
         else:

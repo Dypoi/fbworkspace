@@ -7,14 +7,19 @@ from datetime import datetime, timezone
 import pytest
 
 from fbworkspace.normalize import (
+    build_group_post_url,
     canonical_post_url,
     collapse_ws,
     derive_dedupe_key,
     extract_post_ids_from_url,
     find_prices,
+    group_id_from_url,
+    group_search_url,
     normalize_text,
     parse_group_urls,
     parse_posted_at,
+    post_id_from_set_param,
+    resolve_post_url,
     strip_invisible_noise,
     text_hash,
     validate_group_url,
@@ -205,3 +210,63 @@ class TestStripInvisibleNoise:
     def test_keeps_normal_post_text(self):
         text = "ip11/64 ibox | bh 74 kel hp+box | 4 jt ambil | lok tangsel"
         assert strip_invisible_noise(text) == text
+
+
+class TestPostUrlResolution:
+    GROUP = "https://www.facebook.com/groups/621052260194574/"
+    PHOTO_PCB = (
+        "https://www.facebook.com/photo/?fbid=2551528888699430"
+        "&set=pcb.1510825557883902&__cft__[0]=abc"
+    )
+    PHOTO_GM = (
+        "https://www.facebook.com/photo/?fbid=122129764701377332"
+        "&set=gm.1510825321217259&idorvanity=621052260194574"
+    )
+    COMMENT = (
+        "https://www.facebook.com/groups/1/posts/3473882176117963/"
+        "?comment_id=3473908156115365&__cft__[0]=xyz"
+    )
+
+    def test_group_id_from_url(self):
+        assert group_id_from_url(self.GROUP) == "621052260194574"
+        assert group_id_from_url("https://www.facebook.com/photo/?fbid=1") is None
+        assert group_id_from_url(None) is None
+
+    def test_post_id_from_photo_set(self):
+        assert post_id_from_set_param(self.PHOTO_PCB) == "1510825557883902"
+        assert post_id_from_set_param(self.PHOTO_GM) == "1510825321217259"
+        assert post_id_from_set_param("https://www.facebook.com/photo/?fbid=1") is None
+
+    def test_build_group_post_url(self):
+        assert (
+            build_group_post_url(self.GROUP, "1510825557883902")
+            == "https://www.facebook.com/groups/621052260194574/posts/1510825557883902/"
+        )
+        assert build_group_post_url("https://www.facebook.com/photo/", "1") is None
+
+    def test_resolve_direct_link_wins(self):
+        direct = "https://www.facebook.com/groups/1/posts/999/"
+        assert resolve_post_url([self.COMMENT, direct], self.GROUP) == (
+            "https://www.facebook.com/groups/1/posts/999"
+        )
+
+    def test_resolve_from_comment_link(self):
+        assert resolve_post_url([self.COMMENT], self.GROUP) == (
+            "https://www.facebook.com/groups/1/posts/3473882176117963"
+        )
+
+    def test_resolve_from_photo_set(self):
+        assert resolve_post_url([self.PHOTO_PCB], self.GROUP) == (
+            "https://www.facebook.com/groups/621052260194574/posts/1510825557883902/"
+        )
+
+    def test_resolve_none_when_no_clue(self):
+        assert resolve_post_url([], self.GROUP) is None
+        assert resolve_post_url(["https://www.facebook.com/photo/?fbid=1"], self.GROUP) is None
+
+    def test_group_search_url(self):
+        url = group_search_url(self.GROUP, "nyari iPhone seri 11 - 16 iBox")
+        assert url is not None
+        assert "/groups/621052260194574/search/?q=" in url
+        assert "nyari" in url
+        assert group_search_url(None, "teks") is None

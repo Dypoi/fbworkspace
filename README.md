@@ -95,6 +95,10 @@ Ini penting supaya Anda tidak salah harap.
   `LikeReplyShare` dihitung sebagai "komentar dilewati" dan tidak disimpan.
 - Singkatan pasar Indonesia dikenali: `ip x`, `ipx`, `iphonex` = iPhone X; sehingga
   kata kunci `iphone x` benar-benar menemukan postingan seperti "jual ip x 64gb".
+- **Tautan postingan** dicari berlapis: tautan `/posts/` langsung → turunkan dari
+  tautan komentar (buang `comment_id`) → turunkan dari tautan foto yang memuat
+  `set=pcb.<id>` / `set=gm.<id>`. Bila semuanya tidak ada (postingan anonim),
+  tautan dibiarkan "tidak diketahui" dan detail menampilkan tombol **cari di grup**.
 
 **Analisis iPhone (tanpa AI)**
 - Kategori: `mencari`, `menjual`, `diskusi`, `tidak relevan`.
@@ -151,7 +155,7 @@ fbworkspace/
 │   └── load_demo.py            # muat data DEMO via CLI
 ├── data/demo_posts_DEMO.json   # data sintetis berlabel DEMO
 ├── docs/                       # instalasi, POC, batasan, Git, testing
-├── tests/                      # 341 tes otomatis
+├── tests/                      # 352 tes otomatis
 ├── requirements.txt
 ├── .env.example
 └── .gitignore
@@ -318,7 +322,7 @@ Penghapusan data tersedia di tab **Pengaturan → 💾 Data** (postingan, log, p
 .\.venv\Scripts\python.exe -m pytest
 ```
 
-Hasil terakhir di lingkungan pengembangan: **341 tes lulus** (termasuk smoke test
+Hasil terakhir di lingkungan pengembangan: **352 tes lulus** (termasuk smoke test
 dashboard Streamlit untuk 3 tab, segmentasi hasil, dan filter ulang), `ruff check` bersih. Detail: **[docs/TESTING.md](docs/TESTING.md)**.
 
 Yang **belum** diuji dan harus Anda validasi sendiri:

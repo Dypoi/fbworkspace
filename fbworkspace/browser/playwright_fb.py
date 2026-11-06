@@ -32,11 +32,11 @@ from typing import Callable
 
 from ..models import AccessStatus, RawPost
 from ..normalize import (
-    canonical_post_url,
     collapse_ws,
     extract_post_ids_from_url,
     looks_like_comment,
     normalize_text,
+    resolve_post_url,
     strip_invisible_noise,
     truncate,
 )
@@ -739,36 +739,31 @@ class PlaywrightFacebookAdapter:
 
         hrefs: list[str] = []
         try:
+            # Foto ikut dipindai: tautan /photo/?...&set=pcb.<id> menyimpan ID
+            # postingan induk, dan sering satu-satunya petunjuk yang tersedia.
             anchors = element.query_selector_all(
-                "a[href*='/posts/'], a[href*='/permalink/'], a[href*='story_fbid=']"
+                "a[href*='/posts/'], a[href*='/permalink/'], a[href*='story_fbid='], "
+                "a[href*='/photo'], a[href*='set=']"
             )
-            for anchor in anchors[:6]:
+            for anchor in anchors[:20]:
                 href = anchor.get_attribute("href") or ""
                 if not href:
                     continue
                 if href.startswith("/"):
                     href = f"https://www.facebook.com{href}"
-                if "facebook.com" in href:
+                if "facebook.com" in href and href not in hrefs:
                     hrefs.append(href)
         except Exception:  # noqa: BLE001
             hrefs = []
 
-        # Tautan komentar memuat comment_id=; utamakan tautan postingan murni.
-        hrefs.sort(key=lambda href: "comment_id=" in href)
-        comment_only_links = bool(hrefs) and all("comment_id=" in href for href in hrefs)
-
-        if looks_like_comment(text) or (
-            comment_only_links and len(collapse_ws(text)) < 300
-        ):
+        if looks_like_comment(text):
             self._note_skipped(
                 diagnostics, skipped_keys if skipped_keys is not None else set(), text
             )
             return None
 
-        post_url = None
-        for href in hrefs:
-            post_url = canonical_post_url(href) or href
-            break
+        # Tautan langsung -> turunan dari tautan komentar -> turunan dari set=.
+        post_url = resolve_post_url(hrefs, group_url)
 
         return RawPost(
             text=truncate(text, MAX_TEXT_PER_POST),

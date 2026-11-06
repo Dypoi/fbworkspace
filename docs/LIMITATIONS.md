@@ -52,7 +52,7 @@ konten yang Anda akses sendiri.
 | Komentar | Ditolak: `article` bersarang & teks berpola "… Reply" dibuang (lihat §2b) |
 | Nama anggota | Tidak diambil, sengaja |
 | Waktu posting | Hanya jika terlihat di teks; sering tidak terbaca |
-| Tautan postingan | Diambil dari anchor dalam kartu; pada grup tanpa tautan nilainya `tidak diketahui` (dedupe lewat hash teks) |
+| Tautan postingan | Berlapis: `/posts/` langsung → turunan dari `comment_id` → turunan dari `set=pcb./gm.` pada tautan foto. Tanpa petunjuk (postingan anonim) nilainya `tidak diketahui`; dedupe memakai hash teks |
 
 Artinya: **hasil 0 postingan bukan bug otomatis**, melainkan sinyal bahwa grup
 tersebut tidak dapat dibaca dengan cara ini. Lihat [POC_FACEBOOK.md](POC_FACEBOOK.md).

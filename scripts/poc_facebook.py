@@ -167,7 +167,10 @@ def main(argv: list[str] | None = None) -> int:
 
     for index, post in enumerate(outcome.posts, start=1):
         print(f"\n--- Postingan {index} ---")
-        print(f"URL    : {post.post_url or '(tidak ditemukan)'}")
+        print(
+            "URL    : "
+            + (post.post_url or "(tidak tersedia — kemungkinan postingan anonim)")
+        )
         print(f"Teks   : {post.text[:700]}{'…' if len(post.text) > 700 else ''}")
 
     diagnostics = dict(outcome.diagnostics)
