@@ -44,7 +44,54 @@ from .page_state import detect_page_state
 from .session import has_fb_session, wait_for_login
 
 DEFAULT_ARTICLE_SELECTOR = 'div[role="article"]'
+# Tautan postingan dipakai sebagai titik masuk: lebih stabil daripada atribut
+# role yang berubah antar versi antarmuka Facebook.
+POST_LINK_SELECTOR = 'a[href*="/posts/"], a[href*="/permalink/"]'
 MAX_TEXT_PER_POST = 6000
+
+# Naik dari tautan postingan ke kontainer terdekat yang memuat SATU postingan
+# saja (berhenti begitu ada tautan postingan kedua). Hasilnya elemen "kartu
+# postingan" tanpa bergantung pada nama class acak.
+_CONTAINER_JS = """(a) => {
+  let node = a;
+  let best = a;
+  for (let i = 0; i < 14 && node; i++) {
+    node = node.parentElement;
+    if (!node) break;
+    const links = Array.from(
+      node.querySelectorAll('a[href*="/posts/"], a[href*="/permalink/"]')
+    )
+      .filter((x) => !x.href.includes('comment_id='));
+    const ids = new Set(
+      links.map((x) => (x.href.match(/\\/(?:posts|permalink)\\/(\\d+)/) || [])[1]).filter(Boolean)
+    );
+    if (ids.size > 1) break;
+    best = node;
+  }
+  return best;
+}"""
+
+# Ambil HANYA isi postingan: buang komentar (article bersarang, daftar berisi
+# tautan comment_id, blok ber-aria-label komentar).
+_POST_BODY_JS = """(el) => {
+  const clone = el.cloneNode(true);
+  clone.querySelectorAll('div[role="article"]').forEach((n) => n.remove());
+  clone.querySelectorAll('ul').forEach((n) => {
+    if (n.querySelector('a[href*="comment_id="]')) n.remove();
+  });
+  clone.querySelectorAll('[aria-label]').forEach((n) => {
+    const label = (n.getAttribute('aria-label') || '').toLowerCase();
+    const isComment = label.includes('comment') && !label.includes('most relevant');
+    const isCommentId = label.includes('komentar') || label.includes('balasan');
+    if ((isComment || isCommentId) && (n.innerText || '').length < 1500) n.remove();
+  });
+  return clone.innerText || '';
+}"""
+
+_ACTION_BAR_RE = re.compile(
+    r"(?im)^\s*(?:like|suka)\s*[\u00b7|.]?\s*(?:comment|komentar)"
+    r"\s*[\u00b7|.]?\s*(?:share|bagikan)\s*$"
+)
 
 
 class PlaywrightFacebookAdapter:
@@ -70,6 +117,8 @@ class PlaywrightFacebookAdapter:
         # Saat Facebook meminta login: biarkan jendela terbuka selama ini
         # supaya pengguna bisa login sendiri. 0 = langsung berhenti.
         self.login_wait_seconds = max(0, int(login_wait_seconds))
+        # Sumber elemen pada putaran terakhir: "post-links" atau "article-selector".
+        self._last_source = "unknown"
 
     # ------------------------------------------------------------------ setup
     def is_available(self) -> tuple[bool, str]:
@@ -319,13 +368,15 @@ class PlaywrightFacebookAdapter:
                                 AccessStatus.STOPPED, posts, "Jendela browser ditutup.", diagnostics
                             )
                         try:
-                            elements = page.query_selector_all(self.article_selector)
+                            elements = self._candidate_elements(page)
                         except PWError as exc:
                             return CollectOutcome(
                                 AccessStatus.ERROR, posts, f"Gagal membaca elemen: {exc}", diagnostics
                             )
 
                         group_diag["articles_seen"] = max(group_diag["articles_seen"], len(elements))
+                        group_diag["extraction"] = self._last_source
+                        diagnostics["extraction"] = self._last_source
                         before = len(posts)
 
                         for element in elements:
@@ -422,6 +473,63 @@ class PlaywrightFacebookAdapter:
         return detect_page_state(page.url, body_text, has_session=session)
 
     # ------------------------------------------------------------- ekstraksi
+    def _containers_from_links(self, page) -> list:
+        """Kumpulkan kartu postingan dari tautan `/posts/` (bukan komentar)."""
+        try:
+            anchors = page.query_selector_all(POST_LINK_SELECTOR)
+        except Exception:  # noqa: BLE001 - halaman bisa berubah saat dipindai
+            return []
+
+        containers: list = []
+        seen_ids: set[str] = set()
+        for anchor in anchors:
+            try:
+                href = anchor.get_attribute("href") or ""
+            except Exception:  # noqa: BLE001
+                continue
+            if not href or "comment_id=" in href:
+                continue
+            match = re.search(r"/(?:posts|permalink)/(\d+)", href)
+            if not match or match.group(1) in seen_ids:
+                continue
+            try:
+                handle = anchor.evaluate_handle(_CONTAINER_JS)
+                container = handle.as_element()
+            except Exception:  # noqa: BLE001
+                container = None
+            if container is None:
+                continue
+            seen_ids.add(match.group(1))
+            containers.append(container)
+        return containers
+
+    def _candidate_elements(self, page) -> list:
+        """Elemen kandidat: kartu postingan berbasis tautan, atau selector lama."""
+        if self.article_selector != DEFAULT_ARTICLE_SELECTOR:
+            self._last_source = "custom-selector"
+            return page.query_selector_all(self.article_selector)
+
+        containers = self._containers_from_links(page)
+        if containers:
+            self._last_source = "post-links"
+            return containers
+
+        self._last_source = "article-selector"
+        return page.query_selector_all(self.article_selector)
+
+    def _post_body(self, element) -> str:
+        """Teks isi postingan saja (komentar dibuang di dalam DOM)."""
+        try:
+            body = element.evaluate(_POST_BODY_JS)
+            if isinstance(body, str):
+                return body
+        except Exception:  # noqa: BLE001 - fallback ke inner_text
+            pass
+        try:
+            return element.inner_text()
+        except Exception:  # noqa: BLE001
+            return ""
+
     @staticmethod
     def _is_nested_article(element) -> bool:
         """True bila elemen ini `article` di dalam `article` lain (komentar/reply)."""
@@ -460,18 +568,18 @@ class PlaywrightFacebookAdapter:
         if self._is_nested_article(element):
             return None
 
-        try:
-            text = element.inner_text()
-        except Exception:  # noqa: BLE001 - elemen bisa hilang saat halaman berubah
-            return None
-        text = normalize_text(text)
+        text = normalize_text(self._post_body(element))
         if len(collapse_ws(text)) < 15:
             return None
 
+        # Potong di bilah aksi "Like · Comment · Share" (sesudahnya komentar).
+        text = _cut_at_action_bar(text)
         # Buang baris antarmuka khas Facebook yang bukan isi postingan.
         text = _clean_ui_noise(text)
         if len(collapse_ws(text)) < 15:
             return None
+
+        # Jangan simpan teks yang isinya hanya nama + tombol aksi.
 
         hrefs: list[str] = []
         try:
@@ -489,7 +597,8 @@ class PlaywrightFacebookAdapter:
         except Exception:  # noqa: BLE001
             hrefs = []
 
-        # Tautan komentar memuat comment_id=; postingan tidak.
+        # Tautan komentar memuat comment_id=; utamakan tautan postingan murni.
+        hrefs.sort(key=lambda href: "comment_id=" in href)
         comment_only_links = bool(hrefs) and all("comment_id=" in href for href in hrefs)
 
         if looks_like_comment(text) or (
@@ -546,6 +655,12 @@ _UI_NOISE_PATTERNS = (
     r"^paling relevan$",
     r"^all reactions:$",
 )
+
+
+def _cut_at_action_bar(text: str) -> str:
+    """Potong teks di bilah aksi postingan; komentar berada setelahnya."""
+    match = _ACTION_BAR_RE.search(text)
+    return text[: match.start()] if match else text
 
 
 def _clean_ui_noise(text: str) -> str:
