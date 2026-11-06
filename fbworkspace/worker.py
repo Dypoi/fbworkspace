@@ -64,6 +64,7 @@ def run_job(job_id: int) -> int:
     counters = {
         "read": 0, "inserted": 0, "duplicates": 0, "filtered_out": 0,
         "analyzed": 0, "ollama_analyzed": 0, "errors": 0,
+        "skipped_comment": 0,
     }
     new_relevant_ids: list[int] = []
     last_logged: list[str] = [""]
@@ -90,6 +91,10 @@ def run_job(job_id: int) -> int:
     def on_progress(level: str, message: str, counts: dict | None = None) -> None:
         if counts:
             counters["read"] = max(counters["read"], int(counts.get("read", counters["read"])))
+            counters["skipped_comment"] = max(
+                counters["skipped_comment"],
+                int(counts.get("skipped_comment", counters["skipped_comment"])),
+            )
         push_counters()
         if message != last_logged[0]:
             db.log_event(job_id, level, str(message)[:500])
@@ -119,7 +124,15 @@ def run_job(job_id: int) -> int:
             on_progress=on_progress,
         )
 
+        skipped_comments = int(outcome.diagnostics.get("skipped_comment") or 0)
+        counters["skipped_comment"] = max(counters["skipped_comment"], skipped_comments)
         db.log_event(job_id, "info", f"Adapter selesai dengan status: {outcome.status.value}")
+        if skipped_comments:
+            db.log_event(
+                job_id,
+                "warning",
+                f"{skipped_comments} elemen mirip komentar/reply dilewati (bukan isi postingan).",
+            )
         for note in outcome.diagnostics.get("notes", [])[:5]:
             db.log_event(job_id, "warning", note)
 
@@ -158,7 +171,8 @@ def run_job(job_id: int) -> int:
         db.log_event(
             job_id, "info",
             f"Penyimpanan selesai: {counters['inserted']} baru, {counters['duplicates']} duplikat, "
-            f"{counters['filtered_out']} tidak lolos filter."
+            f"{counters['filtered_out']} tidak lolos filter, "
+            f"{counters['skipped_comment']} komentar dilewati."
         )
 
         # --- Analisis Ollama opsional ---
@@ -235,13 +249,17 @@ def _run_ollama(db, job_id, settings, config, post_ids, counters, push_counters)
 
 
 def _map_outcome_status(outcome, counters) -> tuple[str, str]:
+    message = outcome.message
+    skipped = int(counters.get("skipped_comment") or 0)
+    if skipped and str(skipped) not in message:
+        message = f"{message} ({skipped} komentar/reply dilewati.)"
     if outcome.status in {AccessStatus.OK, AccessStatus.OK_EMPTY}:
-        return JobStatus.COMPLETED.value, outcome.message
+        return JobStatus.COMPLETED.value, message
     if outcome.status == AccessStatus.STOPPED:
-        return JobStatus.STOPPED.value, outcome.message
+        return JobStatus.STOPPED.value, message
     if outcome.status == AccessStatus.ERROR:
-        return JobStatus.FAILED.value, outcome.message
-    return JobStatus.BLOCKED.value, outcome.message
+        return JobStatus.FAILED.value, message
+    return JobStatus.BLOCKED.value, message
 
 
 def _counters_json(counters: dict) -> str:

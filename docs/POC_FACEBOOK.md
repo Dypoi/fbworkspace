@@ -84,6 +84,9 @@ Kemungkinan penyebab, dari yang paling umum:
 1. **Grup memerlukan keanggotaan.** Banyak grup "publik" tetap hanya menampilkan
    sebagian isi untuk non-anggota. Pilihan Anda: gabung secara wajar (ikuti aturan
    grup) atau gunakan ① **Tempel manual** di tab Mulai.
+   Baris **`KOMENTAR DILEWATI`** di ringkasan POC menunjukkan berapa elemen yang
+   ternyata komentar/reply (bukan postingan). Angka besar = selector belum tepat;
+   jangan pakai datanya dulu, lihat 3 contoh teks yang dicetak di bawahnya.
 2. **Konten dimuat lambat.** Ulangi dengan `-MaxSeconds 120` dan gulir manual sekali
    di jendela browser untuk memancing pemuatan.
 3. **Selector tidak cocok.** Facebook bisa memakai struktur berbeda. Berikut cara

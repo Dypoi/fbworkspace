@@ -18,7 +18,9 @@ STATUS: PROOF OF CONCEPT (POC). Baca sebelum memakai:
 4. TIDAK ADA AUTO-RETRY. Satu halaman dicoba satu kali per grup.
 
 5. Hanya teks postingan + tautan postingan (bila terlihat) yang diambil.
-   Nama/URL profil anggota tidak diambil. Komentar tidak diambil.
+   Nama/URL profil anggota tidak diambil. Komentar dibuang: elemen `article`
+   bersarang (komentar) dilewati, dan teks berpola komentar ("... Reply",
+   "LikeReplyShare") ditolak sebelum disimpan.
 """
 
 from __future__ import annotations
@@ -33,6 +35,7 @@ from ..normalize import (
     canonical_post_url,
     collapse_ws,
     extract_post_ids_from_url,
+    looks_like_comment,
     normalize_text,
     truncate,
 )
@@ -109,6 +112,9 @@ class PlaywrightFacebookAdapter:
         limits = target.limits
         started = time.monotonic()
         posts: list[RawPost] = []
+        # Kunci teks yang sudah diketahui berupa komentar, agar hitungan tidak
+        # membengkak saat elemen yang sama terbaca di setiap putaran gulir.
+        skipped_keys: set[str] = set()
         seen_keys: set[str] = set()
         diagnostics: dict = {
             "adapter": self.name,
@@ -325,7 +331,7 @@ class PlaywrightFacebookAdapter:
                         for element in elements:
                             if len(posts) >= limits.max_posts or stop_now():
                                 break
-                            raw = self._extract_post(element, group_url)
+                            raw = self._extract_post(element, group_url, diagnostics, skipped_keys)
                             if raw is None:
                                 continue
                             key = self._post_key(raw)
@@ -363,24 +369,36 @@ class PlaywrightFacebookAdapter:
                 diagnostics["elapsed_seconds"] = elapsed
                 diagnostics["duplicates_skipped"] = counters["duplicates"]
 
+                skipped = int(diagnostics.get("skipped_comment") or 0)
+                diagnostics["skipped_comment"] = skipped
+
                 if not posts:
-                    return CollectOutcome(
-                        AccessStatus.OK_EMPTY,
-                        [],
-                        (
+                    if skipped:
+                        message = (
+                            f"Tidak ada postingan yang layak disimpan. {skipped} elemen yang "
+                            "terbaca ternyata komentar/reply, bukan isi postingan. Selector "
+                            "perlu diperbaiki sebelum dipakai lagi; lihat contoh teks di "
+                            "scripts/poc_facebook.py (jalankan POC)."
+                        )
+                    else:
+                        message = (
                             "Halaman terbuka tanpa penanda pemblokiran, tetapi TIDAK ada postingan "
                             "yang bisa dibaca dengan selector saat ini. Ini bisa berarti: grup "
                             "memerlukan keanggotaan, konten belum dimuat, atau selector perlu "
                             "diperbaiki manual. Lihat scripts/poc_facebook.py."
-                        ),
-                        diagnostics,
+                        )
+                    return CollectOutcome(AccessStatus.OK_EMPTY, [], message, diagnostics)
+
+                message = f"Selesai membaca {len(posts)} postingan dalam {elapsed} detik."
+                if skipped:
+                    message += (
+                        f" {skipped} komentar/reply dilewati karena bukan isi postingan."
                     )
-                return CollectOutcome(
-                    AccessStatus.OK,
-                    posts,
-                    f"Selesai membaca {len(posts)} postingan dalam {elapsed} detik.",
-                    diagnostics,
-                )
+                    diagnostics.setdefault("notes", []).append(
+                        "Sebagian elemen yang terbaca adalah komentar. Kalau angka ini besar, "
+                        "periksa hasil POC sebelum memakai datanya."
+                    )
+                return CollectOutcome(AccessStatus.OK, posts, message, diagnostics)
             except PWError as exc:
                 return CollectOutcome(
                     AccessStatus.ERROR, posts, f"Kesalahan Playwright: {exc}", diagnostics
@@ -404,7 +422,44 @@ class PlaywrightFacebookAdapter:
         return detect_page_state(page.url, body_text, has_session=session)
 
     # ------------------------------------------------------------- ekstraksi
-    def _extract_post(self, element, group_url: str) -> RawPost | None:
+    @staticmethod
+    def _is_nested_article(element) -> bool:
+        """True bila elemen ini `article` di dalam `article` lain (komentar/reply)."""
+        try:
+            return bool(
+                element.evaluate(
+                    "(el) => { const parent = el.parentElement;"
+                    " return !!(parent && parent.closest('div[role=\"article\"]')); }"
+                )
+            )
+        except Exception:  # noqa: BLE001 - elemen bisa hilang saat halaman berubah
+            return False
+
+    def _note_skipped(
+        self, diagnostics: dict | None, skipped_keys: set[str], text: str
+    ) -> None:
+        if diagnostics is None:
+            return
+        snippet = collapse_ws(text)[:140]
+        key = snippet.lower()[:120]
+        if not key or key in skipped_keys:
+            return
+        skipped_keys.add(key)
+        diagnostics["skipped_comment"] = int(diagnostics.get("skipped_comment") or 0) + 1
+        samples = diagnostics.setdefault("sample_texts", [])
+        if len(samples) < 5:
+            samples.append(snippet)
+
+    def _extract_post(
+        self,
+        element,
+        group_url: str,
+        diagnostics: dict | None = None,
+        skipped_keys: set[str] | None = None,
+    ) -> RawPost | None:
+        if self._is_nested_article(element):
+            return None
+
         try:
             text = element.inner_text()
         except Exception:  # noqa: BLE001 - elemen bisa hilang saat halaman berubah
@@ -418,30 +473,37 @@ class PlaywrightFacebookAdapter:
         if len(collapse_ws(text)) < 15:
             return None
 
-        post_url = None
+        hrefs: list[str] = []
         try:
             anchors = element.query_selector_all(
                 "a[href*='/posts/'], a[href*='/permalink/'], a[href*='story_fbid=']"
             )
-            for anchor in anchors[:4]:
+            for anchor in anchors[:6]:
                 href = anchor.get_attribute("href") or ""
                 if not href:
                     continue
                 if href.startswith("/"):
                     href = f"https://www.facebook.com{href}"
-                if "facebook.com" not in href:
-                    continue
-                if any(token in href for token in ("/photo", "/video", "/reel")):
-                    # tetap simpan sebagai tautan sumber, tapi canonical-kan
-                    post_url = canonical_post_url(href) or href
-                    break
-                post_url = canonical_post_url(href) or href
-                break
+                if "facebook.com" in href:
+                    hrefs.append(href)
         except Exception:  # noqa: BLE001
-            post_url = None
+            hrefs = []
 
-        if post_url and not extract_post_ids_from_url(post_url):
-            post_url = post_url  # tautan photo/video: tidak punya ID postingan
+        # Tautan komentar memuat comment_id=; postingan tidak.
+        comment_only_links = bool(hrefs) and all("comment_id=" in href for href in hrefs)
+
+        if looks_like_comment(text) or (
+            comment_only_links and len(collapse_ws(text)) < 300
+        ):
+            self._note_skipped(
+                diagnostics, skipped_keys if skipped_keys is not None else set(), text
+            )
+            return None
+
+        post_url = None
+        for href in hrefs:
+            post_url = canonical_post_url(href) or href
+            break
 
         return RawPost(
             text=truncate(text, MAX_TEXT_PER_POST),

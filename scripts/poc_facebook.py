@@ -147,6 +147,11 @@ def main(argv: list[str] | None = None) -> int:
     print(f"STATUS : {outcome.status.value}")
     print(f"PESAN  : {outcome.message or ACCESS_STATUS_MESSAGES.get(outcome.status, '')}")
     print(f"POSTINGAN TERBACA: {len(outcome.posts)}")
+    skipped = int(outcome.diagnostics.get("skipped_comment") or 0)
+    if skipped:
+        print(f"KOMENTAR DILEWATI : {skipped} (bukan isi postingan)")
+        for sample in (outcome.diagnostics.get("sample_texts") or [])[:3]:
+            print(f"  contoh: {sample[:120]}")
     print("=" * 72)
 
     for index, post in enumerate(outcome.posts, start=1):

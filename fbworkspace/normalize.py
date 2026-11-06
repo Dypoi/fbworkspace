@@ -61,6 +61,39 @@ def collapse_ws(value: str) -> str:
     return re.sub(r"\s+", " ", value or "").strip()
 
 
+# --------------------------------------------------------------------------
+# Kualitas teks hasil pembacaan browser
+# --------------------------------------------------------------------------
+
+# Komentar Facebook selalu diakhiri tombol aksi "Reply"/"Balas" (kadang diikuti
+# angka balasan), atau memuat rangkaian "LikeReplyShare" yang menempel.
+_COMMENT_TRAILING = re.compile(
+    r"(?i)\b(?:reply|balas)\s*\d*\s*"
+    r"(?:(?:see|lihat)\s+(?:translation|terjemahan))?\s*(?:edited|diedit)?\s*$"
+)
+# Di UI Facebook, tombol aksi sering menempel: "LikeReplyShare",
+# "LikeReplySee translationShare". Rangkaian ini tidak muncul di isi postingan.
+_COMMENT_ACTIONS = re.compile(r"(?i)(?:like|suka)(?:reply|balas)|(?:reply|balas)(?:share|bagikan)")
+_TRANSLATION = re.compile(r"(?i)\b(?:see translation|lihat terjemahan)\b")
+
+
+def looks_like_comment(text: str) -> bool:
+    """Tebak apakah teks ini komentar/reply, bukan isi postingan.
+
+    Dipakai dua tempat: adapter browser (agar komentar tidak disimpan) dan
+    pembersih data lama. Sengaja konservatif: hanya menandai pola yang sangat
+    khas komentar, supaya postingan pendek yang sah tidak ikut terbuang.
+    """
+    clean = collapse_ws(text)
+    if not clean:
+        return False
+    if _COMMENT_TRAILING.search(clean):
+        return True
+    if _COMMENT_ACTIONS.search(clean):
+        return True
+    return bool(len(clean) <= 120 and _TRANSLATION.search(clean))
+
+
 def text_hash(value: str) -> str:
     """Hash teks yang dinormalisasi (lowercase + spasi dirapatkan).
 

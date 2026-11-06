@@ -287,6 +287,24 @@ class Database:
             cur = conn.execute("DELETE FROM posts WHERE source = ?", (source,))
             return cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
 
+    def find_suspicious_posts(self, limit: int = 5000) -> list[dict[str, Any]]:
+        """Baris lama yang teksnya berpola komentar/reply, bukan isi postingan."""
+        from .normalize import looks_like_comment
+
+        return [
+            row for row in self.list_posts(limit=limit) if looks_like_comment(row["text"])
+        ]
+
+    def delete_suspicious_posts(self) -> int:
+        """Hapus baris yang terdeteksi komentar/reply. Kembalikan jumlahnya."""
+        ids = [row["id"] for row in self.find_suspicious_posts()]
+        if not ids:
+            return 0
+        with self.conn() as conn:
+            conn.executemany("DELETE FROM analyses WHERE post_id = ?", [(i,) for i in ids])
+            conn.executemany("DELETE FROM posts WHERE id = ?", [(i,) for i in ids])
+        return len(ids)
+
     def update_filter_result(self, post_id: int, passed: bool, reasons: list[str]) -> None:
         """Perbarui hasil filter tanpa menyentuh hasil analisis/AI."""
         with self.conn() as conn:

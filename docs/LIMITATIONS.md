@@ -47,13 +47,42 @@ konten yang Anda akses sendiri.
 | Bahasa/akun | Tampilan berbeda per bahasa, per akun, per perangkat |
 | Teks terpotong | Tombol "Lihat selengkapnya" **tidak** diklik otomatis, jadi teks bisa terpotong |
 | Gambar | Tidak dibaca sama sekali (tidak ada OCR) |
-| Komentar | Tidak diambil (di luar kebutuhan & mengurangi data pribadi) |
+| Komentar | Ditolak: `article` bersarang & teks berpola "… Reply" dibuang (lihat §2b) |
 | Nama anggota | Tidak diambil, sengaja |
 | Waktu posting | Hanya jika terlihat di teks; sering tidak terbaca |
 | Tautan postingan | Diambil dari anchor dalam elemen; bisa tidak ditemukan |
 
 Artinya: **hasil 0 postingan bukan bug otomatis**, melainkan sinyal bahwa grup
 tersebut tidak dapat dibaca dengan cara ini. Lihat [POC_FACEBOOK.md](POC_FACEBOOK.md).
+
+### 2b. Komentar pernah tertangkap sebagai "postingan"
+
+Pada uji nyata, selector `div[role="article"]` juga cocok untuk **kontainer
+komentar**: komentar memakai `role="article"` yang sama. Akibatnya satu job
+menyimpan 31 baris berisi teks seperti:
+
+```
+Ali Romlan · 1hRam brpLikeReplyShare
+Yogga Kdanee · 5h · TT bisa ga mas Reply
+Raka Barajasena · 5m ip 12 pm 256 ibox, nambah brapa? Reply
+```
+
+Semua baris itu komentar (median 36 karakter, 0 menyebut iPhone), lalu digugurkan
+filter "wajib iPhone". Dari luar terlihat seperti filter yang salah — padahal
+sumber datanya yang salah.
+
+Perbaikan yang aktif sekarang:
+- elemen `article` yang **bersarang di `article` lain** (komentar) dilewati;
+- tautan yang hanya memuat `comment_id=` dianggap komentar;
+- teks berpola komentar (`… Reply`, `… Reply Edited`, `LikeReplyShare`) ditolak
+  sebelum disimpan, dihitung sebagai `skipped_comment`, dan tidak masuk database;
+- pesan job menampilkan "N komentar/reply dilewati" dan POC mencetak 3 contoh teks;
+- baris lama bisa dibersihkan di **Pengaturan → 💾 Data → 🧹 Hapus baris tidak layak**.
+
+Yang **masih mungkin**: komentar yang tidak menampilkan tombol Reply (UI
+terpotong) atau komentar panjang yang kebetulan tidak cocok pola. Penyaring ini
+konservatif — lebih baik menyimpan satu baris aneh daripada membuang postingan sah.
+Karena itu: periksa contoh teks di POC **sebelum** memakai hasilnya untuk keputusan.
 
 ---
 

@@ -78,3 +78,30 @@ def test_reapply_filter_button_available_after_demo(tmp_path, monkeypatch):
     buttons[0].click().run()
     assert not at.exception, [str(e) for e in at.exception]
     assert any("Selesai" in str(s.value) for s in at.success)
+
+
+def test_comment_rows_are_flagged_and_cleanable(tmp_path, monkeypatch):
+    from fbworkspace.db import Database
+
+    db_path = tmp_path / "junk.db"
+    monkeypatch.setenv("FBW_DB_PATH", str(db_path))
+    monkeypatch.setenv("FBW_OLLAMA_ENABLED", "false")
+    seed = Database(db_path)
+    seed.insert_post(
+        text="Ali Romlan · 1hRam brpLikeReplyShare", source="browser", filter_passed=False
+    )
+    seed.insert_post(
+        text="Dijual iPhone X 64GB mulus, 5jt COD Tangerang",
+        source="browser",
+        filter_passed=True,
+    )
+
+    at = AppTest.from_file(APP, default_timeout=60).run()
+    assert not at.exception, [str(e) for e in at.exception]
+    assert any("komentar" in str(w.value).lower() for w in at.warning)
+
+    assert _by_key(at.button, "del_suspect"), "Tombol hapus baris komentar tidak ada"
+    at.checkbox(key="del_suspect_confirm").check().run()
+    at.button(key="del_suspect").click().run()
+    assert not at.exception, [str(e) for e in at.exception]
+    assert Database(db_path).count_posts() == 1
