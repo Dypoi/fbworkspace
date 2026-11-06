@@ -2,7 +2,14 @@
 
 from __future__ import annotations
 
-from fbworkspace.filters import evaluate, find_keywords, match_keyword, parse_keywords
+import pytest
+
+from fbworkspace.filters import (
+    evaluate,
+    find_keywords,
+    match_keyword,
+    parse_keywords,
+)
 from fbworkspace.models import FilterConfig
 
 
@@ -104,3 +111,41 @@ class TestEvaluate:
         result = evaluate("Jual casing iPhone 13, bukan unit. Harga nego.", FilterConfig())
         # Casing bukan unit iPhone -> kategori bisa menjual, tetapi tetap tidak boleh crash
         assert isinstance(result.passed, bool)
+
+
+class TestKeywordVariants:
+    """Postingan pasar Indonesia sering menulis "ip x"/"iphonex", bukan "iphone x"."""
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "jual iphone x 64gb mulus 4jt",
+            "jual ip x 64 gb 3,5jt cod depok",
+            "jual iphonex 64gb 3jt",
+            "jual ipx 64gb 3jt",
+            "jual iphone xr 64gb 4jt",
+            "WTS IPHONEX 256 GB",
+        ],
+    )
+    def test_iphone_x_keyword_matches_shorthand(self, text):
+        assert match_keyword(text, "iphone x") is True
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "BU ip 14 256gb wifi only 4,5 ambil",
+            "jual ipad 9 3jt",
+            "jual kulkas 2 pintu murah",
+        ],
+    )
+    def test_other_texts_not_matched(self, text):
+        assert match_keyword(text, "iphone x") is False
+
+    def test_shorthand_keyword_expands_to_iphone(self):
+        assert match_keyword("jual iphone x 64gb", "ip x") is True
+        assert match_keyword("jual iphonex 64gb", "ipx") is True
+
+    def test_include_filter_passes_shorthand_post(self):
+        config = FilterConfig(include_keywords=["iphone x"], require_iphone=True)
+        result = evaluate("jual ip x 64 gb 3,5jt cod depok", config)
+        assert result.passed is True

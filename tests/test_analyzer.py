@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import pytest
 
-from fbworkspace.analyzer import analyze_text, extract_iphone_model, extract_location
+from fbworkspace.analyzer import (
+    analyze_text,
+    extract_iphone_model,
+    extract_location,
+    mentions_iphone,
+)
 from fbworkspace.models import UNKNOWN
 
 
@@ -135,3 +140,26 @@ class TestUntrustedText:
         result = analyze_text("   ")
         assert result.category == "tidak relevan"
         assert result.relevance_score == 0
+
+
+class TestMentionsIphoneShorthand:
+    @pytest.mark.parametrize(
+        "text",
+        ["iphone", "iphone 13", "iphonex 64gb", "iphone x", "iphone xr", "ip 11", "ip13pm", "ip x", "ipx", "ipxs"],
+    )
+    def test_recognised(self, text):
+        assert mentions_iphone(text) is True
+
+    @pytest.mark.parametrize("text", ["ipad 9 3jt", "ip nya bagus", "jual kulkas"])
+    def test_not_recognised(self, text):
+        assert mentions_iphone(text) is False
+
+    def test_slang_post_classified_as_selling(self):
+        result = analyze_text("jual ip x 64 gb 3,5jt cod depok")
+        assert result.category == "menjual"
+        assert result.iphone_model == "iPhone X"
+
+    def test_iphonex_spelling_classified_as_selling(self):
+        result = analyze_text("jual iphonex 64gb 3jt")
+        assert result.category == "menjual"
+        assert result.iphone_model == "iPhone X"

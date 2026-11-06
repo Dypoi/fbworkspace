@@ -402,6 +402,11 @@ def _render_job_content(settings: Settings, db: Database, job_id: int, live: boo
             "sehingga tidak disimpan. Kalau angkanya besar, selector perlu diperbaiki — "
             "jalankan POC dan periksa contoh teksnya."
         )
+    empty_cards = int(counters.get("empty_cards") or 0)
+    if empty_cards:
+        st.caption(
+            f"{empty_cards} kartu feed kosong/placeholder dilewati (belum termuat saat dibaca)."
+        )
 
     if active:
         if st.button("🛑 Hentikan proses", type="primary", key=f"stop_{job_id}"):

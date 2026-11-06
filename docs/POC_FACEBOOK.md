@@ -88,10 +88,15 @@ Kemungkinan penyebab, dari yang paling umum:
    ternyata komentar/reply (bukan postingan). Angka besar = selector belum tepat;
    jangan pakai datanya dulu, lihat 3 contoh teks yang dicetak di bawahnya.
 
-   Sejak perbaikan ekstraksi, POC mencari **tautan postingan** (`/posts/`, tanpa
-   `comment_id=`), naik ke kartu postingan, lalu mengambil isinya tanpa komentar.
+   POC mencetak **`METODE EKSTRAKSI`**:
+   - `post-links` → kartu ditemukan dari tautan `/posts/` (tanpa `comment_id=`),
+   - `feed-cards` → grup tidak memasang tautan; kartu diambil dari feed
+     (`[aria-posinset]`) dan isinya dari blok `div[dir="auto"]`,
+   - `article-selector` → cadangan terakhir (biasanya hanya komentar).
+
    Yang perlu Anda nilai: apakah `POSTINGAN TERBACA` berisi kalimat postingan
-   (bukan "nama · 2h isi komentar Reply").
+   (bukan "nama · 2h isi komentar Reply"). Baris `KARTU KOSONG` berarti kartu
+   belum termuat saat dibaca — ulangi POC; kalau tetap besar, grup lambat dimuat.
 2. **Konten dimuat lambat.** Ulangi dengan `-MaxSeconds 120` dan gulir manual sekali
    di jendela browser untuk memancing pemuatan.
 3. **Selector tidak cocok.** Facebook bisa memakai struktur berbeda. Berikut cara

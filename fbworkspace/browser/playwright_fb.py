@@ -37,6 +37,7 @@ from ..normalize import (
     extract_post_ids_from_url,
     looks_like_comment,
     normalize_text,
+    strip_invisible_noise,
     truncate,
 )
 from .base import CollectOutcome, CollectTarget, ProgressCallback
@@ -47,6 +48,12 @@ DEFAULT_ARTICLE_SELECTOR = 'div[role="article"]'
 # Tautan postingan dipakai sebagai titik masuk: lebih stabil daripada atribut
 # role yang berubah antar versi antarmuka Facebook.
 POST_LINK_SELECTOR = 'a[href*="/posts/"], a[href*="/permalink/"]'
+# Di sebagian grup, postingan tidak punya tautan sama sekali. Kartu postingan
+# bisa ditemukan dari feed; isinya diambil dari blok teks `div[dir="auto"]`.
+FEED_SELECTOR = 'div[role="feed"]'
+FEED_CARD_SELECTOR = '[aria-posinset]'
+POST_BLOCK_SELECTOR = 'div[dir="auto"]'
+MIN_BLOCK_CHARS = 12
 MAX_TEXT_PER_POST = 6000
 
 # Naik dari tautan postingan ke kontainer terdekat yang memuat SATU postingan
@@ -119,6 +126,8 @@ class PlaywrightFacebookAdapter:
         self.login_wait_seconds = max(0, int(login_wait_seconds))
         # Sumber elemen pada putaran terakhir: "post-links" atau "article-selector".
         self._last_source = "unknown"
+        # Kunci kartu kosong yang sudah dihitung, agar tidak berlipat tiap gulir.
+        self._empty_card_keys: set[str] = set()
 
     # ------------------------------------------------------------------ setup
     def is_available(self) -> tuple[bool, str]:
@@ -503,8 +512,16 @@ class PlaywrightFacebookAdapter:
             containers.append(container)
         return containers
 
+    def _feed_cards(self, page) -> list:
+        """Kartu postingan dari feed, untuk grup yang tidak memasang tautan."""
+        try:
+            cards = page.query_selector_all(FEED_CARD_SELECTOR)
+        except Exception:  # noqa: BLE001 - halaman bisa berubah saat dipindai
+            return []
+        return list(cards)
+
     def _candidate_elements(self, page) -> list:
-        """Elemen kandidat: kartu postingan berbasis tautan, atau selector lama."""
+        """Elemen kandidat: tautan postingan, kartu feed, lalu selector lama."""
         if self.article_selector != DEFAULT_ARTICLE_SELECTOR:
             self._last_source = "custom-selector"
             return page.query_selector_all(self.article_selector)
@@ -514,8 +531,64 @@ class PlaywrightFacebookAdapter:
             self._last_source = "post-links"
             return containers
 
+        cards = self._feed_cards(page)
+        if cards:
+            self._last_source = "feed-cards"
+            return cards
+
         self._last_source = "article-selector"
         return page.query_selector_all(self.article_selector)
+
+    def _blocks_text(self, element) -> str:
+        """Gabungkan blok teks postingan (`div[dir="auto"]`), tanpa label UI."""
+        try:
+            blocks = element.query_selector_all(POST_BLOCK_SELECTOR)
+        except Exception:  # noqa: BLE001
+            return ""
+        texts: list[str] = []
+        for block in blocks:
+            try:
+                raw = block.inner_text()
+            except Exception:  # noqa: BLE001
+                continue
+            cleaned = _clean_ui_noise(strip_invisible_noise(normalize_text(raw)))
+            flat = collapse_ws(cleaned)
+            if len(flat) < MIN_BLOCK_CHARS:
+                continue
+            if looks_like_comment(flat):
+                continue
+            texts.append(cleaned)
+        return "\n".join(dict.fromkeys(texts))
+
+    def _note_empty_card(
+        self,
+        element,
+        diagnostics: dict | None,
+        skipped_keys: set[str] | None,
+    ) -> None:
+        """Bedakan kartu kosong (skeleton) dari kartu yang isinya komentar."""
+        if diagnostics is None:
+            return
+        try:
+            position = element.get_attribute("aria-posinset")
+        except Exception:  # noqa: BLE001 - elemen tanpa atribut/get_attribute
+            position = None
+        if position:
+            key = f"pos:{position}"
+            if key in self._empty_card_keys:
+                return
+            self._empty_card_keys.add(key)
+        raw = ""
+        try:
+            raw = strip_invisible_noise(normalize_text(element.inner_text()))
+        except Exception:  # noqa: BLE001
+            raw = ""
+        if looks_like_comment(raw):
+            self._note_skipped(
+                diagnostics, skipped_keys if skipped_keys is not None else set(), raw
+            )
+        else:
+            diagnostics["empty_cards"] = int(diagnostics.get("empty_cards") or 0) + 1
 
     def _post_body(self, element) -> str:
         """Teks isi postingan saja (komentar dibuang di dalam DOM)."""
@@ -568,10 +641,18 @@ class PlaywrightFacebookAdapter:
         if self._is_nested_article(element):
             return None
 
-        text = normalize_text(self._post_body(element))
-        if len(collapse_ws(text)) < 15:
-            return None
+        if self._last_source == "feed-cards":
+            text = normalize_text(self._blocks_text(element))
+            if len(collapse_ws(text)) < 15:
+                # Kartu bisa kosong (skeleton/label UI) atau isinya hanya komentar.
+                self._note_empty_card(element, diagnostics, skipped_keys)
+                return None
+        else:
+            text = normalize_text(self._post_body(element))
+            if len(collapse_ws(text)) < 15:
+                return None
 
+        text = strip_invisible_noise(text)
         # Potong di bilah aksi "Like · Comment · Share" (sesudahnya komentar).
         text = _cut_at_action_bar(text)
         # Buang baris antarmuka khas Facebook yang bukan isi postingan.
@@ -653,6 +734,8 @@ _UI_NOISE_PATTERNS = (
     r"^(follow|ikuti|join group|gabung grup)$",
     r"^most relevant$",
     r"^paling relevan$",
+    r"^sort group feed by.*$",
+    r"^facebook$",
     r"^all reactions:$",
 )
 

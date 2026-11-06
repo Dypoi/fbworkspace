@@ -149,6 +149,9 @@ def main(argv: list[str] | None = None) -> int:
     print(f"POSTINGAN TERBACA: {len(outcome.posts)}")
     print(f"METODE EKSTRAKSI : {outcome.diagnostics.get('extraction', 'tidak diketahui')}")
     skipped = int(outcome.diagnostics.get("skipped_comment") or 0)
+    empty_cards = int(outcome.diagnostics.get("empty_cards") or 0)
+    if empty_cards:
+        print(f"KARTU KOSONG      : {empty_cards} (placeholder/belum termuat)")
     if skipped:
         print(f"KOMENTAR DILEWATI : {skipped} (bukan isi postingan)")
         for sample in (outcome.diagnostics.get("sample_texts") or [])[:3]:

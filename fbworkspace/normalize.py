@@ -65,15 +65,57 @@ def collapse_ws(value: str) -> str:
 # Kualitas teks hasil pembacaan browser
 # --------------------------------------------------------------------------
 
+# Facebook menyisipkan karakter format tak terlihat (mis. U+034F) di antara
+# huruf, dan label "Facebook" berulang, untuk mengganggu pembacaan otomatis.
+_INVISIBLE_CHARS = dict.fromkeys(
+    map(
+        ord,
+        "\u034f\u061c\u180e\u200b\u200c\u200d\u200e\u200f\u2060\ufeff",
+    ),
+    None,
+)
+_FACEBOOK_LABEL_LINE = re.compile(r"(?i)^(?:\s*facebook\s*[\u00b7|]?\s*)+$")
+
+
+def strip_invisible_noise(value: str) -> str:
+    """Buang karakter tak terlihat dan baris teks pengganggu ala Facebook.
+
+    Yang dibuang:
+    - karakter format tak terlihat (CGJ U+034F, zero-width, dll),
+    - baris yang hanya berisi label "Facebook" berulang,
+    - baris "huruf berjauhan" (>=60% token satu huruf) yang biasanya hasil
+      penyisipan karakter tak terlihat.
+
+    Tidak mengubah kata normal: kalimat biasa tetap utuh.
+    """
+    text = (value or "").translate(_INVISIBLE_CHARS)
+    lines: list[str] = []
+    for line in text.split("\n"):
+        if _FACEBOOK_LABEL_LINE.match(line):
+            continue
+        tokens = line.split()
+        if len(tokens) >= 6:
+            short = sum(1 for token in tokens if len(re.sub(r"\W", "", token)) <= 1)
+            if short / len(tokens) >= 0.6:
+                continue
+        lines.append(line)
+    return "\n".join(lines)
+
 # Komentar Facebook selalu diakhiri tombol aksi "Reply"/"Balas" (kadang diikuti
 # angka balasan), atau memuat rangkaian "LikeReplyShare" yang menempel.
 _COMMENT_TRAILING = re.compile(
     r"(?i)\b(?:reply|balas)\s*\d*\s*"
     r"(?:(?:see|lihat)\s+(?:translation|terjemahan))?\s*(?:edited|diedit)?\s*$"
 )
-# Di UI Facebook, tombol aksi sering menempel: "LikeReplyShare",
-# "LikeReplySee translationShare". Rangkaian ini tidak muncul di isi postingan.
-_COMMENT_ACTIONS = re.compile(r"(?i)(?:like|suka)(?:reply|balas)|(?:reply|balas)(?:share|bagikan)")
+# Di UI Facebook, tombol aksi sering menempel ("LikeReplyShare",
+# "LikeReplySee translationShare") atau terpisah ("Like Reply Share").
+# Rangkaian tiga tombol ini tidak muncul di isi postingan biasa.
+_COMMENT_ACTIONS = re.compile(
+    r"(?i)(?:like|suka)(?:reply|balas)"
+    r"|(?:reply|balas)(?:share|bagikan)"
+    r"|(?:like|suka)\s*[\u00b7|]?\s*(?:reply|balas)\s*[\u00b7|]?\s*(?:share|bagikan)"
+    r"|(?:reply|balas)\s*[\u00b7|]?\s*(?:share|bagikan)"
+)
 _TRANSLATION = re.compile(r"(?i)\b(?:see translation|lihat terjemahan)\b")
 
 
