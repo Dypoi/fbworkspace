@@ -30,7 +30,8 @@ Ini penting supaya Anda tidak salah harap.
 | Klien Ollama (timeout, validasi JSON, offline) | ✅ Diuji otomatis **tanpa model nyata** |
 | Deteksi halaman login/checkpoint/penolakan | ✅ Diuji dengan teks contoh |
 | **Pembacaan grup Facebook sungguhan** | ⚠️ **BELUM diverifikasi** — selector perlu Anda uji lewat POC |
-| **Login manual di jendela Chromium** | ⚠️ **BELUM diverifikasi** di laptop Anda |
+| **Login manual di jendela Chromium** | ⚠️ **BELUM diverifikasi** di laptop Anda. Alur menunggu-login & deteksi cookie sudah diuji dengan simulasi, bukan akun nyata |
+| **Helper login (`scripts/login_helper.py`)** | ✅ Diuji tanpa browser; ⚠️ perlu uji di laptop |
 | **Kualitas & kecepatan Ollama di laptop Anda** | ⚠️ **BELUM diukur** |
 
 > Jangan menganggap selector `div[role="article"]` pasti bekerja. Struktur halaman
@@ -59,6 +60,8 @@ Ini penting supaya Anda tidak salah harap.
 ## 3. Fitur MVP
 
 **Dashboard lokal**
+- Helper login manual sekali (`scripts/login_helper.py` + tombol di dashboard).
+- Saat login wall muncul, browser dibiarkan terbuka (tidak auto-close) sampai batas waktu.
 - Input satu/beberapa tautan grup + validasi bentuk tautan.
 - Kata kunci inklusi & eksklusi, filter lokasi dan rentang harga.
 - Batas kecil postingan dan durasi; tidak ada pengulangan otomatis.
@@ -87,6 +90,8 @@ Ini penting supaya Anda tidak salah harap.
 - Aplikasi tetap 100% berfungsi tanpa AI.
 - Endpoint lokal saja (default `http://127.0.0.1:11434`), timeout, validasi JSON,
   input dipotong, penanganan offline.
+- Model bisa diganti per sesi di dashboard; `think` dan `num_predict` dapat diatur
+  (penting untuk `qwen3:4b` yang punya mode thinking).
 
 ---
 
@@ -116,6 +121,7 @@ fbworkspace/
 │       ├── page_state.py       # deteksi login/checkpoint/penolakan
 │       └── playwright_fb.py    # adapter Playwright (POC, belum terverifikasi)
 ├── scripts/
+│   ├── login_helper.py         # login manual sekali (profil browser)
 │   ├── poc_facebook.py         # POC satu grup, batas kecil
 │   ├── setup_windows.ps1       # setup otomatis Windows
 │   ├── run_windows.ps1         # menjalankan dashboard
@@ -123,7 +129,7 @@ fbworkspace/
 │   └── load_demo.py            # muat data DEMO via CLI
 ├── data/demo_posts_DEMO.json   # data sintetis berlabel DEMO
 ├── docs/                       # instalasi, POC, batasan, Git, testing
-├── tests/                      # 204 tes otomatis
+├── tests/                      # 235 tes otomatis
 ├── requirements.txt
 ├── .env.example
 └── .gitignore
@@ -157,7 +163,21 @@ Dashboard terbuka di `http://127.0.0.1:8501` dan **hanya** bisa diakses dari lap
 4. Buka **Input Manual**: tempel teks postingan, simpan, lihat hasil filter.
 5. Coba draf respons di detail postingan (salin, jangan dikirim otomatis).
 
-### Langkah B — Uji kelayakan pembacaan (POC, wajib sebelum sistem penuh)
+### Langkah B — Login sekali (opsional tapi disarankan)
+
+```powershell
+.\venv\Scripts\python.exe scripts\login_helper.py
+```
+Jendela Chromium terbuka. Login sendiri di sana (termasuk OTP/checkpoint), lalu
+tutup jendela browser. Sesi tersimpan di `data/browser_profile/` (tidak masuk Git).
+Bisa juga lewat dashboard: tab **Jalankan → 🔐 Login Facebook**.
+
+Kalau login belum dilakukan dan saat pembacaan Facebook meminta login, **browser
+tidak langsung ditutup**: jendela dibiarkan terbuka sampai `FBW_LOGIN_WAIT_SECONDS`
+(default 180 detik) agar Anda bisa login saat itu juga. Waktu menunggu tidak
+dihitung sebagai waktu pembacaan.
+
+### Langkah C — Uji kelayakan pembacaan (POC, wajib sebelum sistem penuh)
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\poc_windows.ps1 `
   -Url "https://www.facebook.com/groups/ID-GRUP-ANDA/"
@@ -165,11 +185,11 @@ powershell -ExecutionPolicy Bypass -File .\scripts\poc_windows.ps1 `
 Baca **[docs/POC_FACEBOOK.md](docs/POC_FACEBOOK.md)** untuk cara menafsirkan hasil.
 Kalau POC tidak berhasil, gunakan **Input Manual** — aplikasi tetap berguna.
 
-### Langkah C — Jalankan dari dashboard (batas kecil)
+### Langkah D — Jalankan dari dashboard (batas kecil)
 Tab **Jalankan** → tempel tautan grup → centang pernyataan → **Mulai pembacaan**.
 Batas awal disarankan: 3–5 postingan, 2–3 menit.
 
-### Langkah D — Ollama (opsional, terakhir)
+### Langkah E — Ollama (opsional, terakhir)
 Ikuti tab **Analisis Ollama** di dashboard dan bagian 8 di bawah.
 
 ---
@@ -211,11 +231,14 @@ Skor ini **bukan probabilitas kebenaran** dan bukan penilaian kualitas penjual.
 
 ## 8. Ollama (opsional)
 
+Model **tidak wajib** `qwen2.5:3b` — itu hanya default di `.env.example`.
+Anda bisa memakai model apa pun yang terpasang di Ollama, misalnya `qwen3:4b`.
 Rekomendasi awal: `qwen2.5:3b` (Apache-2.0, ±1,9 GB unduhan).
 Alternatif: `llama3.2:3b` (±2,0 GB), `gemma3:4b` (±3,3 GB, lebih berat).
 
 ```powershell
-ollama pull qwen2.5:3b
+ollama list          # lihat nama persis yang terpasang
+ollama pull qwen2.5:3b   # atau model lain, mis. qwen3:4b
 ```
 
 Lalu atur di `.env`:
@@ -223,9 +246,14 @@ Lalu atur di `.env`:
 ```
 FBW_OLLAMA_ENABLED=true
 FBW_OLLAMA_URL=http://127.0.0.1:11434
-FBW_OLLAMA_MODEL=qwen2.5:3b
-FBW_OLLAMA_TIMEOUT=60
+FBW_OLLAMA_MODEL=qwen3:4b      # samakan dengan `ollama list`
+FBW_OLLAMA_TIMEOUT=120
+FBW_OLLAMA_THINK=false         # penting untuk qwen3: matikan thinking agar JSON tidak terpotong
+FBW_OLLAMA_NUM_PREDICT=512     # naikkan bila JSON sering terpotong
 ```
+
+Model juga bisa diganti sementara tanpa restart lewat kotak **"Model untuk sesi ini"**
+di tab **Analisis Ollama**.
 
 **Kejujuran soal performa:** RAM 16 GB cukup untuk memuat model 3B–4B terkuantisasi,
 tetapi kecepatan sangat bergantung pada CPU/GPU. Tanpa GPU, satu postingan bisa
@@ -259,14 +287,15 @@ Penghapusan data tersedia di tab **Pengaturan & Data** (postingan, log, profil b
 .\.venv\Scripts\python.exe -m pytest
 ```
 
-Hasil terakhir di lingkungan pengembangan: **204 tes lulus** (termasuk smoke test
+Hasil terakhir di lingkungan pengembangan: **235 tes lulus** (termasuk smoke test
 dashboard Streamlit), `ruff check` bersih. Detail: **[docs/TESTING.md](docs/TESTING.md)**.
 
 Yang **belum** diuji dan harus Anda validasi sendiri:
 1. Pembacaan grup Facebook nyata (selector, login, pembatasan).
-2. Perilaku saat Facebook menampilkan challenge di akun Anda.
-3. Kecepatan/kualitas Ollama dengan model nyata di laptop Anda.
-4. Tampilan dashboard di browser Anda (Chrome/Edge/Firefox).
+2. Login manual nyata di jendela Chromium (alur menunggu-login sudah diuji dengan simulasi).
+3. Perilaku saat Facebook menampilkan challenge di akun Anda.
+4. Kecepatan/kualitas Ollama dengan model nyata di laptop Anda (termasuk `qwen3:4b`).
+5. Tampilan dashboard di browser Anda (Chrome/Edge/Firefox).
 
 ---
 

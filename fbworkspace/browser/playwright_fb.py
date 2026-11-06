@@ -38,6 +38,7 @@ from ..normalize import (
 )
 from .base import CollectOutcome, CollectTarget, ProgressCallback
 from .page_state import detect_page_state
+from .session import has_fb_session, wait_for_login
 
 DEFAULT_ARTICLE_SELECTOR = 'div[role="article"]'
 MAX_TEXT_PER_POST = 6000
@@ -55,6 +56,7 @@ class PlaywrightFacebookAdapter:
         article_selector: str = DEFAULT_ARTICLE_SELECTOR,
         scroll_pause_ms: int = 1500,
         page_timeout_ms: int = 30_000,
+        login_wait_seconds: int = 180,
     ) -> None:
         self.profile_dir = Path(profile_dir)
         self.headless = headless
@@ -62,6 +64,9 @@ class PlaywrightFacebookAdapter:
         self.article_selector = article_selector
         self.scroll_pause_ms = scroll_pause_ms
         self.page_timeout_ms = page_timeout_ms
+        # Saat Facebook meminta login: biarkan jendela terbuka selama ini
+        # supaya pengguna bisa login sendiri. 0 = langsung berhenti.
+        self.login_wait_seconds = max(0, int(login_wait_seconds))
 
     # ------------------------------------------------------------------ setup
     def is_available(self) -> tuple[bool, str]:
@@ -110,6 +115,7 @@ class PlaywrightFacebookAdapter:
             "article_selector": self.article_selector,
             "groups": [],
             "selector_verified": False,
+            "login_wait_seconds": self.login_wait_seconds,
             "notes": [
                 "Selector belum divalidasi untuk akun Anda. Periksa hasil POC.",
                 "Teks bisa terpotong karena tombol 'Lihat selengkapnya' tidak diklik otomatis.",
@@ -121,10 +127,14 @@ class PlaywrightFacebookAdapter:
             if on_progress:
                 on_progress(level, message, dict(counters))
 
+        # Waktu menunggu login tidak dihitung sebagai waktu pembacaan.
+        paused_seconds = [0.0]
+
         def stop_now() -> bool:
             if should_stop and should_stop():
                 return True
-            return time.monotonic() - started > limits.max_seconds
+            elapsed = time.monotonic() - started - paused_seconds[0]
+            return elapsed > limits.max_seconds
 
         self.profile_dir.mkdir(parents=True, exist_ok=True)
         if not self.headless:
@@ -146,13 +156,23 @@ class PlaywrightFacebookAdapter:
                         viewport=None,
                     )
                 except PWError as exc:
+                    detail = str(exc)
+                    if "Executable doesn't exist" in detail or "playwright install" in detail:
+                        message = (
+                            "Chromium untuk Playwright belum terunduh. Jalankan: "
+                            "playwright install chromium"
+                        )
+                    elif "SingletonLock" in detail or "ProcessSingleton" in detail:
+                        message = (
+                            "Profil browser sedang dipakai proses lain (mungkin jendela login "
+                            "yang masih terbuka). Tutup jendela itu lalu jalankan lagi."
+                        )
+                    else:
+                        message = f"Gagal membuka Chromium: {detail[:300]}"
                     return CollectOutcome(
                         status=AccessStatus.ERROR,
                         posts=[],
-                        message=(
-                            "Gagal membuka Chromium. Pastikan sudah menjalankan "
-                            f"'playwright install chromium'. Detail: {exc}"
-                        ),
+                        message=message,
                         diagnostics=diagnostics,
                     )
 
@@ -190,13 +210,91 @@ class PlaywrightFacebookAdapter:
                             AccessStatus.STOPPED, posts, "Jendela browser ditutup.", diagnostics
                         )
 
-                    try:
-                        body_text = page.inner_text("body")[:20000]
-                    except PWError:
-                        body_text = ""
-                    state = detect_page_state(page.url, body_text)
+                    state = self._read_page_state(page, context, PWError)
+                    session = has_fb_session(_safe_cookies(context))
                     group_diag["status"] = state.status.value
                     group_diag["detail"] = state.detail
+                    group_diag["session_cookie"] = session
+
+                    # --- Login wall: beri kesempatan pengguna login sendiri ---
+                    if (
+                        state.status == AccessStatus.LOGIN_REQUIRED
+                        and not session
+                        and self.login_wait_seconds > 0
+                    ):
+                        progress(
+                            "warning",
+                            "Facebook meminta login. Jendela TIDAK ditutup: silakan login "
+                            f"sendiri di jendela Chromium (maks {self.login_wait_seconds} detik). "
+                            "Aplikasi tidak melihat kata sandi Anda.",
+                        )
+                        wait_started = time.monotonic()
+                        waited = wait_for_login(
+                            cookie_provider=lambda: _safe_cookies(context),
+                            timeout_seconds=self.login_wait_seconds,
+                            should_stop=stop_now,
+                            on_tick=lambda remaining: progress(
+                                "info",
+                                f"Menunggu login di jendela browser… sisa {remaining} detik.",
+                            ),
+                        )
+                        paused_seconds[0] += time.monotonic() - wait_started
+                        diagnostics["login_wait"] = {
+                            "enabled": True,
+                            "seconds": self.login_wait_seconds,
+                            "detected": waited.detected,
+                            "reason": waited.reason,
+                        }
+                        if not waited.detected:
+                            progress("warning", waited.message())
+                            return CollectOutcome(
+                                status=AccessStatus.LOGIN_REQUIRED,
+                                posts=posts,
+                                message=(
+                                    _status_message(AccessStatus.LOGIN_REQUIRED, state.detail)
+                                    + " "
+                                    + waited.message()
+                                ),
+                                diagnostics=diagnostics,
+                            )
+
+                        # Login berhasil -> muat ulang grup sekali, lalu lanjut.
+                        try:
+                            window_closed = page.is_closed() or not context.pages
+                        except Exception:  # noqa: BLE001 - jendela bisa sudah tertutup
+                            window_closed = True
+                        if window_closed:
+                            return CollectOutcome(
+                                AccessStatus.STOPPED,
+                                posts,
+                                "Login terdeteksi, tetapi jendela browser ditutup sebelum "
+                                "pembacaan dilanjutkan. Sesi sudah tersimpan; jalankan ulang "
+                                "dan jangan tutup jendela sampai proses selesai.",
+                                diagnostics,
+                            )
+                        progress("info", "Login terdeteksi. Memuat ulang halaman grup…")
+                        try:
+                            page.goto(
+                                group_url,
+                                wait_until="domcontentloaded",
+                                timeout=self.page_timeout_ms,
+                            )
+                            page.wait_for_timeout(2000)
+                        except PWError as exc:
+                            return CollectOutcome(
+                                AccessStatus.ERROR, posts,
+                                f"Gagal memuat ulang grup setelah login: {exc}", diagnostics,
+                            )
+                        state = self._read_page_state(page, context, PWError)
+                        group_diag["status_after_login"] = state.status.value
+                        if state.status != AccessStatus.OK:
+                            progress("warning", state.detail)
+                            return CollectOutcome(
+                                status=state.status,
+                                posts=posts,
+                                message=_status_message(state.status, state.detail),
+                                diagnostics=diagnostics,
+                            )
 
                     if state.status != AccessStatus.OK:
                         progress("warning", state.detail)
@@ -294,6 +392,17 @@ class PlaywrightFacebookAdapter:
                 except Exception:  # noqa: BLE001 - penutupan browser tidak boleh menutupi error asli
                     pass
 
+    # -------------------------------------------------------------- halaman
+    @staticmethod
+    def _read_page_state(page, context, pw_error_class):
+        """Baca teks halaman + tentukan status, dengan sadar-sesi (cookie)."""
+        try:
+            body_text = page.inner_text("body")[:20000]
+        except pw_error_class:
+            body_text = ""
+        session = has_fb_session(_safe_cookies(context))
+        return detect_page_state(page.url, body_text, has_session=session)
+
     # ------------------------------------------------------------- ekstraksi
     def _extract_post(self, element, group_url: str) -> RawPost | None:
         try:
@@ -347,6 +456,17 @@ class PlaywrightFacebookAdapter:
         if ids:
             return f"id:{ids[0]}"
         return "text:" + collapse_ws(post.text).lower()[:400]
+
+
+def _safe_cookies(context) -> list[dict]:
+    """Ambil cookie Facebook saja. Hanya nama yang dipakai, nilai tidak disimpan."""
+    try:
+        return list(context.cookies(["https://www.facebook.com", "https://www.facebook.com/"]))
+    except Exception:  # noqa: BLE001 - jendela bisa ditutup pengguna
+        try:
+            return list(context.cookies())
+        except Exception:  # noqa: BLE001
+            return []
 
 
 _UI_NOISE_PATTERNS = (

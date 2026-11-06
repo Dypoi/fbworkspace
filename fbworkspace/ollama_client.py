@@ -43,6 +43,12 @@ SUGGESTED_MODELS: tuple[dict[str, str], ...] = (
         "note": "Bahasa Inggris lebih kuat; bahasa Indonesia cukup.",
     },
     {
+        "name": "qwen3:4b",
+        "size": "±2,5 GB unduh",
+        "license": "Apache-2.0",
+        "note": "Generasi baru; aktifkan/nonaktifkan thinking lewat FBW_OLLAMA_THINK.",
+    },
+    {
         "name": "gemma3:4b",
         "size": "±3,3 GB unduh",
         "license": "Gemma Terms of Use",
@@ -90,6 +96,10 @@ class OllamaConfig:
     timeout: float = 60.0
     max_input_chars: int = 2500
     temperature: float = 0.0
+    # Qwen3 dan sebagian model lain punya mode "thinking". Untuk ekstraksi JSON
+    # pendek, thinking bisa menghabiskan kuota token -> JSON kosong/terpotong.
+    think: bool = False
+    num_predict: int = 512
 
     @classmethod
     def from_settings(cls, settings) -> "OllamaConfig":
@@ -98,6 +108,8 @@ class OllamaConfig:
             model=settings.ollama_model,
             timeout=float(settings.ollama_timeout),
             max_input_chars=int(settings.ollama_max_input_chars),
+            think=bool(getattr(settings, "ollama_think", False)),
+            num_predict=int(getattr(settings, "ollama_num_predict", 512)),
         )
 
 
@@ -140,11 +152,44 @@ def check_connection(config: OllamaConfig) -> OllamaStatus:
     if not has_model:
         return OllamaStatus(
             True,
-            f"Ollama aktif, tetapi model '{wanted}' belum ada. Jalankan: ollama pull {wanted}",
+            missing_model_message(wanted, names),
             names,
             True,
         )
     return OllamaStatus(True, f"Ollama aktif dan model '{wanted}' tersedia.", names, True)
+
+
+def missing_model_message(wanted: str, installed: list[str]) -> str:
+    """Pesan jelas saat model di .env tidak cocok dengan yang terpasang."""
+    if installed:
+        daftar = ", ".join(installed[:8])
+        return (
+            f"Ollama aktif, tetapi model '{wanted}' tidak ada. "
+            f"Model terpasang: {daftar}. "
+            f"Samakan FBW_OLLAMA_MODEL dengan salah satu nama di atas "
+            f"(atau pakai kotak 'Model untuk sesi ini' di tab Ollama)."
+        )
+    return (
+        f"Ollama aktif, tetapi belum ada model terpasang. Jalankan: ollama pull {wanted} "
+        "(atau model lain, lalu sesuaikan FBW_OLLAMA_MODEL)."
+    )
+
+
+def build_request_payload(config: OllamaConfig, prompt: str) -> dict:
+    """Body permintaan /api/generate. Dipisah agar bisa diuji tanpa jaringan."""
+    return {
+        "model": config.model,
+        "prompt": prompt,
+        "stream": False,
+        "format": "json",
+        # Ollama >= 0.9 mengenal field ini. Server lama mengabaikannya.
+        "think": bool(config.think),
+        "options": {
+            "temperature": config.temperature,
+            "num_predict": int(config.num_predict),
+            "num_ctx": 4096,
+        },
+    }
 
 
 def build_prompt(post_text: str, max_chars: int = 2500) -> str:
@@ -203,17 +248,9 @@ def analyze_post(post_text: str, config: OllamaConfig) -> OllamaResult:
     if not is_local_endpoint(config.base_url):
         return OllamaResult(False, None, "Endpoint bukan localhost; diblokir.")
 
-    payload = {
-        "model": config.model,
-        "prompt": build_prompt(post_text, config.max_input_chars),
-        "stream": False,
-        "format": "json",
-        "options": {
-            "temperature": config.temperature,
-            "num_predict": 400,
-            "num_ctx": 4096,
-        },
-    }
+    payload = build_request_payload(
+        config, build_prompt(post_text, config.max_input_chars)
+    )
     request = urllib.request.Request(
         f"{config.base_url}/api/generate",
         data=json.dumps(payload).encode("utf-8"),
@@ -288,4 +325,6 @@ def summarize_config(config: OllamaConfig) -> dict[str, str]:
         "timeout": f"{config.timeout:.0f} detik",
         "maks_input": f"{config.max_input_chars} karakter",
         "lokal": "ya" if is_local_endpoint(config.base_url) else "TIDAK",
+        "think": "aktif" if config.think else "nonaktif",
+        "maks_token": str(config.num_predict),
     }

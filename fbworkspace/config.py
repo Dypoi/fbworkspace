@@ -85,6 +85,11 @@ class Settings:
     browser_slow_mo_ms: int = field(
         default_factory=lambda: _env_int("FBW_BROWSER_SLOW_MO_MS", 120)
     )
+    # Berapa lama browser DIBIARKAN TERBUKA menunggu Anda login saat Facebook
+    # meminta login. 0 = langsung berhenti (perilaku lama).
+    login_wait_seconds: int = field(
+        default_factory=lambda: _env_int("FBW_LOGIN_WAIT_SECONDS", 180)
+    )
 
     # --- Ollama (opsional) ---
     ollama_url: str = field(
@@ -101,6 +106,14 @@ class Settings:
     )
     ollama_enabled: bool = field(
         default_factory=lambda: _env_bool("FBW_OLLAMA_ENABLED", False)
+    )
+    # Qwen3 dan sebagian model lain punya mode "thinking". Untuk ekstraksi JSON
+    # pendek, thinking justru menghabiskan kuota token -> matikan secara default.
+    ollama_think: bool = field(
+        default_factory=lambda: _env_bool("FBW_OLLAMA_THINK", False)
+    )
+    ollama_num_predict: int = field(
+        default_factory=lambda: _env_int("FBW_OLLAMA_NUM_PREDICT", 512)
     )
 
     # --- Folder ---
@@ -120,6 +133,7 @@ class Settings:
             "lokal_saja": "ya" if local_only else "TIDAK (hati-hati!)",
             "database": str(self.db_path),
             "profil_browser": str(self.browser_profile_dir),
+            "tunggu_login": f"{self.login_wait_seconds} detik",
             "ollama": f"{self.ollama_url} (model: {self.ollama_model})",
             "ollama_aktif": "ya" if self.ollama_enabled else "tidak",
         }

@@ -17,6 +17,15 @@ Grup "publik" di Facebook tetap bisa:
 Aplikasi **tidak** mencoba melewati hal-hal tersebut. Jika terjadi, proses berhenti
 dan status dilaporkan. Alternatif yang sah: **Input Manual**.
 
+### Login: kesempatan, bukan jaminan
+Saat Facebook meminta login, aplikasi membiarkan jendela terbuka selama
+`FBW_LOGIN_WAIT_SECONDS` (default 180 detik). Anda login sendiri; aplikasi hanya
+memeriksa ada/tidaknya cookie sesi `c_user` (nilainya tidak dibaca/dikirim).
+Keterbatasan:
+- batas waktu bisa habis sebelum Anda selesai (OTP lambat, checkpoint),
+- sesi bisa kedaluwarsa kapan saja sehingga perlu login ulang,
+- login berhasil ≠ grup otomatis bisa dibaca (keanggotaan & pembatasan tetap berlaku).
+
 ### Bukan alat scraping massal
 Desainnya sengaja kecil: batas postingan, batas waktu, tanpa retry otomatis, tanpa
 rotasi proxy, tanpa stealth. Jika kebutuhan Anda adalah memanen ribuan postingan,
@@ -115,6 +124,10 @@ bisa salah diklasifikasi. Periksa manual untuk keputusan penting.
 - Timeout membatasi waktu tunggu; job tetap sukses walau AI gagal.
 - Keluaran divalidasi ketat: kategori harus salah satu dari empat nilai, skor
   di-clamp 0–100, harga di luar rentang diabaikan, field aneh dibuang.
+- Qwen3 dan sebagian model punya mode **thinking**; aplikasi mengirim
+  `think: false` secara default dan batas `num_predict` (default 512). Bila model
+  versi lama tidak mengenali field itu, field diabaikan. Bila JSON tetap kosong,
+  naikkan `FBW_OLLAMA_NUM_PREDICT` atau gunakan model non-thinking.
 - **Prompt injection tidak bisa dijamin 100%.** Instruksi di teks postingan
   diabaikan oleh aturan prompt, tetapi model kecil bisa tergoda. Karena itu:
   AI tidak pernah mengendalikan browser, tidak menjalankan perintah, dan hasilnya

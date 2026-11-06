@@ -142,3 +142,67 @@ class TestOfflineBehaviour:
         status = check_connection(OllamaConfig(base_url="https://example.com", model="x"))
         assert status.ok is False
         assert "localhost" in status.message
+
+
+class TestRequestPayload:
+    def test_defaults_disable_thinking_and_cap_tokens(self):
+        from fbworkspace.ollama_client import OllamaConfig, build_request_payload
+
+        config = OllamaConfig(model="qwen3:4b")
+        payload = build_request_payload(config, "prompt")
+        assert payload["model"] == "qwen3:4b"
+        assert payload["format"] == "json"
+        assert payload["stream"] is False
+        assert payload["think"] is False
+        assert payload["options"]["num_predict"] == 512
+
+    def test_thinking_and_token_budget_configurable(self):
+        from fbworkspace.ollama_client import OllamaConfig, build_request_payload
+
+        config = OllamaConfig(model="qwen3:4b", think=True, num_predict=900)
+        payload = build_request_payload(config, "prompt")
+        assert payload["think"] is True
+        assert payload["options"]["num_predict"] == 900
+
+    def test_from_settings_reads_new_env_values(self, monkeypatch):
+        from types import SimpleNamespace
+
+        from fbworkspace.ollama_client import OllamaConfig
+
+        settings = SimpleNamespace(
+            ollama_url="http://127.0.0.1:11434/",
+            ollama_model="qwen3:4b",
+            ollama_timeout=90,
+            ollama_max_input_chars=2000,
+            ollama_think=True,
+            ollama_num_predict=700,
+        )
+        config = OllamaConfig.from_settings(settings)
+        assert config.base_url == "http://127.0.0.1:11434"
+        assert config.model == "qwen3:4b"
+        assert config.think is True
+        assert config.num_predict == 700
+
+    def test_settings_defaults(self, monkeypatch):
+        from fbworkspace.config import get_settings
+
+        monkeypatch.delenv("FBW_OLLAMA_THINK", raising=False)
+        monkeypatch.delenv("FBW_OLLAMA_NUM_PREDICT", raising=False)
+        monkeypatch.delenv("FBW_LOGIN_WAIT_SECONDS", raising=False)
+        settings = get_settings()
+        assert settings.ollama_think is False
+        assert settings.ollama_num_predict == 512
+        assert settings.login_wait_seconds == 180
+
+    def test_missing_model_message_lists_installed(self):
+        from fbworkspace.ollama_client import missing_model_message
+
+        message = missing_model_message("qwen2.5:3b", ["qwen3:4b", "llama3.2:3b"])
+        assert "qwen3:4b" in message
+        assert "FBW_OLLAMA_MODEL" in message
+
+    def test_missing_model_message_without_any_model(self):
+        from fbworkspace.ollama_client import missing_model_message
+
+        message = missing_model_message("qwen2.5:3b", [])
+        assert "ollama pull" in message

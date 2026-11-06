@@ -104,11 +104,18 @@ def _find_marker(lowered: str, markers: tuple[str, ...]) -> str | None:
     return None
 
 
-def detect_page_state(url: str, visible_text: str) -> PageState:
+def detect_page_state(
+    url: str, visible_text: str, *, has_session: bool = False
+) -> PageState:
     """Tebak status halaman dari URL dan teks yang tampak.
 
     Ini heuristik, bukan kepastian. Kalau ragu, hasilnya OK dan adapter tetap
     akan melaporkan jumlah postingan yang berhasil dibaca (bisa 0).
+
+    `has_session=True` berarti cookie sesi Facebook (`c_user`) sudah ada.
+    Dalam kasus itu penanda teks halaman login (mis. "create new account" yang
+    bisa muncul di DOM walau sudah login) DIABAIKAN, supaya tidak salah
+    menghentikan proses. URL /login atau /checkpoint tetap dihormati.
     """
     url_l = (url or "").lower()
     text_l = re.sub(r"\s+", " ", (visible_text or "").lower())
@@ -128,13 +135,14 @@ def detect_page_state(url: str, visible_text: str) -> PageState:
             (marker,),
         )
 
-    marker = _find_marker(text_l, _LOGIN_MARKERS)
-    if marker:
-        return PageState(
-            AccessStatus.LOGIN_REQUIRED,
-            f"Ditemukan penanda halaman login: '{marker}'.",
-            (marker,),
-        )
+    if not has_session:
+        marker = _find_marker(text_l, _LOGIN_MARKERS)
+        if marker:
+            return PageState(
+                AccessStatus.LOGIN_REQUIRED,
+                f"Ditemukan penanda halaman login: '{marker}'.",
+                (marker,),
+            )
 
     marker = _find_marker(text_l, _PERMISSION_MARKERS)
     if marker:

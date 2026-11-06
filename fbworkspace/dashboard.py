@@ -7,6 +7,7 @@ Logika bisnis ada di db.py, filters.py, analyzer.py, pipeline.py, export.py.
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -16,6 +17,7 @@ from . import jobs
 from .analyzer import analyze_text
 from .browser.page_state import detect_page_state
 from .browser.playwright_fb import PlaywrightFacebookAdapter
+from .browser.session import LOGIN_STATUS_LABELS, read_login_marker
 from .config import PROJECT_ROOT, Settings, get_settings
 from .db import Database, human_time
 from .demo import load_demo_posts
@@ -98,6 +100,15 @@ def _age_seconds(iso: str | None) -> float | None:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return (datetime.now(timezone.utc) - dt).total_seconds()
+
+
+def active_job_exists(db: Database) -> bool:
+    return db.active_job() is not None
+
+
+def login_helper_running() -> bool:
+    proc = st.session_state.get("fbw_login_proc")
+    return proc is not None and proc.poll() is None
 
 
 def _status_badge(row: dict) -> str:
@@ -201,6 +212,19 @@ def strict_mode() -> bool:
     return bool(st.session_state.get("fbw_strict", False))
 
 
+def _ollama_config(settings: Settings) -> OllamaConfig:
+    """Konfigurasi Ollama + model override untuk sesi dashboard ini.
+
+    Override hanya berlaku sampai dashboard di-restart; untuk permanen ubah
+    FBW_OLLAMA_MODEL di .env.
+    """
+    config = OllamaConfig.from_settings(settings)
+    typed = str(st.session_state.get("fbw_ollama_model_text", "") or "").strip()
+    if typed and typed != config.model:
+        config = replace(config, model=typed)
+    return config
+
+
 # ---------------------------------------------------------------------------
 # Panel job (langsung/otomatis diperbarui)
 # ---------------------------------------------------------------------------
@@ -298,6 +322,75 @@ def render_job_section(db: Database, settings: Settings, job_id: int | None) -> 
 
 
 # ---------------------------------------------------------------------------
+# Login helper (opsional)
+# ---------------------------------------------------------------------------
+
+@st.fragment(run_every="2s")
+def login_live_panel(settings: Settings, marker_path: str) -> None:
+    data = read_login_marker(marker_path)
+    status = str(data.get("status") or "")
+    label = LOGIN_STATUS_LABELS.get(status, "Membuka jendela browser…")
+    if status in {"error", "timeout", "selesai_tanpa_login"}:
+        st.warning(label + (f" — {data.get('error')}" if data.get("error") else ""))
+    else:
+        st.info(label)
+
+    proc = st.session_state.get("fbw_login_proc")
+    if proc is None or proc.poll() is not None:
+        # Proses selesai: kembali ke tampilan statis (tanpa refresh otomatis).
+        st.rerun()
+
+
+def render_login_helper(settings: Settings, *, job_active: bool = False) -> None:
+    """Tombol & status untuk login manual sekali di profil browser aplikasi."""
+    marker_path = str(jobs.login_marker_path(settings))
+    proc = st.session_state.get("fbw_login_proc")
+    alive = proc is not None and proc.poll() is None
+
+    with st.expander("🔐 Login Facebook (opsional, sekali saja)", expanded=alive):
+        st.caption(
+            "Sesi disimpan di profil browser lokal. Anda login sendiri di jendela Chromium; "
+            "aplikasi tidak pernah membaca/menyimpan kata sandi atau mengunggah cookie."
+        )
+        st.caption(
+            f"Kalau pembacaan meminta login, jendela juga dibiarkan terbuka "
+            f"{settings.login_wait_seconds} detik agar Anda bisa login saat itu juga."
+        )
+
+        c1, c2 = st.columns(2)
+        if c1.button(
+            "🪟 Buka browser untuk login",
+            key="fbw_open_login",
+            disabled=alive or job_active,
+            help="Jendela browser akan terbuka. Login di sana, lalu tutup jendelanya.",
+        ):
+            path, new_proc = jobs.start_login_session(settings)
+            st.session_state["fbw_login_proc"] = new_proc
+            st.session_state["fbw_login_marker"] = str(path)
+            st.rerun()
+
+        if alive and c2.button("⛔ Hentikan sesi login", key="fbw_stop_login"):
+            st.toast(jobs.stop_login_session(proc))
+            st.rerun()
+
+        if alive:
+            login_live_panel(settings, st.session_state.get("fbw_login_marker") or marker_path)
+        else:
+            data = read_login_marker(marker_path)
+            if data:
+                status = str(data.get("status") or "")
+                label = LOGIN_STATUS_LABELS.get(status, status)
+                if status == "selesai" or data.get("login_detected"):
+                    st.success(label)
+                elif status in {"error", "timeout", "selesai_tanpa_login"}:
+                    st.warning(label + (f" — {data.get('error')}" if data.get("error") else ""))
+                else:
+                    st.caption(label)
+            else:
+                st.caption("Belum ada sesi login yang dijalankan dari dashboard ini.")
+
+
+# ---------------------------------------------------------------------------
 # Tab 1 - Jalankan
 # ---------------------------------------------------------------------------
 
@@ -306,8 +399,10 @@ def render_run_tab(db: Database, settings: Settings, filter_config: FilterConfig
     st.warning(
         "**Baca dulu.** Tautan grup publik tidak menjamin seluruh isi grup bisa dibaca. "
         "Facebook dapat meminta login, membatasi tampilan, atau menampilkan tantangan keamanan. "
-        "Aplikasi akan **berhenti dan melaporkan status** bila itu terjadi — tidak ada upaya menembusnya. "
-        "Gunakan batas kecil sampai Anda yakin hasilnya layak."
+        f"Jika **login** diminta, jendela dibiarkan terbuka {settings.login_wait_seconds} detik "
+        "supaya Anda bisa login sendiri (waktu menunggu tidak dihitung sebagai waktu pembacaan). "
+        "Untuk checkpoint/pembatasan, aplikasi **berhenti dan melaporkan status** — tidak ada "
+        "upaya menembusnya. Gunakan batas kecil sampai Anda yakin hasilnya layak."
     )
 
     left, right = st.columns([3, 2])
@@ -386,6 +481,8 @@ def render_run_tab(db: Database, settings: Settings, filter_config: FilterConfig
                 "**Input Manual**."
             )
 
+        render_login_helper(settings, job_active=active_job_exists(db))
+
         st.markdown("#### 4) Opsional")
         analyze_ollama = st.checkbox(
             "Analisis otomatis dengan Ollama setelah membaca",
@@ -408,6 +505,7 @@ def render_run_tab(db: Database, settings: Settings, filter_config: FilterConfig
         or not valid_urls
         or not consent
         or active is not None
+        or login_helper_running()
     )
     cta, hint = st.columns([1, 3])
     with cta:
@@ -434,6 +532,8 @@ def render_run_tab(db: Database, settings: Settings, filter_config: FilterConfig
             reasons.append("centang pernyataan kesesuaian")
         if active:
             reasons.append(f"masih ada job aktif (#{active['id']})")
+        if login_helper_running():
+            reasons.append("jendela login masih terbuka (tutup dulu)")
         st.caption("Tombol aktif bila: " + "; ".join(reasons) + "." if reasons else "Siap dijalankan.")
 
     if active and not st.session_state.get("job_id"):
@@ -799,7 +899,7 @@ def _run_ollama_batch(
     only_new: bool = False,
     ids: list[int] | None = None,
 ) -> None:
-    config = OllamaConfig.from_settings(settings)
+    config = _ollama_config(settings)
     status = check_connection(config)
     if not status.ok:
         st.error(status.message)
@@ -849,13 +949,27 @@ def render_ollama_tab(db: Database, settings: Settings) -> None:
         "sudah berjalan lokal. Ollama hanya menambah ekstraksi bahasa."
     )
 
-    config = OllamaConfig.from_settings(settings)
+    st.text_input(
+        "Model untuk sesi ini",
+        value=settings.ollama_model,
+        key="fbw_ollama_model_text",
+        help=(
+            "Samakan persis dengan nama dari `ollama list` (mis. qwen3:4b). "
+            "Untuk permanen, ubah FBW_OLLAMA_MODEL di .env lalu restart dashboard."
+        ),
+    )
+    config = _ollama_config(settings)
     info = summarize_config(config)
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Endpoint", info["endpoint"].replace("http://", ""))
     c2.metric("Model", info["model"])
     c3.metric("Timeout", info["timeout"])
     c4.metric("Lokal", info["lokal"])
+    st.caption(
+        f"think: **{info['think']}** · maks token: **{info['maks_token']}** — "
+        "atur lewat FBW_OLLAMA_THINK dan FBW_OLLAMA_NUM_PREDICT di .env. "
+        "Untuk qwen3, thinking sebaiknya nonaktif agar JSON tidak terpotong."
+    )
 
     if st.button("🔍 Cek koneksi Ollama"):
         status = check_connection(config)
@@ -873,6 +987,10 @@ def render_ollama_tab(db: Database, settings: Settings) -> None:
             st.error(cached["message"])
         if cached["models"]:
             st.caption("Model terpasang: " + ", ".join(cached["models"][:12]))
+            st.caption(
+                "Klik 'Cek koneksi' lagi setelah mengubah nama model di kotak atas. "
+                "Di Windows, jalankan `ollama list` untuk melihat nama persisnya."
+            )
 
     st.warning(
         "**Kejujuran soal performa.** RAM 16 GB cukup untuk model 3B–4B terkuantisasi, "
@@ -1048,6 +1166,7 @@ def render_help_tab(settings: Settings) -> None:
     st.markdown(
         """
 #### Apa yang alat ini lakukan
+- Membantu login manual sekali lewat jendela browser terlihat (sesi disimpan lokal).
 - Menyimpan postingan iPhone yang **Anda lihat sendiri** (otomatis terbatas atau input manual).
 - Menormalkan teks, menghapus duplikat, memfilter kata kunci, lalu mengekstrak
   kategori/model/harga/budget/lokasi dengan aturan yang bisa dijelaskan.
@@ -1062,8 +1181,9 @@ def render_help_tab(settings: Settings) -> None:
 
 #### Keterbatasan penting
 1. **Tautan grup publik bukan jaminan.** Facebook bisa meminta login, membatasi
-   tampilan, atau menampilkan tantangan. Bila itu terjadi, aplikasi berhenti dan
-   melaporkan status — bukan mencari akal.
+   tampilan, atau menampilkan tantangan. Untuk login, jendela dibiarkan terbuka
+   sementara agar Anda bisa login sendiri; untuk checkpoint/pembatasan, aplikasi
+   berhenti dan melaporkan status — bukan mencari akal.
 2. **Selector browser belum tentu cocok.** `div[role="article"]` adalah tebakan
    konservatif. Kalau POC menghasilkan 0 postingan, itu berarti selector/halaman
    perlu diperiksa manual, bukan "berhasil".
@@ -1092,6 +1212,9 @@ def render_help_tab(settings: Settings) -> None:
             {"Bagian": "Ekspor CSV anti formula injection", "Status": "Diuji (unit test)"},
             {"Bagian": "SQLite simpan/dedupe/status", "Status": "Diuji (unit test)"},
             {"Bagian": "Deteksi halaman login/challenge", "Status": "Diuji dengan teks contoh"},
+            {"Bagian": "Menunggu login + deteksi cookie c_user", "Status": "Diuji dengan simulasi (jam & cookie palsu)"},
+            {"Bagian": "Helper login (scripts/login_helper.py)", "Status": "Diuji tanpa browser; perlu uji nyata"},
+            {"Bagian": "Payload Ollama think=false & num_predict", "Status": "Diuji (tanpa model nyata)"},
             {"Bagian": "Pembacaan grup Facebook sungguhan", "Status": "BELUM — harus Anda uji (POC)"},
             {"Bagian": "Login manual di jendela Chromium", "Status": "BELUM — harus Anda uji"},
             {"Bagian": "Kualitas analisis model Ollama", "Status": "BELUM — bergantung model & laptop"},
