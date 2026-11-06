@@ -53,6 +53,7 @@ class TestAdapterSelection:
             browser_profile_dir = Path("data/browser_profile")
             browser_headless = False
             browser_slow_mo_ms = 0
+            login_wait_seconds = 180
 
         adapter = _adapter_for("manual", S())
         assert isinstance(adapter, ManualAdapter)
@@ -64,9 +65,11 @@ class TestAdapterSelection:
             browser_profile_dir = Path("data/browser_profile")
             browser_headless = False
             browser_slow_mo_ms = 0
+            login_wait_seconds = 180
 
         adapter = _adapter_for("playwright", S())
         assert isinstance(adapter, PlaywrightFacebookAdapter)
+        assert adapter.login_wait_seconds == 180
 
     def test_manual_adapter_does_nothing(self):
         outcome = ManualAdapter().collect(

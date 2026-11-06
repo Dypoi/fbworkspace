@@ -34,6 +34,9 @@ def _adapter_for(mode: str, settings):
         profile_dir=settings.browser_profile_dir,
         headless=settings.browser_headless,
         slow_mo_ms=settings.browser_slow_mo_ms,
+        # Saat login wall muncul, browser dibiarkan terbuka agar pengguna bisa
+        # login sendiri (lihat FBW_LOGIN_WAIT_SECONDS).
+        login_wait_seconds=settings.login_wait_seconds,
     )
 
 

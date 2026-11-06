@@ -83,6 +83,29 @@ class TestDetection:
             AccessStatus.CHECKPOINT
         )
 
+    def test_login_marker_ignored_when_session_cookie_exists(self):
+        # Kasus nyata: "Create new account" bisa muncul di DOM walau sudah login.
+        state = detect_page_state(
+            "https://www.facebook.com/groups/1/",
+            "Create new account",
+            has_session=True,
+        )
+        assert state.status == AccessStatus.OK
+
+    def test_login_url_still_blocks_even_with_session(self):
+        state = detect_page_state(
+            "https://www.facebook.com/login/", "", has_session=True
+        )
+        assert state.status == AccessStatus.LOGIN_REQUIRED
+
+    def test_checkpoint_still_blocks_with_session(self):
+        state = detect_page_state(
+            "https://www.facebook.com/groups/1/",
+            "Please complete a security check",
+            has_session=True,
+        )
+        assert state.status == AccessStatus.CHECKPOINT
+
     def test_empty_input_is_ok_not_error(self):
         # Tidak ada bukti pemblokiran -> jangan mengarang status blokir.
         assert detect_page_state("", "").status == AccessStatus.OK

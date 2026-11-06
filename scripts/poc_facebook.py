@@ -65,6 +65,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Jalankan tanpa jendela. TIDAK disarankan: Anda tidak bisa login sendiri.",
     )
+    parser.add_argument(
+        "--login-wait",
+        type=int,
+        default=None,
+        help=(
+            "Detik menunggu Anda login saat Facebook meminta login "
+            "(default dari FBW_LOGIN_WAIT_SECONDS; 0 = langsung berhenti)."
+        ),
+    )
     parser.add_argument("-y", "--yes", action="store_true", help="Lewati konfirmasi interaktif")
     return parser.parse_args(argv)
 
@@ -107,6 +116,13 @@ def main(argv: list[str] | None = None) -> int:
     ).is_available()
     print(f"[i] {message}")
 
+    login_wait = settings.login_wait_seconds if args.login_wait is None else args.login_wait
+    if login_wait > 0:
+        print(
+            f"[i] Jika Facebook meminta login, jendela dibiarkan terbuka sampai {login_wait} detik "
+            "agar Anda bisa login sendiri."
+        )
+
     limits = CollectLimits(
         max_posts=max(1, min(args.max_posts, settings.hard_max_posts)),
         max_seconds=max(15, min(args.max_seconds, 900)),
@@ -116,6 +132,7 @@ def main(argv: list[str] | None = None) -> int:
         headless=args.headless,
         slow_mo_ms=settings.browser_slow_mo_ms,
         article_selector=args.selector,
+        login_wait_seconds=login_wait,
     )
 
     def progress(level: str, msg: str, counters: dict) -> None:

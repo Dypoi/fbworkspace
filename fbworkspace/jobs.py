@@ -60,6 +60,62 @@ def start_job(
     return job_id, proc
 
 
+# ---------------------------------------------------------------------------
+# Sesi login (browser terlihat, terpisah dari job pembacaan)
+# ---------------------------------------------------------------------------
+
+def login_marker_path(settings: Settings) -> Path:
+    settings.log_dir.mkdir(parents=True, exist_ok=True)
+    return settings.log_dir / "login_session.json"
+
+
+def start_login_session(settings: Settings) -> tuple[Path, subprocess.Popen]:
+    """Jalankan scripts/login_helper.py sebagai proses terpisah.
+
+    Browser harus terlihat, jadi proses ini TIDAK memakai CREATE_NO_WINDOW.
+    Status dibaca dashboard dari file marker (logs/login_session.json).
+    """
+    settings.ensure_dirs()
+    marker = login_marker_path(settings)
+    try:
+        marker.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+    env = dict(os.environ)
+    env["PYTHONUNBUFFERED"] = "1"
+    env["PYTHONIOENCODING"] = "utf-8"
+    env["FBW_BROWSER_PROFILE_DIR"] = str(settings.browser_profile_dir)
+
+    path = settings.log_dir / "login_helper.log"
+    handle = open(path, "a", encoding="utf-8")  # noqa: SIM115 - hidup selama proses
+    handle.write("\n=== sesi login dimulai ===\n")
+    handle.flush()
+
+    proc = subprocess.Popen(
+        [sys.executable, str(PROJECT_ROOT / "scripts" / "login_helper.py")],
+        cwd=str(PROJECT_ROOT),
+        env=env,
+        stdout=handle,
+        stderr=subprocess.STDOUT,
+    )
+    return marker, proc
+
+
+def stop_login_session(proc: subprocess.Popen | None) -> str:
+    if proc is None or proc.poll() is not None:
+        return "Sesi login tidak sedang berjalan."
+    try:
+        proc.terminate()
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        return "Sesi login dihentikan."
+    except Exception as exc:  # noqa: BLE001
+        return f"Gagal menghentikan sesi login: {exc}"
+
+
 def request_stop(db: Database, job_id: int) -> None:
     db.request_stop(job_id)
 

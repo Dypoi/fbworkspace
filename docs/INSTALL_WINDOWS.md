@@ -118,8 +118,12 @@ FBW_PORT=8501
 FBW_DB_PATH=data/fbworkspace.db
 FBW_BROWSER_HEADLESS=false
 FBW_BROWSER_PROFILE_DIR=data/browser_profile
+FBW_LOGIN_WAIT_SECONDS=180
 FBW_OLLAMA_URL=http://127.0.0.1:11434
 FBW_OLLAMA_MODEL=qwen2.5:3b
+FBW_OLLAMA_TIMEOUT=120
+FBW_OLLAMA_THINK=false
+FBW_OLLAMA_NUM_PREDICT=512
 FBW_OLLAMA_ENABLED=false
 ```
 
@@ -157,7 +161,36 @@ Jika semua langkah ini berhasil, bagian lokal sudah sehat.
 
 ---
 
-## 8. POC pembacaan grup (wajib sebelum pemakaian serius)
+## 8. Login Facebook sekali (disarankan sebelum POC)
+
+Profil browser aplikasi kosong pada awalnya, jadi Facebook akan meminta login.
+Anda login **sendiri** di jendela Chromium; aplikasi tidak pernah meminta,
+membaca, atau menyimpan kata sandi.
+
+```powershell
+.\.venv\Scripts\python.exe scripts\login_helper.py
+```
+
+Alurnya:
+1. Jendela Chromium terbuka di `facebook.com`.
+2. Login di sana (termasuk OTP/checkpoint bila ada).
+3. Setelah feed tampil, **tutup jendela browser**.
+4. Terminal menampilkan `Status akhir: selesai`.
+
+Sesi tersimpan di `data/browser_profile/` dan dipakai POC maupun dashboard.
+Jangan hapus folder itu (tombol "Hapus profil browser" akan memaksa login ulang).
+
+**Alternatif dari dashboard:** tab **Jalankan → 🔐 Login Facebook → Buka browser untuk login**.
+Status login muncul otomatis di panel itu.
+
+**Kalau pembacaan meminta login:** sejak versi ini, worker tidak langsung menutup
+browser. Jendela dibiarkan terbuka sampai `FBW_LOGIN_WAIT_SECONDS` (default 180
+detik) supaya Anda bisa login saat itu juga. Waktu menunggu tidak dihitung
+sebagai waktu pembacaan. Untuk mematikan perilaku ini, set `FBW_LOGIN_WAIT_SECONDS=0`.
+
+---
+
+## 9. POC pembacaan grup (wajib sebelum pemakaian serius)
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\poc_windows.ps1 `
@@ -170,7 +203,7 @@ Jangan lanjut ke dashboard jika POC belum memberi hasil yang bisa Anda pahami.
 
 ---
 
-## 9. Ollama (opsional, lakukan terakhir)
+## 10. Ollama (opsional, lakukan terakhir)
 
 1. Pasang Ollama dari <https://ollama.com/download/windows>.
 2. Buka PowerShell:
@@ -197,7 +230,7 @@ Tanpa GPU, satu postingan bisa puluhan detik. Aplikasi tetap berfungsi tanpa AI.
 
 ---
 
-## 10. Menjalankan tes
+## 11. Menjalankan tes
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest
@@ -208,7 +241,7 @@ lihat pesan error terlebih dahulu.
 
 ---
 
-## 11. Memperbarui aplikasi
+## 12. Memperbarui aplikasi
 
 ```powershell
 cd $HOME\Documents\fbworkspace
@@ -228,7 +261,7 @@ dilacak Git.
 
 ---
 
-## 12. Pemecahan masalah
+## 13. Pemecahan masalah
 
 | Gejala | Penyebab umum | Solusi |
 |---|---|---|
@@ -238,6 +271,10 @@ dilacak Git.
 | `playwright install chromium` lambat/gagal | Unduhan besar | Ulangi; periksa ruang disk dan antivirus |
 | POC: `Executable doesn't exist ... chrome` | Chromium belum diunduh | `.\.venv\Scripts\python.exe -m playwright install chromium` |
 | POC: 0 postingan padahal halaman terbuka | Selector/keanggotaan/grup butuh join | Lihat [POC_FACEBOOK.md](POC_FACEBOOK.md) bagian "0 postingan" |
+| POC: `perlu_login` padahal sudah login | Sesi belum tersimpan / profil berbeda | Jalankan `scripts\login_helper.py`, pastikan status `selesai`, jangan hapus `data/browser_profile` |
+| Jendela browser tertutup saat minta login | `FBW_LOGIN_WAIT_SECONDS=0` atau waktu job habis | Set `FBW_LOGIN_WAIT_SECONDS=180` lalu restart dashboard |
+| Ollama: "model ... tidak ada" | Model di `.env` tidak cocok dengan yang terpasang | Jalankan `ollama list`, samakan `FBW_OLLAMA_MODEL`, atau pakai kotak "Model untuk sesi ini" |
+| Ollama: JSON kosong/terpotong pada qwen3 | Mode thinking memakan token | `FBW_OLLAMA_THINK=false`, naikkan `FBW_OLLAMA_NUM_PREDICT`, lalu restart |
 | Browser terbuka lalu langsung tertutup | Profil sedang dipakai proses lain | Tutup semua Chromium, hapus `data/browser_profile` jika perlu |
 | `database is locked` | Dua proses menulis bersamaan | Tutup dashboard lain; tunggu beberapa detik; ulangi |
 | Port 8501 dipakai | Streamlit lain berjalan | Ubah `FBW_PORT=8502` di `.env` |
@@ -248,7 +285,7 @@ dilacak Git.
 
 ---
 
-## 13. Checklist keamanan setelah instalasi
+## 14. Checklist keamanan setelah instalasi
 
 - [ ] `.env` ada dan hanya berisi konfigurasi, tanpa rahasia.
 - [ ] `FBW_HOST=127.0.0.1`.
@@ -259,7 +296,7 @@ dilacak Git.
 
 ---
 
-## 14. Jangan meniru konfigurasi "preview"
+## 15. Jangan meniru konfigurasi "preview"
 
 Jika Anda melihat dokumentasi/screenshot dari lingkungan pengembangan yang memakai
 `--server.address 0.0.0.0`, itu hanya agar halaman bisa dipratinjau lewat proxy.
@@ -270,7 +307,7 @@ perangkat lain di jaringan yang sama).
 
 ---
 
-## 15. Menghapus instalasi
+## 16. Menghapus instalasi
 
 ```powershell
 # dari folder proyek

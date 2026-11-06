@@ -34,12 +34,24 @@ Atau langsung:
 ```powershell
 .\.venv\Scripts\python.exe scripts\poc_facebook.py `
   --url "https://www.facebook.com/groups/ID-GRUP-ANDA/" `
-  --max-posts 5 --max-seconds 90
+  --max-posts 5 --max-seconds 90 --login-wait 180
 ```
 
 Jendela Chromium akan terbuka dan **terlihat**. Jika Facebook meminta login,
-login sendiri di jendela itu. Skrip tidak pernah membaca/menyimpan kredensial Anda.
-Profil browser disimpan di `data/browser_profile/` (masuk `.gitignore`).
+**jendela TIDAK ditutup** — Anda diberi waktu login sendiri di jendela itu
+(default 180 detik, ubah dengan `FBW_LOGIN_WAIT_SECONDS` atau `--login-wait`).
+Skrip tidak pernah membaca/menyimpan kredensial Anda. Profil browser disimpan di
+`data/browser_profile/` (masuk `.gitignore`).
+
+Kalau ingin login lebih dulu tanpa menjalankan POC:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\login_helper.py
+```
+
+Setelah login terdeteksi (cookie sesi `c_user` ada), POC memuat ulang grup dan
+melanjutkan. Status `perlu_login` baru dikembalikan bila waktu tunggu habis atau
+`--login-wait 0`.
 
 ---
 
@@ -49,7 +61,7 @@ Profil browser disimpan di `data/browser_profile/` (masuk `.gitignore`).
 |---|---|---|
 | `ok` + ≥1 postingan | Ada elemen postingan terbaca | Periksa apakah teksnya utuh dan relevan |
 | `ok` + 0 postingan | Halaman terbuka, tidak ada postingan terbaca | Lihat bagian 4 |
-| `perlu_login` | Facebook meminta login | Login manual di jendela itu, ulangi sekali |
+| `perlu_login` | Waktu tunggu login habis / login belum selesai | Jalankan `scripts\login_helper.py`, pastikan status `selesai`, lalu ulangi POC |
 | `tantangan_keamanan` | Checkpoint/CAPTCHA | **Berhenti.** Selesaikan manual bila Anda mau, jangan dipaksa otomatis |
 | `akses_ditolak` | Butuh keanggotaan / grup tidak terbuka untuk akun ini | Berhenti, atau gabung grup secara wajar bila Anda memang ingin |
 | `dibatasi_sementara` | Rate limit | Berhenti. Jangan mengulang berkali-kali |
@@ -127,8 +139,11 @@ POC ini **belum diuji pada Facebook sungguhan** dari lingkungan pengembangan
 diuji otomatis:
 
 - deteksi status halaman dari teks/URL (login, checkpoint, penolakan, rate limit, 404),
+- pengecualian penanda login palsu bila cookie sesi `c_user` sudah ada,
+- logika menunggu login (deteksi, timeout, berhenti) dengan jam dan cookie palsu,
+- penulisan/pembacaan file status sesi login,
 - penanganan kegagalan saat Chromium belum terpasang (pesan jelas, bukan crash),
 - logika batas postingan/waktu dan penghentian.
 
-Yang harus Anda validasi sendiri: pembukaan grup nyata, login manual, dan
-kesesuaian selector.
+Yang harus Anda validasi sendiri: pembukaan grup nyata, login manual nyata,
+perilaku saat checkpoint muncul, dan kesesuaian selector.

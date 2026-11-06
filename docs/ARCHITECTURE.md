@@ -54,6 +54,20 @@
 6. **Default aman.** Dashboard `127.0.0.1`, Ollama menolak endpoint non-lokal,
    profil browser & database masuk `.gitignore`.
 
+## Alur login manual
+
+1. Dashboard menjalankan `scripts/login_helper.py` sebagai proses terpisah
+   (atau Anda menjalankannya langsung dari PowerShell).
+2. Proses membuka profil browser yang sama dengan worker dan membiarkan jendela
+   terlihat; Anda login sendiri.
+3. Status ditulis ke `logs/login_session.json`; dashboard membacanya untuk
+   menampilkan "menunggu / login terdeteksi / selesai".
+4. Saat worker menemukan login wall, ia juga menunggu cookie `c_user` muncul
+   (maksimum `FBW_LOGIN_WAIT_SECONDS`), lalu memuat ulang grup dan melanjutkan.
+
+Cookie hanya diperiksa keberadaannya; nilainya tidak dibaca, tidak disimpan di
+database, dan tidak dikirim keluar.
+
 ## Alur satu sesi browser
 
 1. Dashboard membuat baris `jobs` dengan konfigurasi (filter, batas, mode).

@@ -33,7 +33,7 @@ Lint (opsional, butuh `ruff`):
 pytest 8.x. Windows belum dijalankan dari lingkungan ini.
 
 ```
-204 passed in 5.29s
+235 passed in ~5s
 ruff check . --select E,F,W,I  ->  All checks passed!
 ```
 
@@ -42,9 +42,10 @@ ruff check . --select E,F,W,I  ->  All checks passed!
 | `tests/test_normalize.py` | 40 | normalisasi teks, validasi tautan grup, ID postingan, dedupe key, harga Indonesia, waktu posting |
 | `tests/test_analyzer.py` | 33 | kategori, model iPhone, harga vs budget, detail, lokasi, skor & batasnya, teks tidak tepercaya |
 | `tests/test_db.py` | 21 | simpan, dedupe, status, analisis upsert, filter, job, event, penghapusan, statistik |
-| `tests/test_llm_validation.py` | 19 | validasi keluaran AI, anti-halusinasi, prompt, offline, blokir endpoint non-lokal |
+| `tests/test_llm_validation.py` | 25 | validasi keluaran AI, anti-halusinasi, prompt, payload `think`/`num_predict`, offline, blokir endpoint non-lokal |
+| `tests/test_login.py` | 22 | cookie sesi `c_user`, penantian login (deteksi/timeout/berhenti), file marker status |
 | `tests/test_filters.py` | 18 | batas kata, frasa, inklusi/eksklusi, lokasi, harga, mode ketat |
-| `tests/test_page_state.py` | 18 | deteksi login/checkpoint/penolakan/rate limit/404 dari URL & teks |
+| `tests/test_page_state.py` | 21 | deteksi login/checkpoint/penolakan/rate limit/404, pengecualian penanda login saat sesi ada |
 | `tests/test_demo_and_worker.py` | 14 | data DEMO, pemilihan adapter, pemetaan status job, batas |
 | `tests/test_export.py` | 14 | formula injection, BOM, header, detail & alasan, truncation |
 | `tests/test_pipeline.py` | 12 | parsing input manual, penyimpanan, dedupe, batch |
@@ -56,6 +57,8 @@ ruff check . --select E,F,W,I  ->  All checks passed!
 | Uji | Cara | Hasil |
 |---|---|---|
 | Worker end-to-end (mode manual) | `python -m fbworkspace.worker --job-id 1` | Job `selesai`, event log lengkap, counter JSON benar |
+| Menunggu login (simulasi) | `wait_for_login` dengan jam & cookie palsu | Deteksi, timeout, dan berhenti bekerja tanpa menggantung |
+| Helper login tanpa Chromium | `scripts/login_helper.py` | Gagal dengan pesan + saran `playwright install chromium`, status ditulis ke marker |
 | POC tanpa Chromium terpasang | `python scripts/poc_facebook.py --yes` | Gagal dengan pesan jelas + saran `playwright install chromium`, diagnostik JSON tersimpan, exit code kesalahan |
 | Server Streamlit | `streamlit run app.py` + `curl /_stcore/health` | `200 ok` |
 | Render dashboard | `streamlit.testing.v1.AppTest` | Tanpa exception; 6 tab; tombol DEMO memuat data |
@@ -67,10 +70,12 @@ ruff check . --select E,F,W,I  ->  All checks passed!
 | Hal | Mengapa belum | Cara memvalidasi |
 |---|---|---|
 | Membuka grup Facebook nyata | Lingkungan pengembangan tidak punya akses/akun Facebook | Jalankan POC ([POC_FACEBOOK.md](POC_FACEBOOK.md)) |
-| Login manual di jendela Chromium | Butuh akun nyata | Login sendiri saat POC; perhatikan apakah sesi tersimpan di profil |
+| Login manual di jendela Chromium | Butuh akun nyata | Jalankan `scripts/login_helper.py`; pastikan status `selesai`, lalu POC tidak lagi `perlu_login` |
+| Penantian login di halaman nyata | Butuh halaman login nyata | Jalankan pembacaan tanpa login; jendela harus tetap terbuka sampai `FBW_LOGIN_WAIT_SECONDS` |
 | Selector `div[role="article"]` pada akun Anda | Perlu halaman nyata | POC: periksa jumlah postingan & kualitas teks |
 | Deteksi checkpoint nyata | Butuh halaman challenge nyata | Hentikan jika muncul; laporkan teks penandanya bila tidak terdeteksi |
 | Kecepatan & kualitas Ollama | Model tidak diunduh di sandbox | Tab Ollama → Cek koneksi → analisis 1–2 postingan |
+| JSON `qwen3:4b` dengan `think:false` | Butuh model nyata | Set model di kotak "Model untuk sesi ini", analisis 1 postingan |
 | Instalasi Windows (PowerShell) | Lingkungan uji Linux | Ikuti [INSTALL_WINDOWS.md](INSTALL_WINDOWS.md) |
 | Tampilan di Chrome/Edge/Firefox | Tidak ada browser di sandbox | Buka dashboard, cek tabel & tombol salin |
 | Ekspor CSV di Excel nyata | Excel tidak tersedia | Buka hasil ekspor, pastikan `=SUM(...)` tampil sebagai teks |
@@ -97,7 +102,10 @@ Jalankan berurutan. Beri tanda centang hanya jika benar-benar terlihat.
 - [ ] Draf respons muncul dan bisa disalin; placeholder `[NAMA TOKO]` terlihat.
 - [ ] Hapus data → tabel kosong; muat DEMO lagi berhasil.
 
-**C. POC Facebook**
+**C. Login & POC Facebook**
+- [ ] `scripts\login_helper.py` membuka Chromium dan menulis status `selesai`.
+- [ ] Setelah login, `data\browser_profile` tetap ada dan POC tidak lagi `perlu_login`.
+- [ ] Tanpa login, jendela pembacaan tetap terbuka ±180 detik (tidak langsung tertutup).
 - [ ] Chromium terbuka dan terlihat.
 - [ ] Login manual berhasil (jika diminta) tanpa aplikasi meminta kredensial.
 - [ ] Status POC dapat Anda tafsirkan dengan tabel di POC_FACEBOOK.md.
