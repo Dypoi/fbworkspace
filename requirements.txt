@@ -1,0 +1,12 @@
+# FB Workspace - dependensi Python
+# Diuji di Python 3.11. Python 3.10+ seharusnya juga berjalan.
+#
+# Catatan: playwright di sini HANYA library Python-nya.
+# Browser Chromium-nya diunduh terpisah dengan: playwright install chromium
+
+streamlit>=1.40,<2.0
+playwright>=1.45,<2.0
+python-dotenv>=1.0,<2.0
+
+# Hanya untuk pengembangan / pengujian (aman dihapus bila tidak perlu)
+pytest>=8.0,<9.0

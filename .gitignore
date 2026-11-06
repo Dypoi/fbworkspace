@@ -1,0 +1,59 @@
+# ============================================================
+# FB Workspace - hal yang TIDAK boleh masuk Git
+# ============================================================
+
+# Rahasia / konfigurasi lokal
+.env
+.env.*
+!.env.example
+.streamlit/secrets.toml
+
+# Database & data lokal
+data/*.db
+data/*.db-wal
+data/*.db-shm
+data/*.sqlite
+data/*.sqlite3
+data/exports/
+data/raw/
+data/manual/
+
+# Sesi browser / cookie / profil Playwright  <-- JANGAN pernah di-commit
+data/browser_profile/
+data/browser-profile/
+**/user-data-dir/
+*.har
+storage_state*.json
+cookies*.json
+
+# Log
+logs/
+*.log
+
+# Model AI lokal
+models/
+*.gguf
+*.bin
+*.safetensors
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+build/
+dist/
+
+# Editor / OS
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# Profil bisnis lokal (data pribadi Anda)
+data/business_profile.json
