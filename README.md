@@ -88,8 +88,9 @@ Ini penting supaya Anda tidak salah harap.
 - Isi postingan diambil dari **kartu postingan**: lewat tautan `/posts/` bila ada,
   atau dari kartu feed `[aria-posinset]` untuk grup yang tidak memasang tautan.
   Teks diambil dari blok `div[dir="auto"]` (bukan seluruh kartu yang penuh label
-  "Facebook" dan huruf berjauhan), komentar dibuang, lalu dipotong di bilah
-  `Like · Comment · Share`.
+  "Facebook" dan huruf berjauhan), tombol **See more/Lihat selengkapnya** diklik,
+  blok yang terpotong/duplikat digabung, komentar dibuang, lalu teks dipotong di
+  bilah `Like · Comment · Share`.
 - Komentar/reply tetap ditolak sebagai jaring pengaman: teks berpola `… Reply`/
   `LikeReplyShare` dihitung sebagai "komentar dilewati" dan tidak disimpan.
 - Singkatan pasar Indonesia dikenali: `ip x`, `ipx`, `iphonex` = iPhone X; sehingga
@@ -150,7 +151,7 @@ fbworkspace/
 │   └── load_demo.py            # muat data DEMO via CLI
 ├── data/demo_posts_DEMO.json   # data sintetis berlabel DEMO
 ├── docs/                       # instalasi, POC, batasan, Git, testing
-├── tests/                      # 328 tes otomatis
+├── tests/                      # 341 tes otomatis
 ├── requirements.txt
 ├── .env.example
 └── .gitignore
@@ -317,7 +318,7 @@ Penghapusan data tersedia di tab **Pengaturan → 💾 Data** (postingan, log, p
 .\.venv\Scripts\python.exe -m pytest
 ```
 
-Hasil terakhir di lingkungan pengembangan: **328 tes lulus** (termasuk smoke test
+Hasil terakhir di lingkungan pengembangan: **341 tes lulus** (termasuk smoke test
 dashboard Streamlit untuk 3 tab, segmentasi hasil, dan filter ulang), `ruff check` bersih. Detail: **[docs/TESTING.md](docs/TESTING.md)**.
 
 Yang **belum** diuji dan harus Anda validasi sendiri:

@@ -97,6 +97,16 @@ Kemungkinan penyebab, dari yang paling umum:
    Yang perlu Anda nilai: apakah `POSTINGAN TERBACA` berisi kalimat postingan
    (bukan "nama · 2h isi komentar Reply"). Baris `KARTU KOSONG` berarti kartu
    belum termuat saat dibaca — ulangi POC; kalau tetap besar, grup lambat dimuat.
+
+   > **Kalau muncul `custom-selector` padahal Anda tidak mengisi `-Selector`:**
+   > itu bug lama PowerShell 5.1 yang membuang tanda kutip, sehingga
+   > `div[role="article"]` menjadi `div[role=article]` dan dianggap selector
+   > kustom (hanya komentar yang terbaca). Versi sekarang sudah memperbaikinya:
+   > wrapper hanya mengirim `--selector` bila Anda mengisinya, dan kedua bentuk
+   > selector dianggap sama. Kalau masih muncul, jalankan `git pull --ff-only`.
+
+   Tombol **"See more"/"Lihat selengkapnya"** di dalam kartu diklik otomatis
+   (best-effort) sebelum teks dibaca; kalau gagal diklik, teks bisa terpotong.
 2. **Konten dimuat lambat.** Ulangi dengan `-MaxSeconds 120` dan gulir manual sekali
    di jendela browser untuk memancing pemuatan.
 3. **Selector tidak cocok.** Facebook bisa memakai struktur berbeda. Berikut cara

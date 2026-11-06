@@ -95,6 +95,35 @@ _POST_BODY_JS = """(el) => {
   return clone.innerText || '';
 }"""
 
+_SEE_MORE_LABELS = {"see more", "lihat selengkapnya", "selengkapnya"}
+_SEE_MORE_RE = re.compile(r"(?i)\b(?:see more|lihat selengkapnya)\b")
+_TRAILING_DOTS_RE = re.compile(r"(?:\s*\.{3,}|\s*\u2026)\s*$")
+
+
+def _selector_is_default(selector: str | None) -> bool:
+    """True bila selector sama dengan default, termasuk saat tanda kutip hilang.
+
+    PowerShell 5.1 membuang tanda kutip di dalam argumen, sehingga
+    `div[role="article"]` bisa sampai ke Python sebagai `div[role=article]`.
+    Keduanya dianggap sama supaya mode kustom tidak aktif tanpa sengaja.
+    """
+
+    def normalise(value: str | None) -> str:
+        flat = (value or "").replace('"', "").replace("'", "")
+        return re.sub(r"\s+", "", flat).lower()
+
+    if selector is None or not str(selector).strip():
+        return True
+    return normalise(selector) == normalise(DEFAULT_ARTICLE_SELECTOR)
+
+
+def _strip_see_more(text: str) -> str:
+    """Buang label 'See more' yang ikut terbaca di ujung teks postingan."""
+    cleaned = _SEE_MORE_RE.sub(" ", text or "")
+    cleaned = _TRAILING_DOTS_RE.sub("", cleaned)
+    return re.sub(r"[ \t]+", " ", cleaned).strip()
+
+
 _ACTION_BAR_RE = re.compile(
     r"(?im)^\s*(?:like|suka)\s*[\u00b7|.]?\s*(?:comment|komentar)"
     r"\s*[\u00b7|.]?\s*(?:share|bagikan)\s*$"
@@ -110,7 +139,7 @@ class PlaywrightFacebookAdapter:
         profile_dir: str | Path,
         headless: bool = False,
         slow_mo_ms: int = 120,
-        article_selector: str = DEFAULT_ARTICLE_SELECTOR,
+        article_selector: str | None = None,
         scroll_pause_ms: int = 1500,
         page_timeout_ms: int = 30_000,
         login_wait_seconds: int = 180,
@@ -118,7 +147,7 @@ class PlaywrightFacebookAdapter:
         self.profile_dir = Path(profile_dir)
         self.headless = headless
         self.slow_mo_ms = slow_mo_ms
-        self.article_selector = article_selector
+        self.article_selector = article_selector or DEFAULT_ARTICLE_SELECTOR
         self.scroll_pause_ms = scroll_pause_ms
         self.page_timeout_ms = page_timeout_ms
         # Saat Facebook meminta login: biarkan jendela terbuka selama ini
@@ -269,6 +298,11 @@ class PlaywrightFacebookAdapter:
                         )
 
                     page.wait_for_timeout(2000)
+                    # Beri kesempatan kartu feed termuat sebelum dibaca.
+                    try:
+                        page.wait_for_selector(FEED_CARD_SELECTOR, timeout=5000)
+                    except PWTimeout:
+                        pass
                     if page.is_closed():
                         return CollectOutcome(
                             AccessStatus.STOPPED, posts, "Jendela browser ditutup.", diagnostics
@@ -522,7 +556,7 @@ class PlaywrightFacebookAdapter:
 
     def _candidate_elements(self, page) -> list:
         """Elemen kandidat: tautan postingan, kartu feed, lalu selector lama."""
-        if self.article_selector != DEFAULT_ARTICLE_SELECTOR:
+        if not _selector_is_default(self.article_selector):
             self._last_source = "custom-selector"
             return page.query_selector_all(self.article_selector)
 
@@ -539,6 +573,26 @@ class PlaywrightFacebookAdapter:
         self._last_source = "article-selector"
         return page.query_selector_all(self.article_selector)
 
+    def _expand_see_more(self, element) -> None:
+        """Klik 'See more'/'Lihat selengkapnya' di dalam kartu (sekali saja)."""
+        try:
+            buttons = element.query_selector_all('div[role="button"], span[role="button"]')
+        except Exception:  # noqa: BLE001
+            return
+        for button in buttons[:10]:
+            try:
+                label = collapse_ws(button.inner_text()).lower()
+            except Exception:  # noqa: BLE001
+                continue
+            if label not in _SEE_MORE_LABELS:
+                continue
+            try:
+                button.click(timeout=1500)
+                time.sleep(0.2)
+            except Exception:  # noqa: BLE001 - tombol bisa hilang/tertutup
+                pass
+            return
+
     def _blocks_text(self, element) -> str:
         """Gabungkan blok teks postingan (`div[dir="auto"]`), tanpa label UI."""
         try:
@@ -551,14 +605,34 @@ class PlaywrightFacebookAdapter:
                 raw = block.inner_text()
             except Exception:  # noqa: BLE001
                 continue
-            cleaned = _clean_ui_noise(strip_invisible_noise(normalize_text(raw)))
+            cleaned = _strip_see_more(
+                _clean_ui_noise(strip_invisible_noise(normalize_text(raw)))
+            )
             flat = collapse_ws(cleaned)
             if len(flat) < MIN_BLOCK_CHARS:
                 continue
             if looks_like_comment(flat):
                 continue
             texts.append(cleaned)
-        return "\n".join(dict.fromkeys(texts))
+
+        # Facebook kadang menaruh versi terpotong + versi penuh blok yang sama.
+        # Buang blok yang isinya bagian dari blok lain, lalu buang duplikat.
+        normalised = [collapse_ws(text).lower() for text in texts]
+        kept: list[str] = []
+        seen: set[str] = set()
+        for index, text in enumerate(texts):
+            current = normalised[index]
+            if current in seen:
+                continue
+            if any(
+                current != other and current in other
+                for other in normalised
+                if other != current
+            ):
+                continue
+            seen.add(current)
+            kept.append(text)
+        return "\n".join(kept)
 
     def _note_empty_card(
         self,
@@ -642,6 +716,7 @@ class PlaywrightFacebookAdapter:
             return None
 
         if self._last_source == "feed-cards":
+            self._expand_see_more(element)
             text = normalize_text(self._blocks_text(element))
             if len(collapse_ws(text)) < 15:
                 # Kartu bisa kosong (skeleton/label UI) atau isinya hanya komentar.

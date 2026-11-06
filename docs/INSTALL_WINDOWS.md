@@ -274,6 +274,7 @@ dilacak Git.
 | `pip install` gagal SSL/proxy | Jaringan kantor | Coba jaringan lain; jangan matikan verifikasi SSL |
 | `playwright install chromium` lambat/gagal | Unduhan besar | Ulangi; periksa ruang disk dan antivirus |
 | POC: `Executable doesn't exist ... chrome` | Chromium belum diunduh | `.\.venv\Scripts\python.exe -m playwright install chromium` |
+| POC: `METODE EKSTRAKSI: custom-selector` padahal `-Selector` tidak diisi | Versi lama: PowerShell membuang tanda kutip selector | `git pull --ff-only`; jalankan tanpa `-Selector` (versi baru tidak mengirimnya) |
 | POC: 0 postingan padahal halaman terbuka | Selector/keanggotaan/grup butuh join | Lihat [POC_FACEBOOK.md](POC_FACEBOOK.md) bagian "0 postingan" |
 | Job selesai tapi semua tersembunyi / teks pendek berakhiran `Reply` | Yang terbaca komentar, bukan postingan | Jalankan POC, periksa baris `KOMENTAR DILEWATI`; hapus baris lama di **Pengaturan → 💾 Data → 🧹 Hapus baris tidak layak** |
 | POC: `perlu_login` padahal sudah login | Sesi belum tersimpan / profil berbeda | Jalankan `scripts\login_helper.py`, pastikan status `selesai`, jangan hapus `data/browser_profile` |
