@@ -275,6 +275,7 @@ dilacak Git.
 | `playwright install chromium` lambat/gagal | Unduhan besar | Ulangi; periksa ruang disk dan antivirus |
 | POC: `Executable doesn't exist ... chrome` | Chromium belum diunduh | `.\.venv\Scripts\python.exe -m playwright install chromium` |
 | POC: 0 postingan padahal halaman terbuka | Selector/keanggotaan/grup butuh join | Lihat [POC_FACEBOOK.md](POC_FACEBOOK.md) bagian "0 postingan" |
+| Job selesai tapi semua tersembunyi / teks pendek berakhiran `Reply` | Yang terbaca komentar, bukan postingan | Jalankan POC, periksa baris `KOMENTAR DILEWATI`; hapus baris lama di **Pengaturan → 💾 Data → 🧹 Hapus baris tidak layak** |
 | POC: `perlu_login` padahal sudah login | Sesi belum tersimpan / profil berbeda | Jalankan `scripts\login_helper.py`, pastikan status `selesai`, jangan hapus `data/browser_profile` |
 | Jendela browser tertutup saat minta login | `FBW_LOGIN_WAIT_SECONDS=0` atau waktu job habis | Set `FBW_LOGIN_WAIT_SECONDS=180` lalu restart dashboard |
 | Ollama: "model ... tidak ada" | Model di `.env` tidak cocok dengan yang terpasang | Jalankan `ollama list`, samakan `FBW_OLLAMA_MODEL`, atau pakai kotak "Model untuk sesi ini" |

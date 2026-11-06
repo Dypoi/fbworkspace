@@ -23,6 +23,7 @@ Ini penting supaya Anda tidak salah harap.
 |---|---|
 | Dashboard Streamlit (3 langkah: Mulai · Hasil · Pengaturan) | ✅ Berjalan & diuji (termasuk smoke test otomatis) |
 | Hitungan Semua/Lolos/Tersembunyi + "Terapkan ulang filter" | ✅ Diuji otomatis (data & UI) |
+| Penyaring komentar/reply + pembersih baris lama | ✅ Diuji otomatis (122 baris ekspor nyata terdeteksi) |
 | SQLite, deduplikasi, status, penghapusan data | ✅ Diuji otomatis |
 | Filter kata kunci/lokasi/harga, mode longgar & ketat | ✅ Diuji otomatis |
 | Analisis aturan iPhone (kategori, model, harga vs budget, detail) | ✅ Diuji otomatis |
@@ -83,6 +84,8 @@ Ini penting supaya Anda tidak salah harap.
 - Status analisis dan status pengerjaan: **baru / diperiksa / relevan / diabaikan**.
 - Deduplikasi: ID tautan → fallback hash teks ternormalisasi (batasnya dijelaskan).
 - Penanda `tidak diketahui` untuk data yang tidak tersedia (bukan tebakan).
+- Komentar/reply **ditolak sebelum disimpan**: elemen `article` bersarang dan teks
+  berpola `… Reply`/`LikeReplyShare` dihitung sebagai "komentar dilewati".
 
 **Analisis iPhone (tanpa AI)**
 - Kategori: `mencari`, `menjual`, `diskusi`, `tidak relevan`.
@@ -138,7 +141,7 @@ fbworkspace/
 │   └── load_demo.py            # muat data DEMO via CLI
 ├── data/demo_posts_DEMO.json   # data sintetis berlabel DEMO
 ├── docs/                       # instalasi, POC, batasan, Git, testing
-├── tests/                      # 249 tes otomatis
+├── tests/                      # 276 tes otomatis
 ├── requirements.txt
 ├── .env.example
 └── .gitignore
@@ -305,7 +308,7 @@ Penghapusan data tersedia di tab **Pengaturan → 💾 Data** (postingan, log, p
 .\.venv\Scripts\python.exe -m pytest
 ```
 
-Hasil terakhir di lingkungan pengembangan: **249 tes lulus** (termasuk smoke test
+Hasil terakhir di lingkungan pengembangan: **276 tes lulus** (termasuk smoke test
 dashboard Streamlit untuk 3 tab, segmentasi hasil, dan filter ulang), `ruff check` bersih. Detail: **[docs/TESTING.md](docs/TESTING.md)**.
 
 Yang **belum** diuji dan harus Anda validasi sendiri:
@@ -327,6 +330,9 @@ Ringkasan (lengkap di **[docs/LIMITATIONS.md](docs/LIMITATIONS.md)**):
 - Waktu relatif ("3 jam lalu") hanya perkiraan.
 - Model kecil bisa salah membaca model/harga; selalu periksa manual.
 - Aplikasi tidak mengirim pesan; semua respons Anda kirim sendiri.
+- Komentar bisa tertangkap sebagai "postingan" bila selector meleset; penyaring
+  `… Reply`/`LikeReplyShare` menolaknya, tetapi periksa contoh teks di POC. Baris
+  lama yang terlanjur masuk bisa dibersihkan di **Pengaturan → 💾 Data**.
 
 ---
 

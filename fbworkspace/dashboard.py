@@ -394,6 +394,14 @@ def _render_job_content(settings: Settings, db: Database, job_id: int, live: boo
     m[2].metric("Duplikat", counters.get("duplicates", 0))
     m[3].metric("Tidak lolos filter", counters.get("filtered_out", 0))
 
+    skipped = int(counters.get("skipped_comment") or 0)
+    if skipped:
+        st.warning(
+            f"{skipped} elemen terbaca ternyata **komentar/reply**, bukan isi postingan, "
+            "sehingga tidak disimpan. Kalau angkanya besar, selector perlu diperbaiki — "
+            "jalankan POC dan periksa contoh teksnya."
+        )
+
     if active:
         if st.button("🛑 Hentikan proses", type="primary", key=f"stop_{job_id}"):
             db.request_stop(job_id)
@@ -1233,6 +1241,31 @@ def _data_section(settings: Settings, db: Database) -> None:
         deleted = db.delete_posts_by_source("demo")
         st.success(f"{deleted} postingan DEMO dihapus.")
         st.rerun()
+
+    suspects = db.find_suspicious_posts()
+    if suspects:
+        st.warning(
+            f"⚠️ **{len(suspects)} baris tersimpan tampak seperti komentar/reply**, bukan "
+            "isi postingan (contohnya berakhir dengan `Reply`). Baris seperti ini biasanya "
+            "berasal dari selector browser yang salah dan tidak berguna untuk analisis."
+        )
+        with st.expander("Lihat contoh baris yang dicurigai"):
+            for row in suspects[:5]:
+                snippet = row["text"][:120].replace("\n", " ")
+                st.caption(f"#{row['id']}: {snippet}")
+            if len(suspects) > 5:
+                st.caption(f"… dan {len(suspects) - 5} baris lain.")
+        confirm_suspect = st.checkbox(
+            "Saya yakin menghapus baris-baris tersebut", key="del_suspect_confirm"
+        )
+        if st.button(
+            f"🧹 Hapus {len(suspects)} baris tidak layak",
+            key="del_suspect",
+            disabled=not confirm_suspect,
+        ):
+            removed = db.delete_suspicious_posts()
+            st.success(f"{removed} baris komentar dihapus.")
+            st.rerun()
 
     with st.expander("Hapus data (permanen, lokal)"):
         st.caption("Tidak ada salinan di cloud. Tindakan ini tidak bisa dibatalkan.")
