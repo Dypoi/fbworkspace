@@ -11,6 +11,8 @@ jsdom (lihat catatan di docs/TESTING.md); unit test ini menguji jalur Python-nya
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from fbworkspace.browser.playwright_fb import (
@@ -19,6 +21,8 @@ from fbworkspace.browser.playwright_fb import (
     POST_LINK_SELECTOR,
     PlaywrightFacebookAdapter,
     _cut_at_action_bar,
+    _selector_is_default,
+    _strip_see_more,
 )
 
 GROUP_URL = "https://www.facebook.com/groups/2065324413640420/"
@@ -311,3 +315,81 @@ class TestFeedCardExtraction:
         assert post is not None
         assert "\u034f" not in post.text
         assert "Tangerang" in post.text
+
+
+class TestSelectorHandling:
+    """PowerShell 5.1 membuang tanda kutip; jangan sampai jadi mode kustom."""
+
+    @pytest.mark.parametrize(
+        "selector",
+        [
+            None,
+            DEFAULT_ARTICLE_SELECTOR,
+            "div[role=article]",
+            "div[role='article']",
+            '  div[role="article"]  ',
+        ],
+    )
+    def test_equivalent_selectors_are_default(self, selector):
+        assert _selector_is_default(selector) is True
+
+    @pytest.mark.parametrize("selector", ["div.kartu", "[aria-posinset]", "article"])
+    def test_real_custom_selector(self, selector):
+        assert _selector_is_default(selector) is False
+
+    def test_quote_stripped_selector_uses_feed_cards(self, tmp_path):
+        adapter = PlaywrightFacebookAdapter(
+            profile_dir=tmp_path / "p", article_selector="div[role=article]"
+        )
+        card = FakeElement("kartu")
+        page = FakePage(cards=[card])
+        assert adapter._candidate_elements(page) == [card]
+        assert adapter._last_source == "feed-cards"
+
+
+class TestSeeMoreAndDuplicates:
+    def test_strip_see_more_label(self):
+        assert _strip_see_more("bh 75% ori... See more") == "bh 75% ori"
+        assert _strip_see_more("mulus Lihat selengkapnya") == "mulus"
+        assert _strip_see_more("mulus tanpa label") == "mulus tanpa label"
+
+    def test_duplicate_and_truncated_blocks_collapsed(self, adapter):
+        adapter._last_source = "feed-cards"
+        full = (
+            "11 64 IBOX FULLSET kamera d/b jernih speaker a/b ngebass bh 75% ori "
+            "lengkap box charger"
+        )
+        truncated = "11 64 IBOX FULLSET kamera d/b jernih... See more"
+        card = FakeElement(
+            text="Facebook | Facebook",
+            blocks=tuple(
+                FakeElement(block) for block in (truncated, full, full)
+            ),
+        )
+        post = adapter._extract_post(card, GROUP_URL, {}, set())
+        assert post is not None
+        assert post.text.count("IBOX FULLSET") == 1
+        assert "See more" not in post.text
+        assert "lengkap box charger" in post.text
+
+    def test_short_comment_block_inside_card_ignored(self, adapter):
+        adapter._last_source = "feed-cards"
+        card = FakeElement(
+            text="Facebook",
+            blocks=(
+                FakeElement("Dijual iPhone X 64GB mulus 5jt COD Tangerang"),
+                FakeElement("Ali · 1h brp? Reply"),
+            ),
+        )
+        post = adapter._extract_post(card, GROUP_URL, {}, set())
+        assert post is not None
+        assert "brp" not in post.text
+
+
+class TestPocWrapper:
+    def test_wrapper_does_not_force_selector(self):
+        root = Path(__file__).resolve().parent.parent
+        script = (root / "scripts" / "poc_windows.ps1").read_text(encoding="utf-8")
+        assert '[string]$Selector = ""' in script
+        # Hanya ada satu kemunculan: di dalam blok kondisional.
+        assert script.count('"--selector"') == 1

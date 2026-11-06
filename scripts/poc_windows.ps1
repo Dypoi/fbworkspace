@@ -5,14 +5,15 @@
 #       -Url "https://www.facebook.com/groups/123456789/"
 #
 # Parameter opsional:
-#   -MaxPosts 5 -MaxSeconds 90 -Selector 'div[role="article"]' -Headless -Yes
+#   -MaxPosts 5 -MaxSeconds 90 -Headless -Yes
+#   -Selector 'div[role="article"]'   (opsional; biarkan kosong agar strategi bawaan dipakai)
 # ============================================================
 
 param(
     [Parameter(Mandatory = $true)][string]$Url,
     [int]$MaxPosts = 5,
     [int]$MaxSeconds = 90,
-    [string]$Selector = 'div[role="article"]',
+    [string]$Selector = "",
     [switch]$Headless,
     [switch]$Yes
 )
@@ -31,9 +32,14 @@ $arguments = @(
     "scripts\poc_facebook.py",
     "--url", $Url,
     "--max-posts", $MaxPosts,
-    "--max-seconds", $MaxSeconds,
-    "--selector", $Selector
+    "--max-seconds", $MaxSeconds
 )
+# Selector hanya dikirim bila Anda benar-benar mengisinya. Tanpa ini,
+# PowerShell 5.1 membuang tanda kutip sehingga selector bawaan berubah menjadi
+# mode kustom (dan hanya komentar yang terbaca).
+if (-not [string]::IsNullOrWhiteSpace($Selector)) {
+    $arguments += @("--selector", $Selector)
+}
 if ($Headless) { $arguments += "--headless" }
 if ($Yes) { $arguments += "--yes" }
 

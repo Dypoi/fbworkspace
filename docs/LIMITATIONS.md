@@ -47,7 +47,7 @@ konten yang Anda akses sendiri.
 | Selector cadangan | `div[role="article"]` hanya dipakai bila tidak ada tautan postingan. Pada grup nyata, elemen ini justru cocok ke **komentar** |
 | Perubahan halaman | Facebook dapat mengubah struktur kapan saja tanpa pemberitahuan |
 | Bahasa/akun | Tampilan berbeda per bahasa, per akun, per perangkat |
-| Teks terpotong | Tombol "Lihat selengkapnya" **tidak** diklik otomatis, jadi teks bisa terpotong |
+| Teks terpotong | Tombol "Lihat selengkapnya" dicoba diklik otomatis; bila gagal, teks bisa tetap terpotong |
 | Gambar | Tidak dibaca sama sekali (tidak ada OCR) |
 | Komentar | Ditolak: `article` bersarang & teks berpola "… Reply" dibuang (lihat §2b) |
 | Nama anggota | Tidak diambil, sengaja |
@@ -91,6 +91,8 @@ Perbaikan yang aktif sekarang:
 - isi kartu diambil dari blok `div[dir="auto"]`, bukan `inner_text` seluruh kartu;
   label "Facebook" berulang dan huruf berjauhan (karakter tak terlihat U+034F)
   dibuang lebih dulu,
+- tombol "See more"/"Lihat selengkapnya" diklik (best-effort) agar teks tidak
+  terpotong; blok terpotong/duplikat digabung dan label "See more" dibuang,
 - pesan job menampilkan angka **Lolos filter**, **Tidak lolos**, dan **komentar dilewati**,
 - baris lama bisa dibersihkan di **Pengaturan → 💾 Data → 🧹 Hapus baris tidak layak**.
 

@@ -57,8 +57,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--max-seconds", type=int, default=90, help="Batas waktu detik (default 90)")
     parser.add_argument(
         "--selector",
-        default=DEFAULT_ARTICLE_SELECTOR,
-        help=f"Selector elemen postingan (default: {DEFAULT_ARTICLE_SELECTOR})",
+        default=None,
+        help=(
+            "Selector kustom untuk elemen postingan. Biarkan kosong agar aplikasi "
+            "memakai strategi bawaan: tautan /posts/, kartu feed, lalu "
+            f"{DEFAULT_ARTICLE_SELECTOR} sebagai cadangan."
+        ),
     )
     parser.add_argument(
         "--headless",
@@ -131,7 +135,8 @@ def main(argv: list[str] | None = None) -> int:
         profile_dir=settings.browser_profile_dir,
         headless=args.headless,
         slow_mo_ms=settings.browser_slow_mo_ms,
-        article_selector=args.selector,
+        # None = pakai strategi bawaan (tautan -> kartu feed -> selector cadangan).
+        article_selector=args.selector or None,
         login_wait_seconds=login_wait,
     )
 
@@ -148,6 +153,8 @@ def main(argv: list[str] | None = None) -> int:
     print(f"PESAN  : {outcome.message or ACCESS_STATUS_MESSAGES.get(outcome.status, '')}")
     print(f"POSTINGAN TERBACA: {len(outcome.posts)}")
     print(f"METODE EKSTRAKSI : {outcome.diagnostics.get('extraction', 'tidak diketahui')}")
+    if args.selector:
+        print(f"SELECTOR KUSTOM  : {args.selector}")
     skipped = int(outcome.diagnostics.get("skipped_comment") or 0)
     empty_cards = int(outcome.diagnostics.get("empty_cards") or 0)
     if empty_cards:
