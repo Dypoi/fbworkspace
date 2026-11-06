@@ -149,13 +149,16 @@ Untuk berhenti: `Ctrl + C` di jendela PowerShell.
 
 ## 7. Verifikasi tanpa Facebook
 
-1. Klik **Muat data DEMO (sintetis)**.
-2. Tab **Postingan** harus menampilkan 9 baris berlabel `DEMO`.
-3. Buka satu detail → cek kategori/model/harga/lokasi/skor.
+1. Tab **Mulai** → ① **Data DEMO** → **Muat data DEMO**. (Saat database kosong,
+   kartu onboarding juga menawarkan tombol ini.)
+2. Tab **Hasil** harus menampilkan 9 baris berlabel `DEMO`, dengan hitungan
+   **Semua / Lolos filter / Tersembunyi** di atas tabel.
+3. Klik satu baris → detail kategori/model/harga/lokasi/skor.
 4. Klik **Ekspor CSV**, buka di Excel. Sel yang berisi `=SUM(...)` harus tampil
    sebagai teks dengan awalan `'`, bukan dihitung.
-5. Tab **Input Manual** → tempel contoh → simpan → pastikan masuk database.
-6. Tab **Pengaturan & Data** → coba hapus data, lalu muat ulang DEMO.
+5. Tab **Mulai** → ① **Tempel manual** → tempel contoh → **Simpan** → pastikan
+   masuk database (lihat tab Hasil).
+6. Tab **Pengaturan → 💾 Data** → coba hapus data/DEMO, lalu muat ulang DEMO.
 
 Jika semua langkah ini berhasil, bagian lokal sudah sehat.
 
@@ -180,7 +183,7 @@ Alurnya:
 Sesi tersimpan di `data/browser_profile/` dan dipakai POC maupun dashboard.
 Jangan hapus folder itu (tombol "Hapus profil browser" akan memaksa login ulang).
 
-**Alternatif dari dashboard:** tab **Jalankan → 🔐 Login Facebook → Buka browser untuk login**.
+**Alternatif dari dashboard:** tab **Mulai → ① Sumber data → 🔐 Login Facebook → Buka browser**.
 Status login muncul otomatis di panel itu.
 
 **Kalau pembacaan meminta login:** sejak versi ini, worker tidak langsung menutup
@@ -222,7 +225,8 @@ FBW_OLLAMA_MODEL=qwen2.5:3b
 FBW_OLLAMA_TIMEOUT=60
 ```
 
-5. Restart dashboard, masuk tab **Analisis Ollama** → **Cek koneksi Ollama**.
+5. Restart dashboard, masuk tab **Pengaturan → 🧠 Ollama** → **Cek koneksi**,
+   lalu pilih model di kotak **Model untuk sesi ini**.
 
 Catatan performa: 3B terkuantisasi biasanya butuh ~3–4 GB RAM saat berjalan.
 Dengan RAM 16 GB seharusnya cukup, tetapi kecepatan bergantung CPU/GPU.
@@ -291,7 +295,7 @@ dilacak Git.
 - [ ] `FBW_HOST=127.0.0.1`.
 - [ ] `git status` tidak menampilkan `.env`, `*.db`, `data/browser_profile/`, `logs/`.
 - [ ] Dashboard tidak bisa diakses dari HP di jaringan yang sama.
-- [ ] Anda tahu cara menghapus data di tab **Pengaturan & Data**.
+- [ ] Anda tahu cara menghapus data di tab **Pengaturan → 💾 Data**.
 - [ ] Anda belum menjalankan POC sebelum membaca [POC_FACEBOOK.md](POC_FACEBOOK.md).
 
 ---

@@ -33,7 +33,7 @@ Lint (opsional, butuh `ruff`):
 pytest 8.x. Windows belum dijalankan dari lingkungan ini.
 
 ```
-235 passed in ~5s
+249 passed in ~5s
 ruff check . --select E,F,W,I  ->  All checks passed!
 ```
 
@@ -50,7 +50,8 @@ ruff check . --select E,F,W,I  ->  All checks passed!
 | `tests/test_export.py` | 14 | formula injection, BOM, header, detail & alasan, truncation |
 | `tests/test_pipeline.py` | 12 | parsing input manual, penyimpanan, dedupe, batch |
 | `tests/test_drafts.py` | 11 | draf netral, larangan klaim, placeholder, profil |
-| `tests/test_app_smoke.py` | 4 | dashboard Streamlit benar-benar dirender (kosong & setelah data DEMO) |
+| `tests/test_app_smoke.py` | 6 | dashboard dirender (kosong & setelah DEMO), hanya 3 tab, segmentasi Semua/Lolos/Tersembunyi, tombol filter ulang |
+| `tests/test_ui_data.py` | 12 | hitungan per status filter, hapus per sumber (DEMO), pratinjau filter, "terapkan ulang filter" tanpa duplikasi |
 
 ### Pengujian non-unit yang juga dijalankan
 
@@ -61,7 +62,7 @@ ruff check . --select E,F,W,I  ->  All checks passed!
 | Helper login tanpa Chromium | `scripts/login_helper.py` | Gagal dengan pesan + saran `playwright install chromium`, status ditulis ke marker |
 | POC tanpa Chromium terpasang | `python scripts/poc_facebook.py --yes` | Gagal dengan pesan jelas + saran `playwright install chromium`, diagnostik JSON tersimpan, exit code kesalahan |
 | Server Streamlit | `streamlit run app.py` + `curl /_stcore/health` | `200 ok` |
-| Render dashboard | `streamlit.testing.v1.AppTest` | Tanpa exception; 6 tab; tombol DEMO memuat data |
+| Render dashboard | `streamlit.testing.v1.AppTest` | Tanpa exception; hanya 3 tab; segmentasi Semua/Lolos/Tersembunyi ada; DEMO & filter ulang berjalan |
 
 ---
 
@@ -74,7 +75,7 @@ ruff check . --select E,F,W,I  ->  All checks passed!
 | Penantian login di halaman nyata | Butuh halaman login nyata | Jalankan pembacaan tanpa login; jendela harus tetap terbuka sampai `FBW_LOGIN_WAIT_SECONDS` |
 | Selector `div[role="article"]` pada akun Anda | Perlu halaman nyata | POC: periksa jumlah postingan & kualitas teks |
 | Deteksi checkpoint nyata | Butuh halaman challenge nyata | Hentikan jika muncul; laporkan teks penandanya bila tidak terdeteksi |
-| Kecepatan & kualitas Ollama | Model tidak diunduh di sandbox | Tab Ollama → Cek koneksi → analisis 1–2 postingan |
+| Kecepatan & kualitas Ollama | Model tidak diunduh di sandbox | Pengaturan → Ollama → Cek koneksi → analisis 1–2 postingan |
 | JSON `qwen3:4b` dengan `think:false` | Butuh model nyata | Set model di kotak "Model untuk sesi ini", analisis 1 postingan |
 | Instalasi Windows (PowerShell) | Lingkungan uji Linux | Ikuti [INSTALL_WINDOWS.md](INSTALL_WINDOWS.md) |
 | Tampilan di Chrome/Edge/Firefox | Tidak ada browser di sandbox | Buka dashboard, cek tabel & tombol salin |
@@ -95,10 +96,11 @@ Jalankan berurutan. Beri tanda centang hanya jika benar-benar terlihat.
 - [ ] Data DEMO termuat: 9 baris berlabel `DEMO`.
 - [ ] Detail postingan menampilkan kategori, model, nominal, lokasi, skor, alasan.
 - [ ] Ubah status menjadi `relevan`; setelah refresh tetap tersimpan.
-- [ ] Filter kata kunci di sidebar mengubah jumlah baris.
+- [ ] Filter di langkah ② tidak lagi berada di sidebar; sidebar hanya ringkasan.
 - [ ] Mode ketat menggugurkan postingan tanpa harga.
 - [ ] Ekspor CSV terbuka di Excel; sel `=SUM(1+1)` tampil sebagai teks berawalan `'`.
-- [ ] Input Manual menyimpan 1 postingan; postingan duplikat tidak menambah baris.
+- [ ] Tab Mulai → ① Tempel manual menyimpan 1 postingan; duplikat tidak menambah baris.
+- [ ] Ubah filter → **Terapkan ulang filter** mengubah hitungan tanpa menambah baris.
 - [ ] Draf respons muncul dan bisa disalin; placeholder `[NAMA TOKO]` terlihat.
 - [ ] Hapus data → tabel kosong; muat DEMO lagi berhasil.
 
@@ -113,7 +115,7 @@ Jalankan berurutan. Beri tanda centang hanya jika benar-benar terlihat.
 
 **D. Ollama (hanya jika dipakai)**
 - [ ] `ollama pull qwen2.5:3b` selesai.
-- [ ] Tab Ollama: "Cek koneksi" hijau.
+- [ ] Pengaturan → Ollama: "Cek koneksi" hijau.
 - [ ] 1 postingan dianalisis; bandingkan hasil AI vs analisis aturan.
 - [ ] Matikan Ollama lalu analisis lagi → aplikasi tidak crash, pesan jelas.
 

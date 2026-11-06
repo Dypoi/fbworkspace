@@ -1,7 +1,15 @@
-"""Dashboard Streamlit FB Workspace.
+"""Dashboard Streamlit FB Workspace — alur tiga langkah.
 
-Semua fungsi di sini hanya membangun tampilan dan memanggil modul inti.
-Logika bisnis ada di db.py, filters.py, analyzer.py, pipeline.py, export.py.
+Struktur UI sengaja dibuat sederhana:
+
+    Tab 1 "Mulai"       : ① sumber data → ② filter → ③ jalankan
+    Tab 2 "Hasil"       : tabel, detail, ekspor, terapkan ulang filter
+    Tab 3 "Pengaturan"  : Ollama, profil bisnis, data, bantuan
+
+Sidebar hanya berisi ringkasan & keamanan (bukan filter), supaya tidak ada dua
+tempat pengaturan yang membingungkan.
+
+Logika bisnis tetap di modul inti (db, filters, analyzer, pipeline, export).
 """
 
 from __future__ import annotations
@@ -16,7 +24,6 @@ import streamlit as st
 from . import jobs
 from .analyzer import analyze_text
 from .browser.page_state import detect_page_state
-from .browser.playwright_fb import PlaywrightFacebookAdapter
 from .browser.session import LOGIN_STATUS_LABELS, read_login_marker
 from .config import PROJECT_ROOT, Settings, get_settings
 from .db import Database, human_time
@@ -39,14 +46,57 @@ from .ollama_client import (
     check_connection,
     summarize_config,
 )
-from .pipeline import ingest_manual_entries, parse_manual_input
+from .pipeline import (
+    ingest_manual_entries,
+    parse_manual_input,
+    preview_filter_counts,
+    reapply_filters,
+)
 
 PROFILE_PATH = PROJECT_ROOT / "data" / "business_profile.json"
 ACTIVE_STATUSES = {JobStatus.QUEUED.value, JobStatus.RUNNING.value}
 
+FILTER_DEFAULTS: dict[str, object] = {
+    "fbw_include": "",
+    "fbw_exclude": "",
+    "fbw_locations": "",
+    "fbw_price_on": False,
+    "fbw_price_min": 0,
+    "fbw_price_max": 0,
+    "fbw_require_iphone": True,
+    "fbw_strict": False,
+}
+
+CATEGORY_BADGES = {
+    "mencari": "🟢 mencari",
+    "menjual": "🔵 menjual",
+    "diskusi": "🟡 diskusi",
+    "tidak relevan": "⚪ tidak relevan",
+}
+STATUS_BADGES = {
+    "baru": "🆕 baru",
+    "diperiksa": "👀 diperiksa",
+    "relevan": "✅ relevan",
+    "diabaikan": "🚫 diabaikan",
+}
+SOURCE_LABELS = {
+    "browser": "Browser",
+    "manual": "Manual",
+    "demo": "DEMO",
+    "file": "File",
+}
+JOB_STATUS_LABELS = {
+    JobStatus.QUEUED.value: "⏳ Menunggu",
+    JobStatus.RUNNING.value: "🔄 Berjalan",
+    JobStatus.COMPLETED.value: "✅ Selesai",
+    JobStatus.STOPPED.value: "🛑 Dihentikan",
+    JobStatus.FAILED.value: "❌ Gagal",
+    JobStatus.BLOCKED.value: "⛔ Diblokir / tidak diizinkan",
+}
+
 
 # ---------------------------------------------------------------------------
-# Setup & helper
+# Setup & util
 # ---------------------------------------------------------------------------
 
 @st.cache_resource(show_spinner=False)
@@ -67,6 +117,22 @@ def _fmt_price(amount) -> str:
         return "Rp" + f"{int(amount):,}".replace(",", ".")
     except (TypeError, ValueError):
         return UNKNOWN
+
+
+def _escape_html(text: str) -> str:
+    return (text or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _age_seconds(iso: str | None) -> float | None:
+    if not iso:
+        return None
+    try:
+        dt = datetime.fromisoformat(iso)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - dt).total_seconds()
 
 
 def _load_profile() -> BusinessProfile:
@@ -90,18 +156,6 @@ def _save_profile(profile: BusinessProfile) -> None:
     )
 
 
-def _age_seconds(iso: str | None) -> float | None:
-    if not iso:
-        return None
-    try:
-        dt = datetime.fromisoformat(iso)
-    except ValueError:
-        return None
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return (datetime.now(timezone.utc) - dt).total_seconds()
-
-
 def active_job_exists(db: Database) -> bool:
     return db.active_job() is not None
 
@@ -111,218 +165,147 @@ def login_helper_running() -> bool:
     return proc is not None and proc.poll() is None
 
 
-def _status_badge(row: dict) -> str:
-    if row.get("source") == "demo":
-        return "DEMO"
-    if row.get("source") == "manual":
-        return "Manual"
-    return "Browser"
+def _ollama_config(settings: Settings) -> OllamaConfig:
+    """Konfigurasi Ollama + model pilihan di tab Pengaturan (berlaku sesi ini)."""
+    config = OllamaConfig.from_settings(settings)
+    chosen = str(st.session_state.get("fbw_ollama_model_select") or "").strip()
+    if chosen:
+        config = replace(config, model=chosen)
+    return config
 
 
-# ---------------------------------------------------------------------------
-# Sidebar
-# ---------------------------------------------------------------------------
-
-def render_sidebar(settings: Settings, db: Database) -> FilterConfig:
-    with st.sidebar:
-        st.markdown("### 📱 FB Workspace")
-        st.caption("Alat bantu analisis lokal. Bukan crawler, bukan bot otomatis.")
-
-        safety = settings.describe_safety()
-        st.caption(f"Dashboard: `{safety['bind']}` · lokal: {safety['lokal_saja']}")
-        st.caption(f"Database: `{Path(safety['database']).name}`")
-
-        stats = db.stats()
-        st.metric("Postingan tersimpan", stats["total"])
-
-        st.divider()
-        st.markdown("#### 🎯 Filter")
-        st.caption("Dipakai saat menilai postingan (browser maupun input manual).")
-
-        st.text_area(
-            "Kata kunci inklusi",
-            key="fbw_include",
-            height=70,
-            placeholder="iphone, iphone 13, cari iphone",
-            help="Pisahkan dengan koma atau baris baru. Kosongkan bila tidak perlu.",
-        )
-        st.text_area(
-            "Kata kunci eksklusi",
-            key="fbw_exclude",
-            height=70,
-            placeholder="rusak, mati, hilang, KW",
-            help="Postingan yang memuat salah satu kata ini langsung digugurkan.",
-        )
-        st.text_input(
-            "Lokasi (opsional)",
-            key="fbw_locations",
-            placeholder="Tangerang, Jakarta Selatan",
-            help="Hanya mencocokkan nama lokasi yang tertulis di teks.",
-        )
-
-        price_enabled = st.checkbox("Batasi rentang harga", key="fbw_price_on", value=False)
-        price_min, price_max = None, None
-        if price_enabled:
-            c1, c2 = st.columns(2)
-            with c1:
-                min_val = st.number_input(
-                    "Min (Rp)", min_value=0, value=0, step=500_000,
-                    format="%d", key="fbw_price_min",
-                )
-            with c2:
-                max_val = st.number_input(
-                    "Maks (Rp)", min_value=0, value=0, step=500_000,
-                    format="%d", key="fbw_price_max",
-                )
-            price_min = int(min_val) if min_val > 0 else None
-            price_max = int(max_val) if max_val > 0 else None
-            if price_min and price_max and price_min > price_max:
-                st.error("Harga minimal lebih besar dari maksimal.")
-
-        st.checkbox(
-            "Wajib menyebut iPhone",
-            key="fbw_require_iphone",
-            value=True,
-            help="Matikan hanya bila Anda ingin menyimpan semua postingan.",
-        )
-        st.checkbox(
-            "Mode ketat (tolak jika harga/lokasi tidak diketahui)",
-            key="fbw_strict",
-            value=False,
-        )
-        st.caption(
-            "Mode longgar: postingan tanpa harga/lokasi tetap lolos dengan catatan. "
-            "Mode ketat: postingan seperti itu digugurkan."
-        )
-
-        st.divider()
-        st.caption("Tidak ada data yang dikirim ke internet. Ollama & browser tetap lokal.")
-
+def build_filter_config() -> FilterConfig:
+    """Bangun FilterConfig dari nilai widget yang sedang aktif di tab Mulai."""
+    price_on = bool(st.session_state.get("fbw_price_on", FILTER_DEFAULTS["fbw_price_on"]))
+    pmin = int(st.session_state.get("fbw_price_min", 0) or 0)
+    pmax = int(st.session_state.get("fbw_price_max", 0) or 0)
     return config_from_ui(
         include_raw=st.session_state.get("fbw_include", ""),
         exclude_raw=st.session_state.get("fbw_exclude", ""),
         locations_raw=st.session_state.get("fbw_locations", ""),
-        price_min=price_min,
-        price_max=price_max,
-        require_iphone=st.session_state.get("fbw_require_iphone", True),
+        price_min=pmin if price_on and pmin > 0 else None,
+        price_max=pmax if price_on and pmax > 0 else None,
+        require_iphone=bool(
+            st.session_state.get("fbw_require_iphone", FILTER_DEFAULTS["fbw_require_iphone"])
+        ),
     )
 
 
 def strict_mode() -> bool:
-    return bool(st.session_state.get("fbw_strict", False))
+    return bool(st.session_state.get("fbw_strict", FILTER_DEFAULTS["fbw_strict"]))
 
 
-def _ollama_config(settings: Settings) -> OllamaConfig:
-    """Konfigurasi Ollama + model override untuk sesi dashboard ini.
-
-    Override hanya berlaku sampai dashboard di-restart; untuk permanen ubah
-    FBW_OLLAMA_MODEL di .env.
-    """
-    config = OllamaConfig.from_settings(settings)
-    typed = str(st.session_state.get("fbw_ollama_model_text", "") or "").strip()
-    if typed and typed != config.model:
-        config = replace(config, model=typed)
-    return config
+def _filter_summary(config: FilterConfig) -> str:
+    parts = []
+    if config.require_iphone:
+        parts.append("wajib iPhone")
+    if config.include_keywords:
+        parts.append(f"{len(config.include_keywords)} kata inklusi")
+    if config.exclude_keywords:
+        parts.append(f"{len(config.exclude_keywords)} kata eksklusi")
+    if config.locations:
+        parts.append(f"lokasi: {', '.join(config.locations[:3])}")
+    if config.price_min or config.price_max:
+        batas = []
+        if config.price_min:
+            batas.append(f"≥ {_fmt_price(config.price_min)}")
+        if config.price_max:
+            batas.append(f"≤ {_fmt_price(config.price_max)}")
+        parts.append("harga " + " dan ".join(batas))
+    if not parts:
+        return "tanpa filter"
+    return " · ".join(parts)
 
 
 # ---------------------------------------------------------------------------
-# Panel job (langsung/otomatis diperbarui)
+# Sidebar — ringkasan saja, tanpa filter
 # ---------------------------------------------------------------------------
 
-def _render_job_content(db: Database, settings: Settings, job_id: int, live: bool) -> None:
-    job = db.get_job(job_id)
-    if not job:
-        st.info("Belum ada sesi pembacaan.")
-        return
+def render_sidebar(settings: Settings, db: Database) -> None:
+    stats = db.stats()
+    with st.sidebar:
+        st.markdown("### 📱 FB Workspace")
+        st.caption("Alat bantu lokal · bukan bot")
+        st.metric("Postingan tersimpan", stats["total"])
+        demo_count = stats["by_source"].get("demo", 0)
+        if demo_count:
+            st.caption(f"Termasuk {demo_count} data DEMO sintetis")
+        st.caption(f"Database: `{settings.db_path.name}`")
+        banner = "ya" if settings.host in {"127.0.0.1", "localhost", "::1"} else "TIDAK"
+        st.caption(f"Hanya lokal: {banner} · bind `{settings.host}:{settings.port}`")
 
-    status = job.get("status") or JobStatus.QUEUED.value
-    counters = job.get("counters") or {}
+        st.divider()
+        st.markdown("**Alur pemakaian**")
+        st.caption("1 · Mulai → 2 · Hasil → 3 · Pengaturan")
+        st.caption("Filter ada di dalam langkah ②, bukan di sini.")
 
-    label = {
-        JobStatus.QUEUED.value: "⏳ Antre",
-        JobStatus.RUNNING.value: "🔄 Berjalan",
-        JobStatus.COMPLETED.value: "✅ Selesai",
-        JobStatus.STOPPED.value: "🛑 Dihentikan",
-        JobStatus.FAILED.value: "❌ Gagal",
-        JobStatus.BLOCKED.value: "⛔ Diblokir / tidak diizinkan",
-    }.get(status, status)
-
-    cols = st.columns(5)
-    cols[0].metric("Status", label)
-    cols[1].metric("Terbaca", counters.get("read", 0))
-    cols[2].metric("Baru", counters.get("inserted", 0))
-    cols[3].metric("Duplikat", counters.get("duplicates", 0))
-    cols[4].metric("Tidak lolos filter", counters.get("filtered_out", 0))
-
-    if job.get("message"):
-        st.info(job["message"])
-
-    age = _age_seconds(job.get("heartbeat_at"))
-    if status in ACTIVE_STATUSES and age is not None and age > 120:
-        st.warning(
-            f"Tidak ada pembaruan dari worker selama {int(age)} detik. "
-            "Proses mungkin macet. Periksa log di bawah, lalu hentikan paksa bila perlu."
+        st.divider()
+        st.markdown("**Keamanan**")
+        st.caption(
+            "Data, log, dan sesi login tersimpan di laptop ini. Tidak ada "
+            "unggahan ke cloud. Profil browser berisi cookie — jangan dibagikan."
         )
+        with st.expander("Berkas dokumentasi"):
+            for path in (
+                "README.md",
+                "docs/INSTALL_WINDOWS.md",
+                "docs/POC_FACEBOOK.md",
+                "docs/LIMITATIONS.md",
+                "docs/GIT_GUIDE.md",
+                "docs/TESTING.md",
+            ):
+                exists = (PROJECT_ROOT / path).exists()
+                st.caption(("📄 " if exists else "⚠️ ") + path)
 
-    if status in ACTIVE_STATUSES:
-        b1, b2, b3 = st.columns(3)
-        if b1.button("🛑 Minta berhenti", key=f"stop_{job_id}"):
-            db.request_stop(job_id)
-            st.toast("Permintaan berhenti dikirim. Worker akan berhenti di batas aman.")
-        if b2.button("⛔ Hentikan paksa", key=f"force_{job_id}"):
-            msg = jobs.force_stop(db, job_id, st.session_state.get("worker_proc"))
-            st.toast(msg)
-            st.rerun()
-        if b3.button("🩺 Tandai gagal (jika macet)", key=f"fail_{job_id}"):
-            jobs.mark_failed(db, job_id, "Ditandai gagal manual oleh pengguna karena proses macet.")
-            st.rerun()
+        st.divider()
+        with st.expander("🗑️ Hapus data"):
+            st.caption("Permanen dan hanya di laptop ini.")
+            demo_n = stats["by_source"].get("demo", 0)
+            if demo_n and st.button(
+                f"Hapus {demo_n} data DEMO", key="sidebar_delete_demo"
+            ):
+                deleted = db.delete_posts_by_source("demo")
+                st.toast(f"{deleted} postingan DEMO dihapus.")
+                st.rerun()
+            confirm = st.checkbox(
+                "Saya yakin menghapus semua postingan", key="sidebar_confirm_all"
+            )
+            if st.button(
+                "Hapus semua postingan",
+                key="sidebar_delete_all",
+                disabled=not confirm,
+            ):
+                deleted = db.delete_all_posts()
+                st.toast(f"{deleted} postingan dihapus.")
+                st.rerun()
+            st.caption("Opsi lain: **Pengaturan → 💾 Data**.")
 
-    events = db.get_events(job_id, limit=120)
-    if events:
-        with st.expander(f"Log kejadian ({len(events)})", expanded=status in ACTIVE_STATUSES):
-            icons = {"info": "ℹ️", "warning": "⚠️", "error": "❌"}
-            for event in events[-40:]:
-                ts = human_time(event.get("ts"))
-                # Pesan bisa memuat teks dari halaman Facebook -> selalu escape.
-                safe_message = _escape_html(str(event.get("message", "")))
-                st.markdown(
-                    f"<div style='font-size:0.82rem;margin:2px 0'>"
-                    f"<span style='opacity:.6'>{ts}</span> "
-                    f"{icons.get(event.get('level'), '•')} {safe_message}</div>",
-                    unsafe_allow_html=True,
-                )
-
-    log_text = jobs.tail_log(job_id, settings, max_lines=120)
-    if log_text:
-        with st.expander("Log teknis worker (untuk diagnosa)"):
-            st.code(log_text, language="text")
-
-    if live:
-        st.caption("Panel ini diperbarui otomatis setiap 2 detik.")
-
-
-@st.fragment(run_every="2s")
-def live_job_panel(db: Database, settings: Settings, job_id: int) -> None:
-    _render_job_content(db, settings, job_id, live=True)
-
-
-def render_job_section(db: Database, settings: Settings, job_id: int | None) -> None:
-    st.subheader("Status proses")
-    if not job_id:
-        latest = db.latest_job()
-        job_id = latest["id"] if latest else None
-    if job_id is None:
-        st.info("Belum ada sesi pembacaan. Jalankan POC atau pakai input manual.")
-        return
-    job = db.get_job(job_id)
-    if job and job.get("status") in ACTIVE_STATUSES:
-        live_job_panel(db, settings, job_id)
-    else:
-        _render_job_content(db, settings, job_id, live=False)
+        st.caption("Butuh bantuan? Tab **Pengaturan → Bantuan**.")
 
 
 # ---------------------------------------------------------------------------
-# Login helper (opsional)
+# Banner DEMO
+# ---------------------------------------------------------------------------
+
+def render_demo_banner(db: Database) -> None:
+    demo_count = db.count_posts(source="demo")
+    if not demo_count:
+        return
+    cols = st.columns([5, 1])
+    with cols[0]:
+        st.warning(
+            f"🟡 **{demo_count} postingan DEMO (sintetis)** ada di database ini. "
+            "Data ini bukan hasil Facebook dan hanya untuk latihan."
+        )
+    with cols[1]:
+        if st.button("Hapus DEMO", key="banner_delete_demo", help="Hapus semua data DEMO"):
+            deleted = db.delete_posts_by_source("demo")
+            st.toast(f"{deleted} postingan DEMO dihapus.")
+            st.rerun()
+
+
+# ---------------------------------------------------------------------------
+# Login helper
 # ---------------------------------------------------------------------------
 
 @st.fragment(run_every="2s")
@@ -337,262 +320,233 @@ def login_live_panel(settings: Settings, marker_path: str) -> None:
 
     proc = st.session_state.get("fbw_login_proc")
     if proc is None or proc.poll() is not None:
-        # Proses selesai: kembali ke tampilan statis (tanpa refresh otomatis).
         st.rerun()
 
 
-def render_login_helper(settings: Settings, *, job_active: bool = False) -> None:
-    """Tombol & status untuk login manual sekali di profil browser aplikasi."""
+def render_login_card(settings: Settings, *, job_active: bool, compact: bool = False) -> None:
     marker_path = str(jobs.login_marker_path(settings))
     proc = st.session_state.get("fbw_login_proc")
     alive = proc is not None and proc.poll() is None
+    marker = read_login_marker(marker_path)
 
-    with st.expander("🔐 Login Facebook (opsional, sekali saja)", expanded=alive):
-        st.caption(
-            "Sesi disimpan di profil browser lokal. Anda login sendiri di jendela Chromium; "
-            "aplikasi tidak pernah membaca/menyimpan kata sandi atau mengunggah cookie."
+    with st.container(border=True):
+        head, action = st.columns([3, 1])
+        head.markdown("**🔐 Login Facebook**")
+        head.caption(
+            "Sekali saja. Login sendiri di jendela Chromium; sesi disimpan lokal "
+            "di `data/browser_profile`."
         )
-        st.caption(
-            f"Kalau pembacaan meminta login, jendela juga dibiarkan terbuka "
-            f"{settings.login_wait_seconds} detik agar Anda bisa login saat itu juga."
-        )
-
-        c1, c2 = st.columns(2)
-        if c1.button(
-            "🪟 Buka browser untuk login",
+        if action.button(
+            "Buka browser",
             key="fbw_open_login",
             disabled=alive or job_active,
-            help="Jendela browser akan terbuka. Login di sana, lalu tutup jendelanya.",
+            help="Jendela browser terbuka. Login, lalu tutup jendelanya.",
         ):
             path, new_proc = jobs.start_login_session(settings)
             st.session_state["fbw_login_proc"] = new_proc
             st.session_state["fbw_login_marker"] = str(path)
             st.rerun()
 
-        if alive and c2.button("⛔ Hentikan sesi login", key="fbw_stop_login"):
-            st.toast(jobs.stop_login_session(proc))
-            st.rerun()
-
         if alive:
             login_live_panel(settings, st.session_state.get("fbw_login_marker") or marker_path)
         else:
-            data = read_login_marker(marker_path)
-            if data:
-                status = str(data.get("status") or "")
-                label = LOGIN_STATUS_LABELS.get(status, status)
-                if status == "selesai" or data.get("login_detected"):
-                    st.success(label)
-                elif status in {"error", "timeout", "selesai_tanpa_login"}:
-                    st.warning(label + (f" — {data.get('error')}" if data.get("error") else ""))
-                else:
-                    st.caption(label)
+            status = str(marker.get("status") or "")
+            if status == "selesai" or marker.get("login_detected"):
+                st.success("Sesi login tersimpan. Kalau Facebook minta login lagi, ulangi langkah ini.")
+            elif status in {"error", "timeout", "selesai_tanpa_login"}:
+                st.warning(
+                    LOGIN_STATUS_LABELS.get(status, status)
+                    + (f" — {marker.get('error')}" if marker.get("error") else "")
+                )
+            elif status:
+                st.caption(LOGIN_STATUS_LABELS.get(status, status))
             else:
-                st.caption("Belum ada sesi login yang dijalankan dari dashboard ini.")
+                st.caption("Belum pernah login dari dashboard ini.")
 
-
-# ---------------------------------------------------------------------------
-# Tab 1 - Jalankan
-# ---------------------------------------------------------------------------
-
-def render_run_tab(db: Database, settings: Settings, filter_config: FilterConfig) -> None:
-    st.subheader("Jalankan pembacaan (Proof of Concept)")
-    st.warning(
-        "**Baca dulu.** Tautan grup publik tidak menjamin seluruh isi grup bisa dibaca. "
-        "Facebook dapat meminta login, membatasi tampilan, atau menampilkan tantangan keamanan. "
-        f"Jika **login** diminta, jendela dibiarkan terbuka {settings.login_wait_seconds} detik "
-        "supaya Anda bisa login sendiri (waktu menunggu tidak dihitung sebagai waktu pembacaan). "
-        "Untuk checkpoint/pembatasan, aplikasi **berhenti dan melaporkan status** — tidak ada "
-        "upaya menembusnya. Gunakan batas kecil sampai Anda yakin hasilnya layak."
-    )
-
-    left, right = st.columns([3, 2])
-
-    with left:
-        st.markdown("#### 1) Tautan grup")
-        raw_urls = st.text_area(
-            "Satu tautan per baris",
-            key="fbw_group_urls",
-            height=110,
-            placeholder="https://www.facebook.com/groups/123456789/",
-            label_visibility="collapsed",
-        )
-        validations = parse_group_urls(raw_urls)
-        valid_urls: list[str] = []
-        if validations:
-            for item in validations:
-                if item.ok:
-                    valid_urls.append(item.normalized)
-                    st.success(f"✅ {item.normalized} — {item.message}")
-                    if item.warning:
-                        st.warning(f"⚠️ {item.warning}")
-                else:
-                    st.error(f"❌ {item.message}")
-        st.caption(
-            "Validasi hanya memeriksa **bentuk** tautan, bukan apakah isi grup boleh dibaca. "
-            "Aplikasi tidak mengumpulkan data anggota dan tidak membuka profil siapa pun."
-        )
-
-        st.markdown("#### 2) Batas pengujian")
-        c1, c2 = st.columns(2)
-        with c1:
-            max_posts = st.slider(
-                "Maksimum postingan per sesi", 1,
-                max(5, settings.hard_max_posts), min(5, settings.hard_max_posts),
-                help=f"Pengaman maksimum: {settings.hard_max_posts} postingan.",
-            )
-        with c2:
-            max_minutes = st.slider("Batas waktu (menit)", 1, 15, 3)
-
-        st.caption(
-            "Tidak ada pengulangan otomatis. Setelah sesi ini selesai, proses berhenti. "
-            "Anda yang memutuskan mau menjalankannya lagi."
-        )
-
-    with right:
-        st.markdown("#### 3) Mode")
-        mode = st.radio(
-            "Cara memperoleh data",
-            options=["browser", "manual"],
-            format_func=lambda v: {
-                "browser": "Buka browser lokal (Playwright POC)",
-                "manual": "Tanpa browser — pakai Input Manual",
-            }[v],
-            key="fbw_mode",
-            help="Mode manual tetap berguna kalau pembacaan otomatis tidak layak.",
-        )
-
-        if mode == "browser":
-            available, message = PlaywrightFacebookAdapter(
-                profile_dir=settings.browser_profile_dir,
-                headless=settings.browser_headless,
-            ).is_available()
-            if available:
-                st.info(message)
-            else:
-                st.error(message)
+        if not compact:
             st.caption(
-                "Jendela Chromium akan terbuka dan terlihat. Bila Facebook meminta login, "
-                "login sendiri di jendela itu. Aplikasi tidak menyimpan kata sandi, cookie "
-                "tidak pernah diunggah, dan profil browser tidak masuk Git."
-            )
-        else:
-            st.info(
-                "Mode manual tidak membuka Facebook. Tempelkan teks postingan di tab "
-                "**Input Manual**."
+                f"Kalau pembacaan menemui login wall, jendela dibiarkan terbuka "
+                f"{settings.login_wait_seconds} detik agar Anda bisa login saat itu juga."
             )
 
-        render_login_helper(settings, job_active=active_job_exists(db))
 
-        st.markdown("#### 4) Opsional")
-        analyze_ollama = st.checkbox(
-            "Analisis otomatis dengan Ollama setelah membaca",
-            value=False,
-            help="Hanya jika Ollama berjalan lokal dan model sudah diunduh. Job tetap sukses "
-                 "walau Ollama gagal.",
-        )
+# ---------------------------------------------------------------------------
+# Panel job
+# ---------------------------------------------------------------------------
 
-        consent = st.checkbox(
-            "Saya memahami kemungkinan gagal/dibatasi dan akan mematuhi Ketentuan Facebook.",
-            value=False,
-            key="fbw_consent",
-        )
+def _render_job_content(settings: Settings, db: Database, job_id: int, live: bool) -> None:
+    job = db.get_job(job_id)
+    if not job:
+        st.info("Belum ada sesi pembacaan.")
+        return
 
-    st.divider()
+    status = job.get("status") or JobStatus.QUEUED.value
+    counters = job.get("counters") or {}
+    active = status in ACTIVE_STATUSES
 
-    active = db.active_job()
-    start_disabled = (
-        mode != "browser"
-        or not valid_urls
-        or not consent
-        or active is not None
-        or login_helper_running()
-    )
-    cta, hint = st.columns([1, 3])
-    with cta:
-        if st.button("▶️ Mulai pembacaan", type="primary", disabled=start_disabled):
-            config = jobs.worker_config(
-                mode=mode,
-                max_posts=max_posts,
-                max_seconds=max_minutes * 60,
-                filter_json=config_to_json(filter_config),
-                strict_unknown=strict_mode(),
-                analyze_ollama=analyze_ollama,
+    st.markdown(f"**Status sesi terakhir:** {JOB_STATUS_LABELS.get(status, status)}")
+    if job.get("message"):
+        st.info(job["message"])
+
+    m = st.columns(4)
+    m[0].metric("Postingan terbaca", counters.get("read", 0))
+    m[1].metric("Baru disimpan", counters.get("inserted", 0))
+    m[2].metric("Duplikat", counters.get("duplicates", 0))
+    m[3].metric("Tidak lolos filter", counters.get("filtered_out", 0))
+
+    if active:
+        if st.button("🛑 Hentikan proses", type="primary", key=f"stop_{job_id}"):
+            db.request_stop(job_id)
+            st.toast("Permintaan berhenti dikirim. Worker akan berhenti dengan rapi.")
+        st.caption("Proses akan berhenti di batas aman. Tidak ada pengulangan otomatis.")
+
+    events = db.get_events(job_id, limit=200)
+    if events:
+        with st.expander("Aktivitas terakhir", expanded=active):
+            icons = {"info": "ℹ️", "warning": "⚠️", "error": "❌"}
+            for event in events[-12:]:
+                ts = human_time(event.get("ts"))
+                safe = _escape_html(str(event.get("message", "")))
+                st.markdown(
+                    f"<div style='font-size:0.82rem;margin:2px 0'>"
+                    f"<span style='opacity:.6'>{ts}</span> "
+                    f"{icons.get(event.get('level'), '•')} {safe}</div>",
+                    unsafe_allow_html=True,
+                )
+
+    with st.expander("Diagnostik (hanya bila ada masalah)"):
+        age = _age_seconds(job.get("heartbeat_at"))
+        if active and age is not None and age > 120:
+            st.warning(
+                f"Tidak ada pembaruan dari worker selama {int(age)} detik. "
+                "Proses mungkin macet."
             )
-            job_id, proc = jobs.start_job(db, settings, group_urls=valid_urls, config=config)
-            st.session_state["job_id"] = job_id
-            st.session_state["worker_proc"] = proc
+        dcols = st.columns(2)
+        if active and dcols[0].button("⛔ Hentikan paksa", key=f"force_{job_id}"):
+            st.toast(jobs.force_stop(db, job_id, st.session_state.get("worker_proc")))
             st.rerun()
-    with hint:
-        reasons = []
-        if mode != "browser":
-            reasons.append("mode manual tidak memulai browser")
-        if not valid_urls:
-            reasons.append("belum ada tautan grup yang valid")
-        if not consent:
-            reasons.append("centang pernyataan kesesuaian")
-        if active:
-            reasons.append(f"masih ada job aktif (#{active['id']})")
-        if login_helper_running():
-            reasons.append("jendela login masih terbuka (tutup dulu)")
-        st.caption("Tombol aktif bila: " + "; ".join(reasons) + "." if reasons else "Siap dijalankan.")
+        if active and dcols[1].button("🩺 Tandai gagal", key=f"fail_{job_id}"):
+            jobs.mark_failed(db, job_id, "Ditandai gagal manual karena proses macet.")
+            st.rerun()
+        log_text = jobs.tail_log(job_id, settings, max_lines=120)
+        if log_text:
+            st.code(log_text, language="text")
+        st.caption(f"Job #{job_id} · konfigurasi: " + jobs.config_preview(job.get("config") or {}))
 
-    if active and not st.session_state.get("job_id"):
-        st.session_state["job_id"] = active["id"]
+    if live:
+        st.caption("Panel ini diperbarui otomatis setiap 2 detik.")
 
-    st.divider()
-    render_job_section(db, settings, st.session_state.get("job_id"))
+
+@st.fragment(run_every="2s")
+def job_live_panel(settings: Settings, db: Database, job_id: int) -> None:
+    _render_job_content(settings, db, job_id, live=True)
+
+
+def render_job_panel(settings: Settings, db: Database) -> None:
+    job_id = st.session_state.get("job_id")
+    if job_id is None:
+        latest = db.latest_job()
+        job_id = latest["id"] if latest else None
+    if job_id is None:
+        return
+
+    job = db.get_job(job_id)
+    if job and job.get("status") in ACTIVE_STATUSES:
+        job_live_panel(settings, db, job_id)
+    else:
+        _render_job_content(settings, db, job_id, live=False)
 
 
 # ---------------------------------------------------------------------------
-# Tab 2 - Input manual
+# Tab 1 — Mulai
 # ---------------------------------------------------------------------------
 
-_MANUAL_EXAMPLE = """URL: https://www.facebook.com/groups/123456789/posts/987654321/
-GRUP: https://www.facebook.com/groups/123456789/
-WAKTU: 3 jam lalu
-
-Dijual iPhone 13 128GB, BH 88%, mulus, garansi habis. Harga 8,5jt COD Tangerang.
-
----
-
-Cari iPhone 12 mini 64GB budget 4jt, area Jakarta. DM ya.
-"""
-
-
-def render_manual_tab(db: Database, settings: Settings, filter_config: FilterConfig) -> None:
-    st.subheader("Input manual")
-    st.caption(
-        "Jalur yang selalu tersedia, bahkan jika pembacaan otomatis tidak layak. "
-        "Salin teks postingan yang memang boleh Anda lihat, lalu tempel di sini. "
-        "Postingan disimpan sebagai data tidak tepercaya dan tidak pernah dieksekusi."
-    )
-
-    with st.expander("Format input & contoh", expanded=False):
+def _onboarding_card(settings: Settings, db: Database) -> None:
+    if db.count_posts() > 0:
+        return
+    with st.expander("🚀 Baru di sini? Ikuti 4 langkah ini", expanded=True):
         st.markdown(
-            "Pisahkan beberapa postingan dengan baris `---`. Baris opsional di awal blok:\n"
-            "- `URL: <tautan postingan>`\n- `GRUP: <tautan grup>`\n- `WAKTU: <teks waktu posting>`\n\n"
-            "Sisanya dianggap teks postingan."
+            "**1. Coba tanpa Facebook** — muat 9 postingan DEMO sintetis, lalu lihat tab **Hasil**."
         )
-        st.code(_MANUAL_EXAMPLE, language="text")
+        if st.button("Muat data DEMO", key="onboarding_demo", type="secondary"):
+            result = load_demo_posts(db, build_filter_config())
+            (st.success if result.get("ok") else st.error)(result.get("message"))
+            st.rerun()
+        st.markdown("**2. Login Facebook sekali** (opsional, agar pembacaan tidak terhenti).")
+        st.caption("Gunakan kartu 🔐 Login Facebook di bawah.")
+        st.markdown("**3. Uji kelayakan grup dengan POC** — batas kecil, lihat hasilnya dulu.")
+        st.code(
+            'powershell -ExecutionPolicy Bypass -File .\\scripts\\poc_windows.ps1 '
+            '-Url "https://www.facebook.com/groups/ID-GRUP/" -MaxPosts 3',
+            language="powershell",
+        )
+        st.markdown("**4. Baru jalankan pembacaan** dari langkah ③ di bawah.")
+
+
+def _source_group(settings: Settings, db: Database) -> list[str]:
+    st.text_area(
+        "Tautan grup (satu per baris)",
+        key="fbw_group_urls",
+        height=100,
+        placeholder="https://www.facebook.com/groups/123456789/",
+        label_visibility="collapsed",
+    )
+    validations = parse_group_urls(st.session_state.get("fbw_group_urls", ""))
+    valid: list[str] = []
+    for item in validations:
+        if item.ok:
+            valid.append(item.normalized)
+            st.success(f"✅ {item.normalized}")
+            if item.warning:
+                st.caption(f"⚠️ {item.warning}")
+        else:
+            st.error(f"❌ {item.message}")
+    if not validations:
+        st.caption("Tempel tautan grup, contoh: https://www.facebook.com/groups/123456789/")
+    st.caption(
+        "Validasi hanya memeriksa bentuk tautan, bukan apakah isi grup boleh dibaca. "
+        "Tidak ada data anggota yang diambil."
+    )
+    render_login_card(settings, job_active=active_job_exists(db))
+    return valid
+
+
+def _source_manual(settings: Settings, db: Database) -> None:
+    st.caption(
+        "Jalur yang selalu tersedia. Salin teks postingan yang boleh Anda lihat, "
+        "lalu tempel di sini. Tidak ada browser yang dijalankan."
+    )
+    with st.expander("Format input"):
+        st.markdown(
+            "Pisahkan beberapa postingan dengan baris `---`. Baris opsional di awal blok: "
+            "`URL:`, `GRUP:`, `WAKTU:`."
+        )
+        st.code(
+            "URL: https://www.facebook.com/groups/123/posts/999/\n"
+            "WAKTU: 3 jam lalu\n\n"
+            "Dijual iPhone 13 128GB, BH 88%, mulus. Harga 8,5jt COD Tangerang.\n\n"
+            "---\n\n"
+            "Cari iPhone 12 mini 64GB budget 4jt, area Jakarta.",
+            language="text",
+        )
 
     if st.button("Isi contoh DEMO", key="fill_manual_example"):
-        st.session_state["fbw_manual_text"] = _MANUAL_EXAMPLE
+        st.session_state["fbw_manual_text"] = (
+            "URL: https://www.facebook.com/groups/DEMO/posts/1/\n\n"
+            "Dijual iPhone 13 128GB, BH 88%, mulus. Harga 8,5jt COD Tangerang."
+        )
 
-    raw = st.text_area(
-        "Tempel satu atau beberapa postingan",
+    st.text_area(
+        "Tempel postingan",
         key="fbw_manual_text",
-        height=260,
-        placeholder="Dijual iPhone 13 128GB ...\n\n---\n\nCari iPhone 11 budget 4jt ...",
+        height=200,
+        placeholder="Dijual iPhone 13 128GB ...",
     )
-
     uploaded = st.file_uploader(
-        "Atau unggah file teks (.txt / .json)",
-        type=["txt", "json"],
-        help="File JSON harus berbentuk {\"posts\": [{\"text\": \"...\", ...}]}. "
-             "File tidak diunggah ke internet; dibaca lokal oleh aplikasi.",
+        "Atau unggah file (.txt / .json)", type=["txt", "json"], key="fbw_manual_file"
     )
 
-    entries = parse_manual_input(raw) if raw else []
+    entries = parse_manual_input(st.session_state.get("fbw_manual_text", ""))
     if uploaded is not None:
         try:
             content = uploaded.read().decode("utf-8", errors="replace")
@@ -620,276 +574,591 @@ def render_manual_tab(db: Database, settings: Settings, filter_config: FilterCon
                     st.error(f"JSON tidak valid: {exc}")
             else:
                 entries = parse_manual_input(content)
-            st.caption(f"File `{uploaded.name}` terbaca: {len(entries)} blok.")
 
-    st.caption(
-        f"Filter aktif: {len(filter_config.include_keywords)} inklusi, "
-        f"{len(filter_config.exclude_keywords)} eksklusi, "
-        f"{len(filter_config.locations)} lokasi, "
-        f"harga {'—' if filter_config.price_min is None and filter_config.price_max is None else 'dibatasi'}. "
-        "Ubah di sidebar."
-    )
-
+    st.caption(f"{len(entries)} postingan siap disimpan.")
     c1, c2 = st.columns(2)
-    save = c1.button("💾 Simpan ke database", type="primary", disabled=not entries)
-    save_ai = c2.button("💾 Simpan + analisis Ollama", disabled=not entries)
+    save = c1.button("💾 Simpan", type="primary", disabled=not entries, key="manual_save")
+    save_ai = c2.button(
+        "💾 Simpan + analisis AI", disabled=not entries, key="manual_save_ai"
+    )
 
     if save or save_ai:
-        if not entries:
-            st.warning("Tidak ada teks yang bisa disimpan.")
+        summary = ingest_manual_entries(
+            db,
+            entries,
+            filter_config=build_filter_config(),
+            strict_unknown=strict_mode(),
+            max_posts=50,
+        )
+        st.success(
+            f"{summary.inserted} baru · {summary.duplicates} duplikat · "
+            f"{summary.filtered_out} tidak lolos filter · {summary.errors} gagal"
+        )
+        for message in summary.messages[:5]:
+            st.warning(message)
+        if save_ai and summary.inserted:
+            _run_ollama_batch(db, settings, limit=min(summary.inserted, 10))
+
+    with st.expander("Cek cepat satu teks (tanpa menyimpan)"):
+        preview_text = st.text_area(
+            "Teks", height=100, key="fbw_preview_text", label_visibility="collapsed"
+        )
+        if preview_text.strip():
+            result = analyze_text(preview_text)
+            cols = st.columns(4)
+            cols[0].metric("Kategori", result.category)
+            cols[1].metric("Model", result.iphone_model)
+            cols[2].metric("Nominal", _fmt_price(result.price_amount))
+            cols[3].metric("Skor", result.relevance_score)
+            st.caption("Detail hanya diambil bila disebut: " + (
+                ", ".join(result.details) if result.details else "tidak ada"
+            ))
+
+
+def _source_demo(db: Database) -> None:
+    st.caption(
+        "9 postingan sintetis berlabel [DEMO]. Bukan hasil Facebook. Cocok untuk "
+        "mencoba filter, analisis, ekspor, dan draf tanpa menyentuh Facebook."
+    )
+    if st.button("📥 Muat data DEMO", key="demo_source_load", type="secondary"):
+        result = load_demo_posts(db, build_filter_config())
+        (st.success if result.get("ok") else st.error)(result.get("message"))
+        st.rerun()
+    st.caption("Setelah dimuat, buka tab **Hasil**.")
+
+
+def _run_controls(settings: Settings, db: Database, valid_urls: list[str]) -> None:
+    c1, c2 = st.columns(2)
+    max_posts = c1.slider(
+        "Maksimum postingan",
+        1,
+        max(5, settings.hard_max_posts),
+        min(5, settings.hard_max_posts),
+        help=f"Pengaman: {settings.hard_max_posts}",
+    )
+    max_minutes = c2.slider("Batas waktu (menit)", 1, 15, 3)
+
+    analyze_ollama = st.checkbox(
+        "Analisis dengan Ollama setelah membaca",
+        value=False,
+        help="Butuh Ollama lokal yang berjalan. Job tetap sukses walau AI gagal.",
+    )
+    consent = st.checkbox(
+        "Saya memahami kemungkinan gagal/dibatasi dan akan mematuhi Ketentuan Facebook.",
+        value=False,
+        key="fbw_consent",
+    )
+
+    active = db.active_job()
+    st.info(
+        f"**Akan dijalankan:** {len(valid_urls)} grup · maks {max_posts} postingan · "
+        f"{max_minutes} menit · filter: {_filter_summary(build_filter_config())}"
+        + (" · Ollama aktif" if analyze_ollama else "")
+    )
+
+    disabled_reasons: list[str] = []
+    if not valid_urls:
+        disabled_reasons.append("belum ada tautan grup valid")
+    if not consent:
+        disabled_reasons.append("centang pernyataan kesesuaian")
+    if active:
+        disabled_reasons.append(f"masih ada sesi aktif (#{active['id']})")
+    if login_helper_running():
+        disabled_reasons.append("jendela login masih terbuka")
+
+    if st.button(
+        "▶️ Mulai pembacaan",
+        type="primary",
+        disabled=bool(disabled_reasons),
+        key="start_job",
+    ):
+        config = jobs.worker_config(
+            mode="browser",
+            max_posts=max_posts,
+            max_seconds=max_minutes * 60,
+            filter_json=config_to_json(build_filter_config()),
+            strict_unknown=strict_mode(),
+            analyze_ollama=analyze_ollama,
+        )
+        job_id, proc = jobs.start_job(db, settings, group_urls=valid_urls, config=config)
+        st.session_state["job_id"] = job_id
+        st.session_state["worker_proc"] = proc
+        st.rerun()
+    if disabled_reasons:
+        st.caption("Tombol aktif bila: " + "; ".join(disabled_reasons) + ".")
+    else:
+        st.caption("Siap dijalankan.")
+
+
+def _filter_step(db: Database) -> None:
+    st.caption(
+        "Filter dipakai saat menyimpan data baru. Untuk postingan yang sudah ada, "
+        "pakai **Terapkan ulang filter** di tab Hasil."
+    )
+    c1, c2 = st.columns(2)
+    c1.text_area(
+        "Kata kunci inklusi (opsional)",
+        key="fbw_include",
+        height=80,
+        placeholder="iphone, cari iphone, iphone 13",
+        help="Pisahkan dengan koma atau baris baru.",
+    )
+    c2.text_area(
+        "Kata kunci eksklusi (opsional)",
+        key="fbw_exclude",
+        height=80,
+        placeholder="rusak, mati, hilang, KW",
+        help="Postingan yang memuat kata ini digugurkan.",
+    )
+
+    c3, c4 = st.columns(2)
+    c3.text_input(
+        "Lokasi (opsional)",
+        key="fbw_locations",
+        placeholder="Tangerang, Jakarta Selatan",
+        help="Hanya mencocokkan lokasi yang tertulis di teks.",
+    )
+    with c4:
+        st.checkbox("Batasi rentang harga", key="fbw_price_on", value=False)
+        if st.session_state.get("fbw_price_on"):
+            p1, p2 = st.columns(2)
+            p1.number_input(
+                "Min (Rp)", min_value=0, value=0, step=500_000, format="%d",
+                key="fbw_price_min",
+            )
+            p2.number_input(
+                "Maks (Rp)", min_value=0, value=0, step=500_000, format="%d",
+                key="fbw_price_max",
+            )
+            pmin = int(st.session_state.get("fbw_price_min") or 0)
+            pmax = int(st.session_state.get("fbw_price_max") or 0)
+            if pmin and pmax and pmin > pmax:
+                st.error("Harga minimal lebih besar dari maksimal.")
+
+    c5, c6 = st.columns(2)
+    c5.checkbox(
+        "Wajib menyebut iPhone",
+        key="fbw_require_iphone",
+        value=True,
+        help="Matikan hanya bila ingin menyimpan semua postingan.",
+    )
+    c6.checkbox(
+        "Mode ketat",
+        key="fbw_strict",
+        value=False,
+        help="Tolak postingan yang harga/lokasinya tidak diketahui.",
+    )
+
+    total = db.count_posts()
+    if total:
+        config = build_filter_config()
+        if total <= 300:
+            passed, checked = preview_filter_counts(
+                db, config, strict_unknown=strict_mode(), limit=300
+            )
+            st.caption(
+                f"Dengan filter ini, **{passed} dari {checked}** postingan tersimpan "
+                "akan lolos. Klik **Terapkan ulang filter** di tab Hasil untuk mengubahnya."
+            )
         else:
-            summary = ingest_manual_entries(
-                db,
-                entries,
-                filter_config=filter_config,
-                strict_unknown=strict_mode(),
-                max_posts=50,
+            st.caption(
+                f"{total} postingan tersimpan. Pratinjau filter dimatikan karena datanya "
+                "banyak; gunakan tab Hasil → Terapkan ulang filter."
             )
-            st.success(
-                f"Selesai: {summary.inserted} baru, {summary.duplicates} duplikat, "
-                f"{summary.filtered_out} tidak lolos filter, {summary.errors} gagal."
-            )
-            for message in summary.messages[:5]:
-                st.warning(message)
-            if summary.inserted == 0 and summary.duplicates:
-                st.info(
-                    "Semua postingan sudah ada di database. Deduplikasi memakai ID tautan, "
-                    "atau hash teks bila tautan tidak ada."
-                )
-            if save_ai and summary.inserted:
-                _run_ollama_batch(
-                    db,
-                    settings,
-                    limit=min(summary.inserted, 20),
-                    only_new=True,
-                    ids=None,
-                )
+
+
+def render_mulai(settings: Settings, db: Database) -> None:
+    _onboarding_card(settings, db)
+
+    st.markdown("### ① Sumber data")
+    mode = st.radio(
+        "Pilih sumber",
+        options=["grup", "manual", "demo"],
+        format_func=lambda value: {
+            "grup": "Grup Facebook (browser)",
+            "manual": "Tempel manual",
+            "demo": "Data DEMO",
+        }[value],
+        horizontal=True,
+        key="fbw_source_mode",
+        label_visibility="collapsed",
+    )
+
+    valid_urls: list[str] = []
+    if mode == "grup":
+        valid_urls = _source_group(settings, db)
+    elif mode == "manual":
+        _source_manual(settings, db)
+    else:
+        _source_demo(db)
 
     st.divider()
-    st.markdown("#### Cek cepat satu teks (tanpa menyimpan)")
-    preview_text = st.text_area(
-        "Teks untuk dianalisis", height=110, key="fbw_preview_text",
-        placeholder="Dijual iPhone 13 Pro Max 256GB Rp 12.500.000 COD Tangerang",
-    )
-    if preview_text.strip():
-        result = analyze_text(preview_text)
-        cols = st.columns(5)
-        cols[0].metric("Kategori", result.category)
-        cols[1].metric("Model", result.iphone_model)
-        cols[2].metric("Harga/Budget", _fmt_price(result.price_amount))
-        cols[3].metric("Jenis", result.price_kind)
-        cols[4].metric("Skor", result.relevance_score)
-        if result.details:
-            st.write("Detail disebutkan:", result.details)
-        st.write("Alasan skor:")
-        for reason in result.reasons:
-            st.markdown(f"- {reason}")
-        st.caption(
-            "Skor adalah penjumlahan kriteria yang bisa dijelaskan, bukan probabilitas kebenaran. "
-            "Field kosong ditandai 'tidak diketahui', bukan ditebak."
-        )
+    st.markdown("### ② Filter")
+    _filter_step(db)
+
+    st.divider()
+    st.markdown("### ③ Jalankan")
+    if mode == "grup":
+        _run_controls(settings, db, valid_urls)
+    elif mode == "manual":
+        st.caption("Mode manual: gunakan tombol Simpan di langkah ①. Tidak ada job browser.")
+    else:
+        st.caption("Data DEMO sudah cukup; buka tab **Hasil** untuk melihat dan mengolahnya.")
+
+    render_job_panel(settings, db)
 
 
 # ---------------------------------------------------------------------------
-# Tab 3 - Postingan
+# Tab 2 — Hasil
 # ---------------------------------------------------------------------------
 
-def render_posts_tab(db: Database, settings: Settings) -> None:
-    st.subheader("Postingan tersimpan")
+def render_hasil(settings: Settings, db: Database, filter_config: FilterConfig) -> None:
     stats = db.stats()
-    top = st.columns(4)
-    top[0].metric("Total", stats["total"])
-    top[1].metric("Sudah dianalisis", stats["analysed"])
-    top[2].metric("DEMO", stats["by_source"].get("demo", 0))
-    top[3].metric("Relevan (manual)", stats["by_status"].get("relevan", 0))
+    counts = db.count_by_filter()
+    m = st.columns(4)
+    m[0].metric("Total", stats["total"])
+    m[1].metric("Lolos filter", counts["passed"])
+    m[2].metric("Tersembunyi", counts["hidden"])
+    m[3].metric("Dianalisis AI", db.count_ai_analysed())
 
-    f1, f2, f3, f4 = st.columns([2, 1, 1, 1])
-    search = f1.text_input("Cari teks / tautan", key="fbw_search")
-    category = f2.selectbox(
-        "Kategori", ["semua", "mencari", "menjual", "diskusi", "tidak relevan"],
+    c1, c2, c3, c4, c5 = st.columns([2.2, 2, 1.4, 1.3, 1.2])
+    view = c1.radio(
+        "Tampilkan",
+        options=["all", "passed", "hidden"],
+        format_func=lambda value: {
+            "all": f"Semua ({stats['total']})",
+            "passed": f"Lolos ({counts['passed']})",
+            "hidden": f"Tersembunyi ({counts['hidden']})",
+        }[value],
+        horizontal=True,
+        key="fbw_view",
+    )
+    search = c2.text_input("Cari", key="fbw_search", placeholder="teks / tautan")
+    category = c3.selectbox(
+        "Kategori",
+        options=["semua", "mencari", "menjual", "diskusi", "tidak relevan"],
         key="fbw_filter_category",
     )
-    status_filter = f3.selectbox(
-        "Status", ["semua"] + list(WORKFLOW_STATUS_LABELS.keys()),
-        format_func=lambda v: WORKFLOW_STATUS_LABELS.get(v, "Semua"),
+    status = c4.selectbox(
+        "Status",
+        options=["semua"] + list(WORKFLOW_STATUS_LABELS.keys()),
+        format_func=lambda value: "Semua" if value == "semua" else WORKFLOW_STATUS_LABELS[value],
         key="fbw_filter_status",
     )
-    only_passed = f4.checkbox("Hanya lolos filter", value=True, key="fbw_only_passed")
+    source = c5.selectbox(
+        "Sumber", options=["semua", "browser", "manual", "demo"], key="fbw_filter_source"
+    )
 
+    filter_passed = {"all": None, "passed": True, "hidden": False}[view]
     rows = db.list_posts(
         search=search,
-        workflow_status=None if status_filter == "semua" else status_filter,
+        workflow_status=None if status == "semua" else status,
         category=None if category == "semua" else category,
-        filter_passed=True if only_passed else None,
-        limit=500,
+        source=None if source == "semua" else source,
+        filter_passed=filter_passed,
+        limit=1000,
     )
 
+    event = None
     if not rows:
         st.info(
-            "Belum ada postingan yang cocok. Muat data DEMO di tab **Pengaturan & Data** "
-            "atau tambahkan lewat **Input Manual**."
+            "Tidak ada postingan untuk tampilan ini. "
+            "Coba pilih **Semua**, hapus kata pencarian, atau muat data DEMO di tab Mulai."
         )
-        return
+    else:
+        table = [
+            {
+                "ID": row["id"],
+                "Sumber": SOURCE_LABELS.get(row["source"], row["source"]),
+                "Kategori": CATEGORY_BADGES.get(
+                    row.get("category") or "", row.get("category") or "—"
+                ),
+                "Model": row.get("iphone_model") or UNKNOWN,
+                "Nominal": _fmt_price(row.get("price_amount")),
+                "Lokasi": row.get("location") or UNKNOWN,
+                "Skor": row.get("relevance_score") or 0,
+                "Status": STATUS_BADGES.get(
+                    row["workflow_status"], row["workflow_status"]
+                ),
+                "Ditemukan": human_time(row["found_at"]),
+                "Cuplikan": (row["text"][:90] + "…") if len(row["text"]) > 90 else row["text"],
+            }
+            for row in rows
+        ]
+        event = st.dataframe(
+            table,
+            hide_index=True,
+            height=380,
+            on_select="rerun",
+            selection_mode="single-row",
+            key="fbw_results_table",
+            column_config={
+                "ID": st.column_config.NumberColumn(width="small"),
+                "Skor": st.column_config.NumberColumn(width="small"),
+                "Cuplikan": st.column_config.TextColumn(width="large"),
+            },
+        )
 
-    table = [
-        {
-            "ID": row["id"],
-            "Sumber": _status_badge(row),
-            "Waktu ditemukan": human_time(row["found_at"]),
-            "Kategori": row.get("category") or "-",
-            "Model": row.get("iphone_model") or UNKNOWN,
-            "Nominal": _fmt_price(row.get("price_amount")),
-            "Jenis": row.get("price_kind") or UNKNOWN,
-            "Lokasi": row.get("location") or UNKNOWN,
-            "Skor": row.get("relevance_score", 0),
-            "Status": WORKFLOW_STATUS_LABELS.get(row["workflow_status"], row["workflow_status"]),
-            "Cuplikan": (row["text"][:110] + "…") if len(row["text"]) > 110 else row["text"],
-        }
-        for row in rows
-    ]
-    st.dataframe(table, hide_index=True, height=360)
-
-    st.download_button(
-        "⬇️ Ekspor CSV (aman dari formula injection)",
-        data=rows_to_csv_bytes(rows),
-        file_name=suggested_filename(),
-        mime="text/csv",
-        help="Sel yang dimulai dengan = + - @ diberi awalan apostrof agar tidak dieksekusi Excel.",
-    )
     st.caption(
-        "Tabel menampilkan maksimum 500 baris terbaru; ekspor CSV juga mengikuti hasil filter ini. "
-        f"Database: `{db.path}`"
+        f"{len(rows)} baris ditampilkan"
+        + (" (maksimum 1000)" if len(rows) >= 1000 else "")
+        + " · klik satu baris untuk detail dan draf."
     )
+
+    if rows:
+        st.download_button(
+            f"⬇️ Ekspor {len(rows)} baris yang tampil (CSV)",
+            data=rows_to_csv_bytes(rows),
+            file_name=suggested_filename(),
+            mime="text/csv",
+            help="Sel yang diawali = + - @ diberi apostrof agar tidak dieksekusi Excel.",
+        )
+
+    if rows:
+        selected: list[int] = []
+        try:
+            selection = event.selection if event is not None else None
+            selected = list(getattr(selection, "rows", []) or [])
+        except Exception:  # noqa: BLE001 - kompatibilitas versi Streamlit
+            selected = []
+        if selected:
+            index = selected[0]
+            if 0 <= index < len(rows):
+                _render_post_detail(db, int(rows[index]["id"]), settings)
+        else:
+            st.caption("Belum ada baris dipilih.")
 
     st.divider()
-    st.markdown("#### Detail postingan")
-    id_options = [row["id"] for row in rows]
-    selected_id = st.selectbox(
-        "Pilih ID postingan",
-        options=id_options,
-        format_func=lambda pid: f"#{pid} — {next((r['text'][:60] for r in rows if r['id'] == pid), '')}…",
-    )
-    if selected_id:
-        _render_post_detail(db, int(selected_id))
+    with st.expander("🔁 Terapkan ulang filter ke data lama"):
+        st.caption(
+            "Menghitung ulang kolom filter dari teks yang tersimpan. Hasil analisis "
+            "aturan/AI tidak diubah dan tidak ada postingan baru."
+        )
+        done = st.session_state.pop("fbw_reapply_result", None)
+        if done:
+            st.success(
+                f"Selesai: {done['checked']} diperiksa, {done['passed']} lolos, "
+                f"{done['changed']} status diubah."
+                + (" Sebagian data lama belum diperiksa (batas 5000 baris)." if done.get("limited") else "")
+            )
+        total = db.count_posts()
+        if total == 0:
+            st.caption("Belum ada data.")
+        else:
+            if total <= 300:
+                passed, checked = preview_filter_counts(
+                    db, filter_config, strict_unknown=strict_mode(), limit=300
+                )
+                st.write(
+                    f"Filter sekarang: **{passed} dari {checked}** postingan akan lolos "
+                    f"(saat ini {counts['passed']} lolos)."
+                )
+            else:
+                st.write(
+                    f"{total} postingan tersimpan. Pratinjau dimatikan demi kecepatan; "
+                    "tombol di bawah tetap memproses maksimum 5000 baris."
+                )
+            if st.button("Terapkan ulang sekarang", key="reapply_filters"):
+                summary = reapply_filters(
+                    db, filter_config, strict_unknown=strict_mode()
+                )
+                st.session_state["fbw_reapply_result"] = {
+                    "checked": summary.checked,
+                    "passed": summary.passed,
+                    "changed": summary.changed,
+                    "limited": summary.limited,
+                }
+                st.rerun()
 
 
-def _render_post_detail(db: Database, post_id: int) -> None:
+def _render_post_detail(db: Database, post_id: int, settings: Settings) -> None:
     post = db.get_post(post_id)
     if not post:
         st.error("Postingan tidak ditemukan.")
         return
 
-    if post["source"] == "demo":
-        st.warning("🟡 Data DEMO (sintetis). Bukan hasil pembacaan Facebook.")
+    with st.container(border=True):
+        if post["source"] == "demo":
+            st.caption("🟡 Data DEMO (sintetis), bukan hasil Facebook.")
+        meta = st.columns(4)
+        meta[0].metric("Kategori", post.get("category") or "belum dianalisis")
+        meta[1].metric("Model", post.get("iphone_model") or UNKNOWN)
+        meta[2].metric("Nominal", _fmt_price(post.get("price_amount")))
+        meta[3].metric("Skor", post.get("relevance_score") or 0)
 
-    meta = st.columns(4)
-    meta[0].metric("Kategori", post.get("category") or "belum dianalisis")
-    meta[1].metric("Model", post.get("iphone_model") or UNKNOWN)
-    meta[2].metric("Nominal", _fmt_price(post.get("price_amount")))
-    meta[3].metric("Skor relevansi", post.get("relevance_score") or 0)
-
-    with st.expander("Teks postingan lengkap", expanded=True):
         st.markdown(
             "<div style='white-space:pre-wrap;background:rgba(127,127,127,.08);"
-            "padding:12px;border-radius:8px'>"
+            "padding:12px;border-radius:8px;max-height:320px;overflow:auto'>"
             + _escape_html(post["text"])
             + "</div>",
             unsafe_allow_html=True,
         )
         st.caption(
-            f"Sumber data: {post['source']} · ditemukan: {human_time(post['found_at'])} · "
-            f"waktu posting: {human_time(post.get('posted_at'))} "
+            f"Sumber: {SOURCE_LABELS.get(post['source'], post['source'])} · "
+            f"ditemukan {human_time(post['found_at'])} · "
+            f"waktu posting {human_time(post.get('posted_at'))} "
             f"({post.get('posted_at_precision') or UNKNOWN})"
         )
+        links = st.columns(2)
+        if post.get("post_url"):
+            links[0].markdown(f"🔗 [Buka postingan]({post['post_url']})")
+        else:
+            links[0].caption("Tautan postingan: tidak diketahui.")
+        if post.get("group_url"):
+            links[1].markdown(f"👥 [Tautan grup]({post['group_url']})")
+        else:
+            links[1].caption("Tautan grup: tidak diketahui.")
 
-    links = st.columns(2)
-    if post.get("post_url"):
-        links[0].markdown(f"🔗 [Buka postingan di Facebook]({post['post_url']})")
-    else:
-        links[0].caption("Tautan postingan: tidak diketahui (hanya teks yang tersedia).")
-    if post.get("group_url"):
-        links[1].markdown(f"👥 [Tautan grup]({post['group_url']})")
-    else:
-        links[1].caption("Tautan grup: tidak diketahui.")
+        if post.get("filter_reasons"):
+            with st.expander("Kenapa lolos / tidak lolos filter"):
+                for reason in post["filter_reasons"]:
+                    st.markdown(f"- {reason}")
 
-    if post.get("filter_reasons"):
-        with st.expander("Kenapa lolos/tidak lolos filter"):
-            for reason in post["filter_reasons"]:
-                st.markdown(f"- {reason}")
+        analysis = db.get_analysis(post_id)
+        if analysis:
+            with st.expander("Detail analisis", expanded=False):
+                left, right = st.columns(2)
+                with left:
+                    st.write("**Jenis nominal:**", analysis.get("price_kind") or UNKNOWN)
+                    st.write("**Lokasi:**", analysis.get("location") or UNKNOWN)
+                    st.write("**Mesin:**", analysis.get("engine"))
+                with right:
+                    details = analysis.get("details") or {}
+                    if details:
+                        st.write("**Detail disebutkan:**")
+                        for key, value in details.items():
+                            st.markdown(f"- {key}: {value}")
+                    else:
+                        st.write("**Detail disebutkan:** tidak ada yang eksplisit.")
+                st.write("**Alasan skor:**")
+                for reason in analysis.get("reasons") or []:
+                    st.markdown(f"- {reason}")
+                if analysis.get("snippet"):
+                    st.caption(f"Cuplikan: “{analysis['snippet']}”")
 
-    analysis = db.get_analysis(post_id)
-    if analysis:
-        with st.expander("Detail analisis", expanded=True):
-            detail_cols = st.columns(2)
-            with detail_cols[0]:
-                st.write("**Jenis nominal:**", analysis.get("price_kind") or UNKNOWN)
-                st.write("**Lokasi:**", analysis.get("location") or UNKNOWN)
-                st.write("**Mesin analisis:**", analysis.get("engine"))
-                st.write("**Waktu analisis:**", human_time(analysis.get("analyzed_at")))
-            with detail_cols[1]:
-                details = analysis.get("details") or {}
-                if details:
-                    st.write("**Detail yang disebutkan:**")
-                    for key, value in details.items():
-                        st.markdown(f"- {key}: {value}")
-                else:
-                    st.write("**Detail yang disebutkan:** tidak ada yang eksplisit.")
-            st.write("**Alasan skor:**")
-            for reason in analysis.get("reasons") or []:
-                st.markdown(f"- {reason}")
-            if analysis.get("snippet"):
-                st.caption(f"Cuplikan pendukung: “{analysis['snippet']}”")
+        st.markdown("**Status pengerjaan**")
+        current = post["workflow_status"]
+        status_cols = st.columns(4)
+        for column, (value, label) in zip(status_cols, WORKFLOW_STATUS_LABELS.items()):
+            if column.button(
+                ("✅ " if current == value else "") + label,
+                key=f"status_{post_id}_{value}",
+                use_container_width=True,
+            ):
+                db.set_workflow_status(post_id, value)
+                st.toast(f"Status: {label}")
+                st.rerun()
 
-    st.markdown("##### Status pengerjaan")
-    current = post["workflow_status"]
-    status_cols = st.columns(4)
-    for column, (value, label) in zip(status_cols, WORKFLOW_STATUS_LABELS.items()):
-        if column.button(
-            ("✅ " if current == value else "") + label,
-            key=f"status_{post_id}_{value}",
-            use_container_width=True,
-        ):
-            db.set_workflow_status(post_id, value)
-            st.toast(f"Status diubah menjadi {label}.")
-            st.rerun()
+        st.markdown("**Draf respons** — tidak dikirim otomatis")
+        draft = build_draft(post, analysis, _load_profile())
+        if draft is None:
+            st.info("Kategori 'tidak relevan': tidak ada draf yang disarankan.")
+        else:
+            st.code(draft.body, language=None)
+            st.caption("Klik ikon salin di kanan atas. Periksa dan sunting sebelum mengirim manual.")
+            if contains_forbidden_claim(draft.body):
+                st.error("Draf memuat klaim yang tidak boleh dikarang.")
+            for note in draft.notes:
+                st.caption(f"• {note}")
 
-    st.markdown("##### Draf respons (tidak dikirim otomatis)")
-    profile = _load_profile()
-    draft = build_draft(post, analysis, profile)
-    if draft is None:
-        st.info("Kategori 'tidak relevan': tidak ada draf yang disarankan.")
-    else:
-        st.caption(draft.title)
-        st.code(draft.body, language=None)
-        st.caption("Klik ikon salin di kanan atas blok. Periksa dan sunting sebelum mengirim manual.")
-        for note in draft.notes:
-            st.caption(f"• {note}")
-        warnings_found = contains_forbidden_claim(draft.body)
-        if warnings_found:
-            st.error(f"Draf memuat klaim yang tidak boleh dikarang: {', '.join(warnings_found)}")
-        profile_hint = "lengkap" if profile.is_filled() else "belum lengkap (isi di Pengaturan)"
-        st.caption(f"Profil bisnis: {profile_hint} — {profile.nama_toko} · {profile.area}")
-
-    with st.expander("Hapus postingan ini"):
-        confirm = st.checkbox("Saya yakin ingin menghapus permanen.", key=f"del_confirm_{post_id}")
-        if st.button("🗑️ Hapus", key=f"del_{post_id}", disabled=not confirm):
-            db.delete_post(post_id)
-            st.toast("Postingan dihapus.")
-            st.rerun()
+        with st.expander("Hapus postingan ini"):
+            confirm = st.checkbox("Saya yakin.", key=f"del_confirm_{post_id}")
+            if st.button("🗑️ Hapus", key=f"del_{post_id}", disabled=not confirm):
+                db.delete_post(post_id)
+                st.toast("Postingan dihapus.")
+                st.rerun()
 
 
-def _escape_html(text: str) -> str:
-    return (
-        (text or "")
-        .replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
+# ---------------------------------------------------------------------------
+# Tab 3 — Pengaturan
+# ---------------------------------------------------------------------------
+
+def _ollama_section(settings: Settings, db: Database) -> None:
+    st.markdown("### 🧠 Ollama (opsional)")
+    st.caption(
+        "Tanpa AI, aplikasi tetap berfungsi penuh. Ollama hanya menambah ekstraksi bahasa."
+    )
+    config = _ollama_config(settings)
+    info = summarize_config(config)
+
+    metrics = st.columns(4)
+    metrics[0].metric("Endpoint", info["endpoint"].replace("http://", ""))
+    metrics[1].metric("Timeout", info["timeout"])
+    metrics[2].metric("Thinking", info["think"])
+    metrics[3].metric("Maks token", info["maks_token"])
+
+    cached = st.session_state.get("fbw_ollama_status") or {}
+    models: list[str] = list(cached.get("models") or [])
+    current = str(st.session_state.get("fbw_ollama_model_select") or settings.ollama_model)
+    options = list(dict.fromkeys([current, *models]))
+    if st.session_state.get("fbw_ollama_model_select") not in options:
+        st.session_state.pop("fbw_ollama_model_select", None)
+
+    st.selectbox(
+        "Model untuk sesi ini",
+        options=options,
+        index=options.index(current) if current in options else 0,
+        key="fbw_ollama_model_select",
+        help=(
+            "Daftar diambil dari Ollama setelah 'Cek koneksi'. Untuk permanen, ubah "
+            "FBW_OLLAMA_MODEL di .env. Untuk qwen3, thinking sebaiknya nonaktif "
+            "(FBW_OLLAMA_THINK=false)."
+        ),
     )
 
+    c1, c2 = st.columns(2)
+    if c1.button("🔍 Cek koneksi", key="ollama_check"):
+        status = check_connection(_ollama_config(settings))
+        st.session_state["fbw_ollama_status"] = {
+            "ok": status.ok,
+            "message": status.message,
+            "models": status.models,
+        }
+        st.rerun()
+    if c2.button("🧠 Analisis batch (maks 10)", key="ollama_batch"):
+        _run_ollama_batch(db, settings, limit=10)
 
-# ---------------------------------------------------------------------------
-# Tab 4 - Ollama
-# ---------------------------------------------------------------------------
+    status = st.session_state.get("fbw_ollama_status")
+    if status:
+        if status["ok"]:
+            st.success(status["message"])
+        else:
+            st.error(status["message"])
+        if status["models"]:
+            st.caption("Model terpasang: " + ", ".join(status["models"][:10]))
+        else:
+            st.caption(
+                "Belum ada model terpasang. Jalankan di PowerShell: "
+                "`ollama pull qwen2.5:3b` lalu cek lagi."
+            )
+
+    with st.expander("Model kecil yang disarankan, biaya memori & lisensi"):
+        st.dataframe(
+            [
+                {
+                    "Model": model["name"],
+                    "Unduhan": model["size"],
+                    "Lisensi": model["license"],
+                    "Catatan": model["note"],
+                }
+                for model in SUGGESTED_MODELS
+            ],
+            hide_index=True,
+        )
+        st.caption(
+            "RAM 16 GB cukup untuk model 3B–4B terkuantisasi, tetapi kecepatan sangat "
+            "bergantung CPU/GPU. Tanpa GPU, satu postingan bisa puluhan detik. Timeout "
+            "membatasi waktu tunggu dan job tetap sukses walau AI gagal."
+        )
+        st.code(
+            "ollama list\nollama pull qwen2.5:3b\nollama serve",
+            language="powershell",
+        )
+        st.caption(
+            "Ubah pengaturan lewat .env lalu restart dashboard: "
+            "FBW_OLLAMA_MODEL, FBW_OLLAMA_TIMEOUT, FBW_OLLAMA_THINK, FBW_OLLAMA_NUM_PREDICT."
+        )
+
 
 def _run_ollama_batch(
     db: Database,
@@ -907,11 +1176,12 @@ def _run_ollama_batch(
 
     if ids:
         posts = [db.get_post(pid) for pid in ids]
-        posts = [p for p in posts if p]
+        posts = [post for post in posts if post]
     else:
-        rows = db.list_posts(filter_passed=True, limit=5000)
+        rows = db.list_posts(limit=5000)
         posts = [
-            row for row in rows
+            row
+            for row in rows
             if (only_new and row["analysis_status"] == "belum dianalisis")
             or (not only_new and row["analysis_status"] != "dianalisis (Ollama)")
         ]
@@ -933,324 +1203,154 @@ def _run_ollama_batch(
             db.set_analysis_status(post["id"], "analisis gagal")
             failures.append(f"#{post['id']}: {result.error}")
     progress.empty()
-
     if ok_count:
-        st.success(f"{ok_count} postingan dianalisis dengan model `{config.model}`.")
+        st.success(f"{ok_count} postingan dianalisis dengan `{config.model}`.")
     if failures:
         st.warning("Sebagian gagal:\n" + "\n".join(f"- {item}" for item in failures[:6]))
     if ok_count:
-        st.caption("Hasil Ollama menggantikan analisis aturan untuk postingan tersebut. Periksa ulang sebelum dipakai.")
+        st.caption("Hasil AI menggantikan analisis aturan untuk postingan tersebut. Periksa ulang.")
 
 
-def render_ollama_tab(db: Database, settings: Settings) -> None:
-    st.subheader("Analisis Ollama (opsional)")
-    st.caption(
-        "Aplikasi tetap berfungsi penuh tanpa AI: filter kata kunci dan analisis aturan "
-        "sudah berjalan lokal. Ollama hanya menambah ekstraksi bahasa."
+def _data_section(settings: Settings, db: Database) -> None:
+    st.markdown("### 💾 Data")
+    stats = db.stats()
+    st.write(
+        f"Lokasi: `{stats['db_path']}` · {stats['db_size_kb']} KB · {stats['total']} postingan"
     )
+    if stats["by_source"]:
+        st.caption("Per sumber: " + ", ".join(f"{k}={v}" for k, v in stats["by_source"].items()))
 
-    st.text_input(
-        "Model untuk sesi ini",
-        value=settings.ollama_model,
-        key="fbw_ollama_model_text",
-        help=(
-            "Samakan persis dengan nama dari `ollama list` (mis. qwen3:4b). "
-            "Untuk permanen, ubah FBW_OLLAMA_MODEL di .env lalu restart dashboard."
-        ),
-    )
-    config = _ollama_config(settings)
-    info = summarize_config(config)
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Endpoint", info["endpoint"].replace("http://", ""))
-    c2.metric("Model", info["model"])
-    c3.metric("Timeout", info["timeout"])
-    c4.metric("Lokal", info["lokal"])
-    st.caption(
-        f"think: **{info['think']}** · maks token: **{info['maks_token']}** — "
-        "atur lewat FBW_OLLAMA_THINK dan FBW_OLLAMA_NUM_PREDICT di .env. "
-        "Untuk qwen3, thinking sebaiknya nonaktif agar JSON tidak terpotong."
-    )
+    c1, c2 = st.columns(2)
+    if c1.button("📥 Muat data DEMO", key="settings_load_demo"):
+        result = load_demo_posts(db, build_filter_config())
+        (st.success if result.get("ok") else st.error)(result.get("message"))
+        st.rerun()
+    if c2.button(
+        "🧹 Hapus data DEMO",
+        key="settings_delete_demo",
+        disabled=stats["by_source"].get("demo", 0) == 0,
+    ):
+        deleted = db.delete_posts_by_source("demo")
+        st.success(f"{deleted} postingan DEMO dihapus.")
+        st.rerun()
 
-    if st.button("🔍 Cek koneksi Ollama"):
-        status = check_connection(config)
-        st.session_state["fbw_ollama_status"] = {
-            "ok": status.ok,
-            "message": status.message,
-            "models": status.models,
-        }
+    with st.expander("Hapus data (permanen, lokal)"):
+        st.caption("Tidak ada salinan di cloud. Tindakan ini tidak bisa dibatalkan.")
+        confirmed = st.checkbox("Saya yakin ingin menghapus.", key="del_all_confirm")
+        c3, c4, c5 = st.columns(3)
+        if c3.button("Semua postingan", key="del_all_posts", disabled=not confirmed):
+            deleted = db.delete_all_posts()
+            st.success(f"{deleted} postingan dihapus.")
+            st.rerun()
+        if c4.button("Log & riwayat job", key="del_logs", disabled=not confirmed):
+            db.delete_jobs_and_events()
+            st.success("Log dan riwayat job dihapus.")
+            st.rerun()
+        if c5.button("Profil browser (login)", key="del_profile", disabled=not confirmed):
+            import shutil
 
-    cached = st.session_state.get("fbw_ollama_status")
-    if cached:
-        if cached["ok"]:
-            st.success(cached["message"])
-        else:
-            st.error(cached["message"])
-        if cached["models"]:
-            st.caption("Model terpasang: " + ", ".join(cached["models"][:12]))
-            st.caption(
-                "Klik 'Cek koneksi' lagi setelah mengubah nama model di kotak atas. "
-                "Di Windows, jalankan `ollama list` untuk melihat nama persisnya."
-            )
-
-    st.warning(
-        "**Kejujuran soal performa.** RAM 16 GB cukup untuk model 3B–4B terkuantisasi, "
-        "tetapi kecepatan sangat bergantung pada CPU/GPU. Tanpa GPU, satu postingan bisa "
-        "memakan puluhan detik. Aplikasi memakai timeout dan analisis aturan sebagai fallback."
-    )
-
-    with st.expander("Model kecil yang disarankan (ukuran & lisensi)"):
-        st.dataframe(
-            [
-                {
-                    "Model": m["name"],
-                    "Unduhan": m["size"],
-                    "Lisensi": m["license"],
-                    "Catatan": m["note"],
-                }
-                for m in SUGGESTED_MODELS
-            ],
-            hide_index=True,
-        )
-        st.code(
-            "ollama pull qwen2.5:3b\nollama serve   # biasanya sudah jalan otomatis di Windows",
-            language="powershell",
-        )
-        st.caption(
-            "Perintah di atas dijalankan di PowerShell Anda, bukan oleh aplikasi. "
-            "Endpoint dan model diatur lewat .env (FBW_OLLAMA_URL, FBW_OLLAMA_MODEL)."
-        )
-
-    st.divider()
-    st.markdown("#### Jalankan analisis")
-    rows = db.list_posts(filter_passed=True, limit=500)
-    pending = [row for row in rows if row["analysis_status"] != "dianalisis (Ollama)"]
-    st.caption(f"{len(pending)} postingan belum dianalisis Ollama (maksimum 20 per klik).")
-
-    batch_limit = st.slider("Jumlah postingan per klik", 1, 20, min(5, max(1, len(pending))))
-    if st.button("🧠 Analisis sekarang", disabled=not pending):
-        _run_ollama_batch(db, settings, limit=batch_limit)
-
-    if pending:
-        with st.expander("Pilih postingan tertentu"):
-            options = {row["id"]: f"#{row['id']} — {row['text'][:70]}" for row in pending[:50]}
-            chosen = st.multiselect(
-                "ID postingan", options=list(options.keys()),
-                format_func=lambda k: options[k], key="fbw_ollama_ids",
-            )
-            if st.button("Analisis pilihan", disabled=not chosen):
-                _run_ollama_batch(db, settings, limit=len(chosen), ids=chosen)
-
-    st.divider()
-    st.markdown("#### Batasan yang perlu diketahui")
-    st.markdown(
-        "- Model kecil bisa salah membaca model iPhone atau harga. Selalu periksa hasilnya.\n"
-        "- Teks postingan adalah data tidak tepercaya; model diinstruksikan mengabaikan perintah di dalamnya, "
-        "tetapi prompt injection tidak bisa dijamin 100%.\n"
-        "- Keluaran divalidasi ketat (kategori terbatas, skor 0–100, input dipotong). "
-        "Jika tidak valid, hasilnya ditolak dan status 'analisis gagal'.\n"
-        "- Tidak ada embeddings/vector database pada MVP ini."
-    )
+            target = settings.browser_profile_dir
+            if target.exists():
+                try:
+                    shutil.rmtree(target)
+                    st.success("Profil browser dihapus. Anda perlu login ulang.")
+                except OSError as exc:
+                    st.error(f"Gagal menghapus: {exc}. Tutup semua Chromium lalu coba lagi.")
+            else:
+                st.info("Folder profil browser belum ada.")
 
 
-# ---------------------------------------------------------------------------
-# Tab 5 - Pengaturan & data
-# ---------------------------------------------------------------------------
-
-def render_settings_tab(db: Database, settings: Settings) -> None:
-    st.subheader("Pengaturan & data")
-
-    st.markdown("#### Keamanan & lokasi file")
+def _security_section(settings: Settings, db: Database) -> None:
+    st.markdown("### 🔒 Keamanan")
     safety = settings.describe_safety()
     st.dataframe(
         [{"Pengaturan": key, "Nilai": value} for key, value in safety.items()],
         hide_index=True,
     )
-    if safety["lokal_saja"] != "ya":
-        st.error(
-            "Dashboard TIDAK terikat ke localhost. Ini berbahaya untuk laptop pribadi. "
-            "Set FBW_HOST=127.0.0.1 di .env."
-        )
+    if safety["lokal_saja"] == "ya":
+        st.success("Dashboard hanya bisa diakses dari laptop ini (localhost).")
     else:
-        st.success("Dashboard terikat ke localhost (hanya bisa diakses dari laptop ini).")
+        st.error("Dashboard TIDAK terikat ke localhost. Set FBW_HOST=127.0.0.1 di .env.")
 
-    st.markdown("#### Profil bisnis (dipakai di draf)")
     st.caption(
-        "Isi hanya identitas umum. Draf tidak boleh memuat klaim stok/harga/garansi; "
-        "semua placeholder harus Anda ganti sendiri."
+        "Tidak ada data yang diunggah. Profil browser berisi cookie sesi — "
+        "diperlakukan sebagai rahasia dan tidak masuk Git."
+    )
+
+
+def _profile_section() -> None:
+    st.markdown("### 🏪 Profil bisnis (untuk draf)")
+    st.caption(
+        "Isi hanya identitas umum. Draf tidak memuat klaim stok/harga/garansi; "
+        "placeholder wajib Anda ganti sendiri."
     )
     profile = _load_profile()
-    p1, p2, p3 = st.columns(3)
-    nama = p1.text_input("Nama toko / identitas", value=profile.nama_toko, key="fbw_prof_nama")
-    area = p2.text_input("Area", value=profile.area, key="fbw_prof_area")
-    jam = p3.text_input("Jam respons", value=profile.jam_respons, key="fbw_prof_jam")
-    if st.button("💾 Simpan profil lokal"):
+    c1, c2, c3 = st.columns(3)
+    nama = c1.text_input("Nama toko", value=profile.nama_toko, key="fbw_prof_nama")
+    area = c2.text_input("Area", value=profile.area, key="fbw_prof_area")
+    jam = c3.text_input("Jam respons", value=profile.jam_respons, key="fbw_prof_jam")
+    if st.button("💾 Simpan profil", key="save_profile"):
         _save_profile(BusinessProfile(nama, area, jam))
         st.success("Profil disimpan di data/business_profile.json (masuk .gitignore).")
 
-    st.divider()
-    st.markdown("#### Data DEMO")
-    st.caption(
-        "Data sintetis untuk mencoba alur tanpa Facebook. Semua diberi label [DEMO] "
-        "dan tautan grup palsu."
-    )
-    if st.button("📥 Muat data DEMO"):
-        result = load_demo_posts(db, None)
-        (st.success if result.get("ok") else st.error)(result.get("message"))
 
-    st.divider()
-    st.markdown("#### Database")
-    stats = db.stats()
-    st.write(
-        f"Lokasi: `{stats['db_path']}` · ukuran {stats['db_size_kb']} KB · "
-        f"{stats['total']} postingan"
-    )
-    if stats["by_source"]:
-        st.caption("Per sumber: " + ", ".join(f"{k}={v}" for k, v in stats["by_source"].items()))
-
-    st.markdown("#### Hapus data")
-    st.warning(
-        "Penghapusan bersifat permanen dan lokal. Tidak ada salinan di cloud. "
-        "File database juga tidak pernah diunggah ke GitHub."
-    )
-    h1, h2, h3 = st.columns(3)
-
-    with h1:
-        confirm_posts = st.checkbox("Hapus semua postingan", key="del_posts_confirm")
-        if st.button("🗑️ Hapus postingan", disabled=not confirm_posts):
-            deleted = db.delete_all_posts()
-            st.success(f"{deleted} postingan dihapus.")
-            st.rerun()
-
-    with h2:
-        confirm_logs = st.checkbox("Hapus log & riwayat job", key="del_logs_confirm")
-        if st.button("🧹 Hapus log", disabled=not confirm_logs):
-            db.delete_jobs_and_events()
-            st.success("Log dan riwayat job dihapus.")
-            st.rerun()
-
-    with h3:
-        confirm_profile = st.checkbox("Hapus profil browser (cookie/sesi)", key="del_profile_confirm")
-        if st.button("🔐 Hapus profil browser", disabled=not confirm_profile):
-            import shutil
-
-            target = settings.browser_profile_dir
-            if target.exists() and target.is_dir():
-                try:
-                    shutil.rmtree(target)
-                    st.success(f"Profil browser dihapus: {target}")
-                except OSError as exc:
-                    st.error(f"Gagal menghapus: {exc}. Tutup semua jendela Chromium lalu coba lagi.")
-            else:
-                st.info("Folder profil browser belum ada.")
-            st.caption(
-                "Menghapus profil berarti Anda perlu login manual lagi di Facebook. "
-                "Cookie/sesi tidak pernah disimpan di Git."
-            )
-
-    st.divider()
-    st.markdown("#### Berkas yang tidak boleh masuk Git")
-    st.code(
-        ".env\ndata/*.db\ndata/browser_profile/\nlogs/\n*.gguf",
-        language="text",
-    )
-    st.caption("Semua sudah ada di .gitignore. Jangan melakukan force-add untuk file-file ini.")
-
-
-# ---------------------------------------------------------------------------
-# Tab 6 - Bantuan
-# ---------------------------------------------------------------------------
-
-def render_help_tab(settings: Settings) -> None:
-    st.subheader("Bantuan, keterbatasan, dan prinsip kerja")
-
-    st.markdown(
-        """
-#### Apa yang alat ini lakukan
-- Membantu login manual sekali lewat jendela browser terlihat (sesi disimpan lokal).
-- Menyimpan postingan iPhone yang **Anda lihat sendiri** (otomatis terbatas atau input manual).
-- Menormalkan teks, menghapus duplikat, memfilter kata kunci, lalu mengekstrak
-  kategori/model/harga/budget/lokasi dengan aturan yang bisa dijelaskan.
-- Menyusun draf balasan netral yang **Anda** periksa dan kirim manual.
-
-#### Apa yang TIDAK dilakukan
-- Tidak menembus CAPTCHA, tidak menyamarkan otomasi, tidak memakai proxy untuk menghindari batasan.
-- Tidak mengumpulkan data anggota/profil, komentar, atau data pribadi yang tidak perlu.
-- Tidak mengirim komentar, tidak posting, tidak chat otomatis.
-- Tidak mengunggah data ke hosting/API AI. Ollama berjalan di laptop Anda.
-- Tidak menjalankan perintah yang tertulis di teks postingan.
-
-#### Keterbatasan penting
-1. **Tautan grup publik bukan jaminan.** Facebook bisa meminta login, membatasi
-   tampilan, atau menampilkan tantangan. Untuk login, jendela dibiarkan terbuka
-   sementara agar Anda bisa login sendiri; untuk checkpoint/pembatasan, aplikasi
-   berhenti dan melaporkan status — bukan mencari akal.
-2. **Selector browser belum tentu cocok.** `div[role="article"]` adalah tebakan
-   konservatif. Kalau POC menghasilkan 0 postingan, itu berarti selector/halaman
-   perlu diperiksa manual, bukan "berhasil".
-3. **Teks bisa terpotong** karena tombol "Lihat selengkapnya" tidak diklik otomatis.
-4. **Deduplikasi punya batas.** Tanpa ID tautan, dua postingan dengan teks identik
-   dianggap sama. Tanpa ID, teks yang diedit sedikit akan dianggap berbeda.
-5. **Harga/budget bisa salah baca.** Format seperti "12,5jt" ditafsirkan dengan
-   konvensi Indonesia (titik ribuan, koma desimal). Angka ambigu dibiarkan kosong.
-6. **"Tidak diketahui" berarti tidak diketahui.** Tidak ada tebakan model/lokasi/harga.
-7. **Skor relevansi bukan probabilitas.** Itu penjumlahan kriteria yang dijelaskan
-   pada setiap hasil.
-8. **Waktu posting relatif** ("3 jam lalu") hanya perkiraan, ditandai `perkiraan`.
-"""
-    )
-
-    st.divider()
-    st.markdown("#### Sudah diuji otomatis vs. perlu Anda uji di laptop")
-    st.dataframe(
-        [
-            {"Bagian": "Normalisasi teks & tautan", "Status": "Diuji (unit test)"},
-            {"Bagian": "Parsing harga/budget Indonesia", "Status": "Diuji (unit test)"},
-            {"Bagian": "Deduplikasi tautan/hash", "Status": "Diuji (unit test)"},
-            {"Bagian": "Filter kata kunci/lokasi/harga", "Status": "Diuji (unit test)"},
-            {"Bagian": "Analisis aturan iPhone", "Status": "Diuji (unit test)"},
-            {"Bagian": "Validasi keluaran AI", "Status": "Diuji (unit test, tanpa model nyata)"},
-            {"Bagian": "Ekspor CSV anti formula injection", "Status": "Diuji (unit test)"},
-            {"Bagian": "SQLite simpan/dedupe/status", "Status": "Diuji (unit test)"},
-            {"Bagian": "Deteksi halaman login/challenge", "Status": "Diuji dengan teks contoh"},
-            {"Bagian": "Menunggu login + deteksi cookie c_user", "Status": "Diuji dengan simulasi (jam & cookie palsu)"},
-            {"Bagian": "Helper login (scripts/login_helper.py)", "Status": "Diuji tanpa browser; perlu uji nyata"},
-            {"Bagian": "Payload Ollama think=false & num_predict", "Status": "Diuji (tanpa model nyata)"},
-            {"Bagian": "Pembacaan grup Facebook sungguhan", "Status": "BELUM — harus Anda uji (POC)"},
-            {"Bagian": "Login manual di jendela Chromium", "Status": "BELUM — harus Anda uji"},
-            {"Bagian": "Kualitas analisis model Ollama", "Status": "BELUM — bergantung model & laptop"},
-        ],
-        hide_index=True,
-    )
-
-    with st.expander("Uji cepat deteksi status halaman (tanpa membuka Facebook)"):
-        st.caption(
-            "Tempel teks halaman yang Anda lihat untuk mengetahui bagaimana aplikasi "
-            "akan menilainya. Ini tidak membuka Facebook."
+def _help_section(settings: Settings) -> None:
+    st.markdown("### ❓ Bantuan & keterbatasan")
+    with st.expander("Apa yang alat ini lakukan / tidak lakukan"):
+        st.markdown(
+            "**Dilakukan:** menyimpan postingan yang Anda lihat sendiri, deduplikasi, "
+            "filter kata kunci/lokasi/harga, analisis aturan iPhone, opsional AI lokal, "
+            "ekspor CSV, draf balasan untuk dikirim manual.\n\n"
+            "**Tidak dilakukan:** menembus CAPTCHA/checkpoint, stealth/proxy, auto-post, "
+            "auto-comment, auto-chat, mengumpulkan profil anggota, mengunggah data ke cloud."
         )
-        url = st.text_input("URL halaman", value="https://www.facebook.com/groups/123456789/")
-        body = st.text_area("Teks yang terlihat di halaman", height=90)
-        if st.button("Periksa status halaman"):
+    with st.expander("Kenapa ada postingan 'tersembunyi'?"):
+        st.markdown(
+            "Postingan tetap disimpan walau tidak lolos filter (ditandai tersembunyi). "
+            "Pilih **Tersembunyi** di tab Hasil untuk melihatnya, atau longgarkan filter "
+            "lalu klik **Terapkan ulang filter**."
+        )
+    with st.expander("Keterbatasan penting"):
+        st.markdown(
+            "1. Tautan grup publik bukan jaminan isi bisa dibaca.\n"
+            "2. Selector browser belum tentu cocok; teks bisa terpotong.\n"
+            "3. Deduplikasi tanpa ID tautan memakai hash teks.\n"
+            "4. Waktu relatif ('3 jam lalu') hanya perkiraan.\n"
+            "5. Model AI kecil bisa salah membaca model/harga.\n"
+            "6. Teks mentah bisa memuat nama penulis/komentar karena diambil dari "
+            "kontainer postingan.\n"
+            "7. Semua respons dikirim manual oleh Anda."
+        )
+    with st.expander("Uji deteksi halaman (tanpa membuka Facebook)"):
+        url = st.text_input("URL", value="https://www.facebook.com/groups/123456789/")
+        body = st.text_area("Teks yang terlihat", height=80)
+        if st.button("Periksa", key="check_page_state"):
             state = detect_page_state(url, body)
             st.write("Status:", state.status.value)
             st.write("Detail:", state.detail)
             st.info(ACCESS_STATUS_MESSAGES.get(state.status, ""))
+    with st.expander("Sudah diuji otomatis vs perlu uji di laptop"):
+        st.dataframe(
+            [
+                {"Bagian": "Normalisasi, harga, dedupe, filter", "Status": "Diuji"},
+                {"Bagian": "Analisis aturan & validasi AI", "Status": "Diuji"},
+                {"Bagian": "Ekspor CSV & draf netral", "Status": "Diuji"},
+                {"Bagian": "SQLite, job, event, filter ulang", "Status": "Diuji"},
+                {"Bagian": "Deteksi login/checkpoint & cookie", "Status": "Diuji dengan simulasi"},
+                {"Bagian": "Pembacaan grup Facebook nyata", "Status": "BELUM — uji POC"},
+                {"Bagian": "Login nyata & qwen3 nyata", "Status": "BELUM — uji di laptop"},
+            ],
+            hide_index=True,
+        )
 
+
+def render_pengaturan(settings: Settings, db: Database) -> None:
+    _security_section(settings, db)
     st.divider()
-    st.markdown("#### Berkas dokumentasi")
-    docs = [
-        ("README.md", "Gambaran proyek & cara jalan singkat"),
-        ("docs/INSTALL_WINDOWS.md", "Instalasi Windows PowerShell langkah demi langkah"),
-        ("docs/POC_FACEBOOK.md", "Prosedur proof of concept & cara membaca hasilnya"),
-        ("docs/LIMITATIONS.md", "Keterbatasan dan kepatuhan"),
-        ("docs/GIT_GUIDE.md", "Git pertama kali & update berikutnya"),
-        ("docs/TESTING.md", "Apa yang diuji, hasilnya, dan apa yang belum"),
-        ("docs/ARCHITECTURE.md", "Struktur modul & alur data"),
-    ]
-    for path, description in docs:
-        exists = (PROJECT_ROOT / path).exists()
-        st.markdown(f"- {'📄' if exists else '⚠️'} `{path}` — {description}")
-
-    st.caption(
-        "Data dan sesi login tetap di laptop Anda. Repositori GitHub hanya berisi kode, "
-        "dokumentasi, dan data DEMO sintetis."
-    )
+    _ollama_section(settings, db)
+    st.divider()
+    _profile_section()
+    st.divider()
+    _data_section(settings, db)
+    st.divider()
+    _help_section(settings)
