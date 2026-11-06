@@ -33,13 +33,13 @@ Lint (opsional, butuh `ruff`):
 pytest 8.x. Windows belum dijalankan dari lingkungan ini.
 
 ```
-341 passed in ~2s
+352 passed in ~2s
 ruff check . --select E,F,W,I  ->  All checks passed!
 ```
 
 | Berkas tes | Jumlah | Cakupan |
 |---|---:|---|
-| `tests/test_normalize.py` | 44 | normalisasi teks, validasi tautan grup, ID postingan, dedupe key, harga Indonesia, waktu posting |
+| `tests/test_normalize.py` | 52 | normalisasi teks, validasi tautan grup, ID postingan, dedupe key, harga Indonesia, waktu posting |
 | `tests/test_analyzer.py` | 48 | kategori, model iPhone, harga vs budget, detail, lokasi, skor & batasnya, teks tidak tepercaya |
 | `tests/test_db.py` | 21 | simpan, dedupe, status, analisis upsert, filter, job, event, penghapusan, statistik |
 | `tests/test_llm_validation.py` | 25 | validasi keluaran AI, anti-halusinasi, prompt, payload `think`/`num_predict`, offline, blokir endpoint non-lokal |
@@ -51,7 +51,7 @@ ruff check . --select E,F,W,I  ->  All checks passed!
 | `tests/test_pipeline.py` | 12 | parsing input manual, penyimpanan, dedupe, batch |
 | `tests/test_drafts.py` | 11 | draf netral, larangan klaim, placeholder, profil |
 | `tests/test_app_smoke.py` | 7 | dashboard dirender (kosong & setelah DEMO), hanya 3 tab, segmentasi Semua/Lolos/Tersembunyi, tombol filter ulang, hapus baris komentar |
-| `tests/test_post_extraction.py` | 35 | kartu dari tautan `/posts/` **dan** kartu feed `[aria-posinset]`, dedupe, buang komentar, blok `dir=auto`, pembersihan label "Facebook"/huruf berjauhan, fallback selector |
+| `tests/test_post_extraction.py` | 37 | kartu dari tautan `/posts/` **dan** kartu feed `[aria-posinset]`, dedupe, buang komentar, blok `dir=auto`, pembersihan label "Facebook"/huruf berjauhan, fallback selector |
 | `tests/test_text_quality.py` | 26 | pola komentar/reply (contoh asli dari ekspor), postingan sah tidak ikut terbuang, adapter melewati komentar, `skipped_comment`, pembersihan data lama |
 | `tests/test_ui_data.py` | 12 | hitungan per status filter, hapus per sumber (DEMO), pratinjau filter, "terapkan ulang filter" tanpa duplikasi |
 
@@ -62,6 +62,7 @@ ruff check . --select E,F,W,I  ->  All checks passed!
 | Worker end-to-end (mode manual) | `python -m fbworkspace.worker --job-id 1` | Job `selesai`, event log lengkap, counter JSON benar |
 | Menunggu login (simulasi) | `wait_for_login` dengan jam & cookie palsu | Deteksi, timeout, dan berhenti bekerja tanpa menggantung |
 | Helper login tanpa Chromium | `scripts/login_helper.py` | Gagal dengan pesan + saran `playwright install chromium`, status ditulis ke marker |
+| Penurunan tautan postingan | `resolve_post_url` dengan tautan foto `set=pcb./gm.` dan tautan komentar | ID postingan terbaca; tautan disusun dari ID grup; tanpa petunjuk → None |
 | Selector dari PowerShell | `_selector_is_default` + isi `poc_windows.ps1` | `div[role=article]` (kutip hilang) tetap dianggap default; wrapper tidak mengirim `--selector` |
 | Logika DOM ekstraksi (jsdom) | `npm install jsdom` lalu `node scripts/check_extraction_dom.cjs` (Python: `FBW_PYTHON`) | 9/9 pemeriksaan lulus: kartu postingan terdeteksi, komentar dibuang, postingan lain tidak ikut |
 | Penyaring komentar pada data nyata | `looks_like_comment` atas ekspor 122 baris pengguna | 122/122 terdeteksi; 9 teks DEMO & postingan contoh tidak ikut tertandai |

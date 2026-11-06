@@ -11,7 +11,7 @@ import re
 import unicodedata
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
 from .models import UNKNOWN, PriceKind
 
@@ -290,6 +290,84 @@ def canonical_post_url(url: str | None) -> str:
         if ids:
             return f"https://www.facebook.com{path}?story_fbid={ids[0]}"
     return f"https://www.facebook.com{path}"
+
+
+_GROUP_ID_RE = re.compile(r"/groups/(\d+)")
+_SET_POST_ID_RE = re.compile(r"(?:pcb|gm)\.(\d{5,})", re.I)
+
+
+def group_id_from_url(url: str | None) -> str | None:
+    """Ambil ID numerik grup dari tautan, mis. /groups/621052260194574/."""
+    if not url:
+        return None
+    match = _GROUP_ID_RE.search(url)
+    return match.group(1) if match else None
+
+
+def post_id_from_set_param(url: str | None) -> str | None:
+    """Ambil ID postingan dari parameter `set=pcb.<id>` atau `set=gm.<id>`.
+
+    Tautan foto di grup memuat set tersebut; nilainya adalah ID postingan induk.
+    """
+    if not url:
+        return None
+    try:
+        query = parse_qs(urlparse(url).query)
+    except ValueError:
+        return None
+    for value in query.get("set", []):
+        match = _SET_POST_ID_RE.search(value or "")
+        if match:
+            return match.group(1)
+    return None
+
+
+def build_group_post_url(group_url: str | None, post_id: str | None) -> str | None:
+    """Susun tautan postingan grup dari ID grup + ID postingan."""
+    group_id = group_id_from_url(group_url)
+    if not group_id or not post_id:
+        return None
+    return f"https://www.facebook.com/groups/{group_id}/posts/{post_id}/"
+
+
+def resolve_post_url(hrefs: list[str] | None, group_url: str | None) -> str | None:
+    """Pilih tautan postingan terbaik dari tautan yang terlihat di satu kartu.
+
+    Urutan: tautan postingan langsung -> turunkan dari tautan komentar
+    (buang `comment_id`) -> turunkan dari `set=pcb./gm.` pada tautan foto.
+    Kembalikan None bila memang tidak ada — jangan mengarang.
+    """
+    links = [href for href in (hrefs or []) if href]
+    for href in links:
+        if "comment_id=" in href:
+            continue
+        if "/posts/" in href or "/permalink/" in href or "story_fbid=" in href:
+            canonical = canonical_post_url(href)
+            if canonical and "/photo" not in canonical:
+                return canonical
+    for href in links:
+        if "comment_id=" in href:
+            canonical = canonical_post_url(href)
+            if canonical and "/posts/" in canonical:
+                return canonical
+    for href in links:
+        post_id = post_id_from_set_param(href)
+        if post_id:
+            resolved = build_group_post_url(group_url, post_id)
+            if resolved:
+                return resolved
+    return None
+
+
+def group_search_url(
+    group_url: str | None, text: str, *, max_chars: int = 80
+) -> str | None:
+    """Tautan pencarian di dalam grup, untuk postingan tanpa permalink."""
+    group_id = group_id_from_url(group_url)
+    snippet = collapse_ws(text)[:max_chars]
+    if not group_id or not snippet:
+        return None
+    return f"https://www.facebook.com/groups/{group_id}/search/?q={quote(snippet)}"
 
 
 def extract_post_ids_from_url(url: str | None) -> list[str]:

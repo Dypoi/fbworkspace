@@ -122,13 +122,25 @@ class TestAdapterSkipsComments:
         assert adapter._extract_post(element, GROUP_URL, diagnostics, set()) is None
         assert diagnostics.get("skipped_comment", 0) == 0
 
-    def test_comment_only_permalink_is_skipped(self, adapter):
+    def test_comment_only_permalink_derives_post_url(self, adapter):
         diagnostics: dict = {}
         element = FakeElement(
             "38 pm mas, nego dikit boleh kok",
             hrefs=(
                 "https://www.facebook.com/groups/1/posts/2/?comment_id=33",
             ),
+        )
+        post = adapter._extract_post(element, GROUP_URL, diagnostics, set())
+        assert post is not None
+        assert post.post_url is not None
+        assert "/posts/2" in post.post_url
+        assert "comment_id" not in post.post_url
+
+    def test_comment_text_skipped_even_with_link(self, adapter):
+        diagnostics: dict = {}
+        element = FakeElement(
+            "Zozo Yan · 1m Mahar Reply Share",
+            hrefs=("https://www.facebook.com/groups/1/posts/2/?comment_id=33",),
         )
         assert adapter._extract_post(element, GROUP_URL, diagnostics, set()) is None
         assert diagnostics["skipped_comment"] == 1

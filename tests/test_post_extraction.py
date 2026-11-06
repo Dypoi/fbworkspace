@@ -393,3 +393,29 @@ class TestPocWrapper:
         assert '[string]$Selector = ""' in script
         # Hanya ada satu kemunculan: di dalam blok kondisional.
         assert script.count('"--selector"') == 1
+
+
+class TestPostUrlFromCards:
+    """Grup tanpa permalink: tautan diturunkan dari foto/komentar, bukan dikarang."""
+
+    GROUP = "https://www.facebook.com/groups/621052260194574/"
+
+    def test_url_derived_from_photo_set(self, adapter):
+        card = FakeElement(
+            "Dijual iPhone X 64GB mulus 5jt",
+            hrefs=(
+                "https://www.facebook.com/photo/?fbid=2551528888699430"
+                "&set=pcb.1510825557883902&__cft__[0]=abc",
+            ),
+        )
+        post = adapter._extract_post(card, self.GROUP, {}, set())
+        assert post is not None
+        assert post.post_url == (
+            "https://www.facebook.com/groups/621052260194574/posts/1510825557883902/"
+        )
+
+    def test_text_only_card_has_no_url(self, adapter):
+        card = FakeElement("nyari iPhone seri 11 - 16 iBox, dana menyesuaikan kondisi")
+        post = adapter._extract_post(card, self.GROUP, {}, set())
+        assert post is not None
+        assert post.post_url is None

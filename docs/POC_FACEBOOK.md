@@ -107,6 +107,13 @@ Kemungkinan penyebab, dari yang paling umum:
 
    Tombol **"See more"/"Lihat selengkapnya"** di dalam kartu diklik otomatis
    (best-effort) sebelum teks dibaca; kalau gagal diklik, teks bisa terpotong.
+
+   Baris `URL` pada tiap postingan bisa berisi:
+   - tautan `/posts/…` asli,
+   - tautan hasil turunan (dari `comment_id` atau `set=pcb./gm.` pada tautan foto),
+   - `(tidak tersedia — kemungkinan postingan anonim)` bila tidak ada petunjuk.
+     Untuk kasus itu, dashboard menyediakan tautan **cari di grup** dengan
+     potongan teks, bukan tautan karangan.
 2. **Konten dimuat lambat.** Ulangi dengan `-MaxSeconds 120` dan gulir manual sekali
    di jendela browser untuk memancing pemuatan.
 3. **Selector tidak cocok.** Facebook bisa memakai struktur berbeda. Berikut cara
