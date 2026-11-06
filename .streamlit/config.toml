@@ -1,0 +1,26 @@
+# Konfigurasi aman untuk laptop pribadi.
+# Dashboard HANYA mendengarkan di localhost, jadi tidak bisa diakses dari
+# perangkat lain di jaringan yang sama.
+#
+# Catatan: saat pengembangan di lingkungan sandbox/preview, alamat bisa
+# ditimpa lewat argumen CLI (--server.address 0.0.0.0). Jangan jadikan
+# 0.0.0.0 default untuk laptop Windows Anda.
+
+[server]
+address = "127.0.0.1"
+port = 8501
+headless = false
+enableCORS = true
+enableXsrfProtection = true
+fileWatcherType = "auto"
+
+[browser]
+gatherUsageStats = false
+
+[client]
+showErrorDetails = true
+toolbarMode = "minimal"
+
+[theme]
+base = "dark"
+primaryColor = "#3b82f6"
