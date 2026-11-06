@@ -83,7 +83,7 @@ Kemungkinan penyebab, dari yang paling umum:
 
 1. **Grup memerlukan keanggotaan.** Banyak grup "publik" tetap hanya menampilkan
    sebagian isi untuk non-anggota. Pilihan Anda: gabung secara wajar (ikuti aturan
-   grup) atau gunakan **Input Manual**.
+   grup) atau gunakan ① **Tempel manual** di tab Mulai.
 2. **Konten dimuat lambat.** Ulangi dengan `-MaxSeconds 120` dan gulir manual sekali
    di jendela browser untuk memancing pemuatan.
 3. **Selector tidak cocok.** Facebook bisa memakai struktur berbeda. Berikut cara
@@ -105,7 +105,7 @@ Kemungkinan penyebab, dari yang paling umum:
    secara manual di browser untuk melihat apakah isinya berbeda.
 
 > Penting: POC ini tidak dirancang untuk "menemukan jalan masuk". Jika isi grup
-> memang tidak ditampilkan untuk akun Anda, jalur yang benar adalah Input Manual
+> memang tidak ditampilkan untuk akun Anda, jalur yang benar adalah mode Tempel manual
 > atau menjadi anggota sesuai aturan grup.
 
 ---

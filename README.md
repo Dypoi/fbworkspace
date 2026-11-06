@@ -21,7 +21,8 @@ Ini penting supaya Anda tidak salah harap.
 
 | Bagian | Status |
 |---|---|
-| Dashboard Streamlit (semua tab) | ✅ Berjalan & diuji (termasuk smoke test otomatis) |
+| Dashboard Streamlit (3 langkah: Mulai · Hasil · Pengaturan) | ✅ Berjalan & diuji (termasuk smoke test otomatis) |
+| Hitungan Semua/Lolos/Tersembunyi + "Terapkan ulang filter" | ✅ Diuji otomatis (data & UI) |
 | SQLite, deduplikasi, status, penghapusan data | ✅ Diuji otomatis |
 | Filter kata kunci/lokasi/harga, mode longgar & ketat | ✅ Diuji otomatis |
 | Analisis aturan iPhone (kategori, model, harga vs budget, detail) | ✅ Diuji otomatis |
@@ -58,6 +59,14 @@ Ini penting supaya Anda tidak salah harap.
 ---
 
 ## 3. Fitur MVP
+
+**Alur UI tiga langkah** (menggantikan 6 tab lama)
+- Tab **Mulai**: ① sumber (Grup Facebook / Tempel manual / DEMO) → ② filter →
+  ③ batas + mulai. Ringkasan satu baris menunjukkan apa yang akan dijalankan.
+- Tab **Hasil**: hitungan **Semua / Lolos filter / Tersembunyi**, klik baris untuk
+  detail, ekspor CSV, dan tombol **Terapkan ulang filter** untuk data lama.
+- Tab **Pengaturan**: Ollama, profil bisnis, data (termasuk hapus DEMO), keamanan,
+  bantuan. Sidebar hanya ringkasan — tidak ada filter ganda.
 
 **Dashboard lokal**
 - Helper login manual sekali (`scripts/login_helper.py` + tombol di dashboard).
@@ -129,7 +138,7 @@ fbworkspace/
 │   └── load_demo.py            # muat data DEMO via CLI
 ├── data/demo_posts_DEMO.json   # data sintetis berlabel DEMO
 ├── docs/                       # instalasi, POC, batasan, Git, testing
-├── tests/                      # 235 tes otomatis
+├── tests/                      # 249 tes otomatis
 ├── requirements.txt
 ├── .env.example
 └── .gitignore
@@ -158,10 +167,13 @@ Dashboard terbuka di `http://127.0.0.1:8501` dan **hanya** bisa diakses dari lap
 
 ### Langkah A — Coba tanpa Facebook (5 menit)
 1. Jalankan dashboard.
-2. Klik **Muat data DEMO (sintetis)**.
-3. Buka tab **Postingan**: cek tabel, filter, detail, ubah status, coba ekspor CSV.
-4. Buka **Input Manual**: tempel teks postingan, simpan, lihat hasil filter.
-5. Coba draf respons di detail postingan (salin, jangan dikirim otomatis).
+2. Tab **Mulai** → ① pilih sumber **Data DEMO** → **Muat data DEMO**.
+   (Saat database masih kosong, kartu onboarding menawarkan tombol yang sama.)
+3. Buka tab **Hasil**: perhatikan **Semua (N) · Lolos filter (N) · Tersembunyi (N)**.
+4. Klik satu baris untuk detail, ubah status, coba draf dan ekspor CSV.
+5. Kembali ke tab **Mulai** → ① **Tempel manual** untuk mencoba teks Anda sendiri.
+6. Ubah filter di langkah ②, lalu klik **Terapkan ulang filter** di tab Hasil:
+   status data lama dihitung ulang tanpa menambah baris.
 
 ### Langkah B — Login sekali (opsional tapi disarankan)
 
@@ -170,7 +182,7 @@ Dashboard terbuka di `http://127.0.0.1:8501` dan **hanya** bisa diakses dari lap
 ```
 Jendela Chromium terbuka. Login sendiri di sana (termasuk OTP/checkpoint), lalu
 tutup jendela browser. Sesi tersimpan di `data/browser_profile/` (tidak masuk Git).
-Bisa juga lewat dashboard: tab **Jalankan → 🔐 Login Facebook**.
+Bisa juga lewat dashboard: tab **Mulai → ① Sumber data → 🔐 Login Facebook**.
 
 Kalau login belum dilakukan dan saat pembacaan Facebook meminta login, **browser
 tidak langsung ditutup**: jendela dibiarkan terbuka sampai `FBW_LOGIN_WAIT_SECONDS`
@@ -183,14 +195,15 @@ powershell -ExecutionPolicy Bypass -File .\scripts\poc_windows.ps1 `
   -Url "https://www.facebook.com/groups/ID-GRUP-ANDA/"
 ```
 Baca **[docs/POC_FACEBOOK.md](docs/POC_FACEBOOK.md)** untuk cara menafsirkan hasil.
-Kalau POC tidak berhasil, gunakan **Input Manual** — aplikasi tetap berguna.
+Kalau POC tidak berhasil, gunakan ① **Tempel manual** di tab Mulai — aplikasi tetap berguna.
 
 ### Langkah D — Jalankan dari dashboard (batas kecil)
-Tab **Jalankan** → tempel tautan grup → centang pernyataan → **Mulai pembacaan**.
+Tab **Mulai** → ① pilih **Grup Facebook** dan tempel tautan → ② atur filter →
+③ centang pernyataan → **Mulai pembacaan**. Panel status job muncul di bawahnya.
 Batas awal disarankan: 3–5 postingan, 2–3 menit.
 
 ### Langkah E — Ollama (opsional, terakhir)
-Ikuti tab **Analisis Ollama** di dashboard dan bagian 8 di bawah.
+Buka tab **Pengaturan → 🧠 Ollama** dan bagian 8 di bawah.
 
 ---
 
@@ -211,6 +224,11 @@ frasa dicocokkan apa adanya. Eksklusi selalu menang atas inklusi.
 **Mode filter**:
 - *Longgar* (default): postingan tanpa harga/lokasi tetap lolos dengan catatan.
 - *Ketat*: postingan tanpa harga/lokasi digugurkan.
+
+**Postingan tersembunyi**: data yang tidak lolos filter tetap disimpan dan bisa
+dilihat lewat pilihan **Tersembunyi** di tab Hasil. Setelah mengubah kriteria,
+klik **Terapkan ulang filter** — kolom filter dihitung ulang dari teks tersimpan
+(tanpa baris baru dan tanpa mengubah hasil analisis).
 
 **Skor relevansi** (dijumlahkan, maksimum 100):
 
@@ -253,7 +271,7 @@ FBW_OLLAMA_NUM_PREDICT=512     # naikkan bila JSON sering terpotong
 ```
 
 Model juga bisa diganti sementara tanpa restart lewat kotak **"Model untuk sesi ini"**
-di tab **Analisis Ollama**.
+di tab **Pengaturan → 🧠 Ollama**.
 
 **Kejujuran soal performa:** RAM 16 GB cukup untuk memuat model 3B–4B terkuantisasi,
 tetapi kecepatan sangat bergantung pada CPU/GPU. Tanpa GPU, satu postingan bisa
@@ -277,7 +295,7 @@ memakan puluhan detik sampai lebih dari satu menit. Karena itu:
 | Model AI | `models/`, `*.gguf` | ❌ |
 | Data DEMO sintetis | `data/demo_posts_DEMO.json` | ✅ |
 
-Penghapusan data tersedia di tab **Pengaturan & Data** (postingan, log, profil browser).
+Penghapusan data tersedia di tab **Pengaturan → 💾 Data** (postingan, log, profil browser), termasuk tombol **Hapus data DEMO** pada banner kuning di bagian atas.
 
 ---
 
@@ -287,8 +305,8 @@ Penghapusan data tersedia di tab **Pengaturan & Data** (postingan, log, profil b
 .\.venv\Scripts\python.exe -m pytest
 ```
 
-Hasil terakhir di lingkungan pengembangan: **235 tes lulus** (termasuk smoke test
-dashboard Streamlit), `ruff check` bersih. Detail: **[docs/TESTING.md](docs/TESTING.md)**.
+Hasil terakhir di lingkungan pengembangan: **249 tes lulus** (termasuk smoke test
+dashboard Streamlit untuk 3 tab, segmentasi hasil, dan filter ulang), `ruff check` bersih. Detail: **[docs/TESTING.md](docs/TESTING.md)**.
 
 Yang **belum** diuji dan harus Anda validasi sendiri:
 1. Pembacaan grup Facebook nyata (selector, login, pembatasan).
@@ -341,4 +359,4 @@ Argumen CLI hanya menimpa satu proses itu dan tidak mengubah file. Jangan menyal
 
 Gunakan alat ini hanya untuk konten yang memang boleh Anda akses, dan tetap
 mematuhi Ketentuan Facebook serta hukum yang berlaku. Jika pembacaan otomatis
-tidak diizinkan atau tidak stabil, gunakan **Input Manual**.
+tidak diizinkan atau tidak stabil, gunakan ① **Tempel manual** di tab Mulai.

@@ -15,7 +15,7 @@ Grup "publik" di Facebook tetap bisa:
 - menampilkan checkpoint/CAPTCHA ketika aktivitas dianggap tidak biasa.
 
 Aplikasi **tidak** mencoba melewati hal-hal tersebut. Jika terjadi, proses berhenti
-dan status dilaporkan. Alternatif yang sah: **Input Manual**.
+dan status dilaporkan. Alternatif yang sah: ① **Tempel manual** di tab Mulai.
 
 ### Login: kesempatan, bukan jaminan
 Saat Facebook meminta login, aplikasi membiarkan jendela terbuka selama
@@ -181,5 +181,5 @@ markup (bukan Excel), tetap berhati-hati.
 - Anda merasa perlu "trik" agar bisa membaca lebih banyak — itu tanda batas.
 - Anda mulai menyimpan data pribadi yang tidak diperlukan untuk pekerjaan Anda.
 
-Dalam kondisi tersebut: hentikan proses, gunakan Input Manual untuk postingan yang
+Dalam kondisi tersebut: hentikan proses, gunakan mode **Tempel manual** untuk postingan yang
 memang Anda lihat, dan jangan mencari jalan memutar.

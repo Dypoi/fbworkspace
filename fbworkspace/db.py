@@ -281,6 +281,49 @@ class Database:
         with self.conn() as conn:
             conn.execute("DELETE FROM posts WHERE id = ?", (post_id,))
 
+    def delete_posts_by_source(self, source: str) -> int:
+        """Hapus postingan berdasarkan sumber (mis. hanya data DEMO)."""
+        with self.conn() as conn:
+            cur = conn.execute("DELETE FROM posts WHERE source = ?", (source,))
+            return cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
+
+    def update_filter_result(self, post_id: int, passed: bool, reasons: list[str]) -> None:
+        """Perbarui hasil filter tanpa menyentuh hasil analisis/AI."""
+        with self.conn() as conn:
+            conn.execute(
+                """
+                UPDATE posts
+                SET filter_passed = ?, filter_reasons_json = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    int(bool(passed)),
+                    json.dumps(reasons or [], ensure_ascii=False),
+                    utcnow_iso(),
+                    post_id,
+                ),
+            )
+
+    def count_ai_analysed(self) -> int:
+        """Jumlah postingan yang dianalisis dengan Ollama (bukan aturan)."""
+        with self.conn() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) AS c FROM analyses WHERE engine = 'ollama'"
+            ).fetchone()
+        return int(row["c"]) if row else 0
+
+    def count_by_filter(self) -> dict[str, int]:
+        """Jumlah postingan per status filter: passed / hidden / unknown."""
+        with self.conn() as conn:
+            rows = conn.execute(
+                "SELECT filter_passed AS fp, COUNT(*) AS c FROM posts GROUP BY fp"
+            ).fetchall()
+        out = {"passed": 0, "hidden": 0, "unknown": 0}
+        for row in rows:
+            key = "passed" if row["fp"] == 1 else "hidden" if row["fp"] == 0 else "unknown"
+            out[key] += int(row["c"])
+        return out
+
     def delete_all_posts(self) -> int:
         with self.conn() as conn:
             cur = conn.execute("DELETE FROM posts")

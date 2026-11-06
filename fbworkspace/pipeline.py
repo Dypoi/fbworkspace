@@ -146,6 +146,64 @@ def parse_manual_input(raw: str) -> list[ManualEntry]:
 
 
 @dataclass
+class ReapplySummary:
+    checked: int = 0
+    passed: int = 0
+    changed: int = 0
+    limited: bool = False
+
+
+def preview_filter_counts(
+    db: Database,
+    filter_config: FilterConfig,
+    *,
+    strict_unknown: bool = False,
+    limit: int = 300,
+) -> tuple[int, int]:
+    """Hitung (lolos, diperiksa) untuk data yang SUDAH tersimpan, tanpa mengubah apa pun."""
+    rows = db.list_posts(limit=limit)
+    passed = 0
+    for row in rows:
+        result = evaluate(
+            row["text"], filter_config, strict_unknown=strict_unknown
+        )
+        if result.passed:
+            passed += 1
+    return passed, len(rows)
+
+
+def reapply_filters(
+    db: Database,
+    filter_config: FilterConfig,
+    *,
+    strict_unknown: bool = False,
+    limit: int = 5000,
+) -> ReapplySummary:
+    """Hitung ulang filter untuk postingan lama dengan konfigurasi filter saat ini.
+
+    Hanya kolom filter yang diperbarui; hasil analisis aturan/AI tidak diubah.
+    """
+    total = db.count_posts()
+    rows = db.list_posts(limit=limit)
+    summary = ReapplySummary(checked=0, limited=total > len(rows))
+    for row in rows:
+        result = evaluate(
+            row["text"], filter_config, strict_unknown=strict_unknown
+        )
+        summary.checked += 1
+        if result.passed:
+            summary.passed += 1
+        previous = row.get("filter_passed")
+        passed_changed = previous is None or bool(previous) != result.passed
+        reasons_changed = list(row.get("filter_reasons") or []) != list(result.reasons)
+        if passed_changed or reasons_changed:
+            db.update_filter_result(row["id"], result.passed, result.reasons)
+            if passed_changed:
+                summary.changed += 1
+    return summary
+
+
+@dataclass
 class BatchSummary:
     read: int = 0
     inserted: int = 0
