@@ -259,7 +259,18 @@ dilacak Git.
 
 ---
 
-## 14. Menghapus instalasi
+## 14. Jangan meniru konfigurasi "preview"
+
+Jika Anda melihat dokumentasi/screenshot dari lingkungan pengembangan yang memakai
+`--server.address 0.0.0.0`, itu hanya agar halaman bisa dipratinjau lewat proxy.
+Untuk laptop pribadi, pertahankan `127.0.0.1`. File `.streamlit/config.toml` dan
+`scripts/run_windows.ps1` di repo ini sudah aman; jangan mengubahnya menjadi
+`0.0.0.0` kecuali Anda benar-benar paham konsekuensinya (dashboard bisa diakses
+perangkat lain di jaringan yang sama).
+
+---
+
+## 15. Menghapus instalasi
 
 ```powershell
 # dari folder proyek

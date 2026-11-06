@@ -289,7 +289,26 @@ Panduan pertama kali & update: **[docs/GIT_GUIDE.md](docs/GIT_GUIDE.md)**.
 
 ---
 
-## 13. Ketentuan platform
+## 13. Catatan: konfigurasi preview pengembangan vs laptop Anda
+
+Saat aplikasi ini dibangun, dashboard dijalankan di lingkungan pengembangan dengan
+alamat `0.0.0.0` agar bisa dipratinjau lewat URL proxy. **Itu hanya untuk preview,
+bukan untuk laptop Anda.**
+
+| | Preview pengembangan | Laptop Windows Anda |
+|---|---|---|
+| Alamat bind | `0.0.0.0` (lewat argumen CLI sementara) | `127.0.0.1` (dari `.streamlit/config.toml` & `scripts/run_windows.ps1`) |
+| Data | database kosong/terpisah | database lokal Anda |
+| Akses Facebook | tidak tersedia | browser lokal Anda, login manual |
+| Tujuan | memeriksa tampilan | pemakaian sebenarnya |
+
+Di repo, konfigurasi yang tersimpan (`config.toml`, script) selalu `127.0.0.1`.
+Argumen CLI hanya menimpa satu proses itu dan tidak mengubah file. Jangan menyalin
+`--server.address 0.0.0.0` ke script laptop Anda.
+
+---
+
+## 14. Ketentuan platform
 
 Gunakan alat ini hanya untuk konten yang memang boleh Anda akses, dan tetap
 mematuhi Ketentuan Facebook serta hukum yang berlaku. Jika pembacaan otomatis
