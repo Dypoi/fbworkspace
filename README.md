@@ -24,7 +24,7 @@ Ini penting supaya Anda tidak salah harap.
 | Dashboard Streamlit (3 langkah: Mulai · Hasil · Pengaturan) | ✅ Berjalan & diuji (termasuk smoke test otomatis) |
 | Hitungan Semua/Lolos/Tersembunyi + "Terapkan ulang filter" | ✅ Diuji otomatis (data & UI) |
 | Penyaring komentar/reply + pembersih baris lama | ✅ Diuji otomatis (122 baris ekspor nyata terdeteksi) |
-| Ekstraksi isi postingan dari tautan `/posts/` (bukan komentar) | ✅ Unit + uji DOM (jsdom); ⚠️ tetap perlu POC di akun Anda |
+| Ekstraksi isi postingan (tautan `/posts/` **atau kartu feed**) | ✅ Unit + uji DOM (jsdom); ⚠️ tetap perlu POC di akun Anda |
 | SQLite, deduplikasi, status, penghapusan data | ✅ Diuji otomatis |
 | Filter kata kunci/lokasi/harga, mode longgar & ketat | ✅ Diuji otomatis |
 | Analisis aturan iPhone (kategori, model, harga vs budget, detail) | ✅ Diuji otomatis |
@@ -85,11 +85,15 @@ Ini penting supaya Anda tidak salah harap.
 - Status analisis dan status pengerjaan: **baru / diperiksa / relevan / diabaikan**.
 - Deduplikasi: ID tautan → fallback hash teks ternormalisasi (batasnya dijelaskan).
 - Penanda `tidak diketahui` untuk data yang tidak tersedia (bukan tebakan).
-- Isi postingan diambil dari **kartu postingan** yang ditemukan lewat tautan
-  `/posts/` (bukan dari `div[role="article"]`, yang di grup nyata justru komentar).
-  Komentar di dalam kartu dibuang, lalu teks dipotong di bilah `Like · Comment · Share`.
+- Isi postingan diambil dari **kartu postingan**: lewat tautan `/posts/` bila ada,
+  atau dari kartu feed `[aria-posinset]` untuk grup yang tidak memasang tautan.
+  Teks diambil dari blok `div[dir="auto"]` (bukan seluruh kartu yang penuh label
+  "Facebook" dan huruf berjauhan), komentar dibuang, lalu dipotong di bilah
+  `Like · Comment · Share`.
 - Komentar/reply tetap ditolak sebagai jaring pengaman: teks berpola `… Reply`/
   `LikeReplyShare` dihitung sebagai "komentar dilewati" dan tidak disimpan.
+- Singkatan pasar Indonesia dikenali: `ip x`, `ipx`, `iphonex` = iPhone X; sehingga
+  kata kunci `iphone x` benar-benar menemukan postingan seperti "jual ip x 64gb".
 
 **Analisis iPhone (tanpa AI)**
 - Kategori: `mencari`, `menjual`, `diskusi`, `tidak relevan`.
@@ -146,7 +150,7 @@ fbworkspace/
 │   └── load_demo.py            # muat data DEMO via CLI
 ├── data/demo_posts_DEMO.json   # data sintetis berlabel DEMO
 ├── docs/                       # instalasi, POC, batasan, Git, testing
-├── tests/                      # 290 tes otomatis
+├── tests/                      # 328 tes otomatis
 ├── requirements.txt
 ├── .env.example
 └── .gitignore
@@ -313,7 +317,7 @@ Penghapusan data tersedia di tab **Pengaturan → 💾 Data** (postingan, log, p
 .\.venv\Scripts\python.exe -m pytest
 ```
 
-Hasil terakhir di lingkungan pengembangan: **290 tes lulus** (termasuk smoke test
+Hasil terakhir di lingkungan pengembangan: **328 tes lulus** (termasuk smoke test
 dashboard Streamlit untuk 3 tab, segmentasi hasil, dan filter ulang), `ruff check` bersih. Detail: **[docs/TESTING.md](docs/TESTING.md)**.
 
 Yang **belum** diuji dan harus Anda validasi sendiri:
@@ -335,9 +339,11 @@ Ringkasan (lengkap di **[docs/LIMITATIONS.md](docs/LIMITATIONS.md)**):
 - Waktu relatif ("3 jam lalu") hanya perkiraan.
 - Model kecil bisa salah membaca model/harga; selalu periksa manual.
 - Aplikasi tidak mengirim pesan; semua respons Anda kirim sendiri.
-- Ekstraksi memakai tautan `/posts/` + naik ke kartu postingan. Postingan tanpa
-  tautan (mis. anonim) bisa terlewat; komentar dalam kartu dibuang lewat DOM dan
-  pemotongan bilah aksi, tetapi struktur Facebook bisa berubah kapan saja.
+- Ekstraksi memakai tautan `/posts/` (bila ada) atau kartu feed `[aria-posinset]`.
+  Grup tanpa tautan tetap terbaca, tetapi `post_url` menjadi "tidak diketahui"
+  sehingga dedupe memakai hash teks. Struktur Facebook bisa berubah kapan saja.
+- Teks kartu dibersihkan dari karakter tak terlihat dan label "Facebook" berulang;
+  kalau Facebook mengubah cara penyamaran, pembersihan perlu disesuaikan.
 - Komentar yang lolos jaring pengaman bisa dibersihkan di **Pengaturan → 💾 Data**.
 
 ---

@@ -126,6 +126,7 @@ def run_job(job_id: int) -> int:
 
         skipped_comments = int(outcome.diagnostics.get("skipped_comment") or 0)
         counters["skipped_comment"] = max(counters["skipped_comment"], skipped_comments)
+        counters["empty_cards"] = int(outcome.diagnostics.get("empty_cards") or 0)
         db.log_event(job_id, "info", f"Adapter selesai dengan status: {outcome.status.value}")
         if skipped_comments:
             db.log_event(

@@ -37,9 +37,20 @@ from .normalize import (
 # Kosakata sinyal
 # ---------------------------------------------------------------------------
 
-# "iphone", "ip 11", "ip13pm", "ipad" tidak dihitung sebagai iPhone
-_IPHONE_STRONG_RE = re.compile(r"\b(?:iphone|ip\s?\d{1,2}(?:\s?(?:pm|pro|plus|pl|max))?)\b", re.I)
+# Bentuk yang dihitung "menyebut iPhone" (termasuk singkatan pasar Indonesia):
+#   "iphone", "iphone 13", "iphonex", "iphone x", "iphone xr",
+#   "ip 11", "ip13pm", "ip x", "ipx", "ipxs"
+# "ipad" dan kata "ip" sendirian TIDAK dihitung.
+_IPHONE_STRONG_RE = re.compile(
+    r"\b(?:iphone(?:\s*(?:xr|xs|x))?|ip\s?(?:\d{1,2}(?:\s?(?:pm|pro|plus|pl|max))?|xr|xs|x))\b",
+    re.I,
+)
 _IPHONE_RE = _IPHONE_STRONG_RE
+
+
+def mentions_iphone(text: str) -> bool:
+    """True bila teks menyebut iPhone, termasuk singkatan (ip x, ipx, iphonex)."""
+    return bool(_IPHONE_STRONG_RE.search(normalize_text(text)))
 
 # Kata bersinyal kuat (bobot 2) vs lemah (bobot 1).
 _SELL_STRONG = [

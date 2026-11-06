@@ -17,8 +17,9 @@ import re
 from dataclasses import replace
 
 from .analyzer import analyze_text, extract_location
+from .analyzer import mentions_iphone as mentions_iphone_fn
 from .models import UNKNOWN, FilterConfig, FilterResult
-from .normalize import normalize_text
+from .normalize import collapse_ws, normalize_text
 
 _SPLIT_RE = re.compile(r"[\n,;]+")
 
@@ -45,14 +46,42 @@ def parse_keywords(raw: str | list[str] | None) -> list[str]:
     return out
 
 
+def _keyword_variants(keyword: str) -> list[str]:
+    """Varian penulisan kata kunci, mis. "iphone x" -> "iphonex", "ip x", "ipx".
+
+    Penting untuk bahasa pasar Indonesia: postingan sering menulis "ip x" atau
+    "iphonex", bukan "iphone x".
+    """
+    base = collapse_ws(keyword).lower()
+    if not base:
+        return []
+    variants = {base}
+    if base.startswith("iphone"):
+        rest = base[len("iphone"):].strip()
+        variants.add("iphone" + rest)
+        variants.add("ip" + (f" {rest}" if rest else ""))
+        variants.add("ip" + rest)
+    elif base.startswith("ip"):
+        rest = re.sub(r"^ip\s*", "", base)
+        if rest:
+            variants.add("iphone " + rest)
+            variants.add("iphone" + rest)
+            variants.add("ip" + rest)
+    return [variant for variant in variants if variant]
+
+
+def _match_variant(text: str, needle: str) -> bool:
+    pattern = re.escape(needle)
+    # Frasa (mengandung spasi) -> substring; kata tunggal -> batas kata.
+    if " " in needle:
+        return re.search(pattern, text, re.I) is not None
+    return re.search(rf"(?<!\w){pattern}(?!\w)", text, re.I) is not None
+
+
 def match_keyword(text: str, keyword: str) -> bool:
     if not keyword:
         return False
-    pattern = re.escape(keyword.strip())
-    # Frasa (mengandung spasi) -> substring; kata tunggal -> batas kata.
-    if " " in keyword.strip():
-        return re.search(pattern, text, re.I) is not None
-    return re.search(rf"(?<!\w){pattern}(?!\w)", text, re.I) is not None
+    return any(_match_variant(text, variant) for variant in _keyword_variants(keyword))
 
 
 def find_keywords(text: str, keywords: list[str]) -> list[str]:
@@ -80,7 +109,7 @@ def evaluate(
 
     # 1) iPhone wajib
     category = result.get("category", UNKNOWN)
-    mentions_iphone = bool(re.search(r"\b(iphone|ip\s?\d{1,2})", clean, re.I))
+    mentions_iphone = mentions_iphone_fn(clean)
     if config.require_iphone and not mentions_iphone:
         return FilterResult(
             False,

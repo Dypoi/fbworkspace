@@ -33,25 +33,25 @@ Lint (opsional, butuh `ruff`):
 pytest 8.x. Windows belum dijalankan dari lingkungan ini.
 
 ```
-290 passed in ~2s
+328 passed in ~2s
 ruff check . --select E,F,W,I  ->  All checks passed!
 ```
 
 | Berkas tes | Jumlah | Cakupan |
 |---|---:|---|
-| `tests/test_normalize.py` | 40 | normalisasi teks, validasi tautan grup, ID postingan, dedupe key, harga Indonesia, waktu posting |
-| `tests/test_analyzer.py` | 33 | kategori, model iPhone, harga vs budget, detail, lokasi, skor & batasnya, teks tidak tepercaya |
+| `tests/test_normalize.py` | 44 | normalisasi teks, validasi tautan grup, ID postingan, dedupe key, harga Indonesia, waktu posting |
+| `tests/test_analyzer.py` | 48 | kategori, model iPhone, harga vs budget, detail, lokasi, skor & batasnya, teks tidak tepercaya |
 | `tests/test_db.py` | 21 | simpan, dedupe, status, analisis upsert, filter, job, event, penghapusan, statistik |
 | `tests/test_llm_validation.py` | 25 | validasi keluaran AI, anti-halusinasi, prompt, payload `think`/`num_predict`, offline, blokir endpoint non-lokal |
 | `tests/test_login.py` | 22 | cookie sesi `c_user`, penantian login (deteksi/timeout/berhenti), file marker status |
-| `tests/test_filters.py` | 18 | batas kata, frasa, inklusi/eksklusi, lokasi, harga, mode ketat |
+| `tests/test_filters.py` | 29 | batas kata, frasa, inklusi/eksklusi, lokasi, harga, mode ketat, varian `ip x`/`iphonex` |
 | `tests/test_page_state.py` | 21 | deteksi login/checkpoint/penolakan/rate limit/404, pengecualian penanda login saat sesi ada |
 | `tests/test_demo_and_worker.py` | 14 | data DEMO, pemilihan adapter, pemetaan status job, batas |
 | `tests/test_export.py` | 14 | formula injection, BOM, header, detail & alasan, truncation |
 | `tests/test_pipeline.py` | 12 | parsing input manual, penyimpanan, dedupe, batch |
 | `tests/test_drafts.py` | 11 | draf netral, larangan klaim, placeholder, profil |
 | `tests/test_app_smoke.py` | 7 | dashboard dirender (kosong & setelah DEMO), hanya 3 tab, segmentasi Semua/Lolos/Tersembunyi, tombol filter ulang, hapus baris komentar |
-| `tests/test_post_extraction.py` | 14 | kartu postingan dari tautan `/posts/`, dedupe, lewati komentar, ambil isi via DOM, potong bilah aksi, fallback selector |
+| `tests/test_post_extraction.py` | 22 | kartu dari tautan `/posts/` **dan** kartu feed `[aria-posinset]`, dedupe, buang komentar, blok `dir=auto`, pembersihan label "Facebook"/huruf berjauhan, fallback selector |
 | `tests/test_text_quality.py` | 26 | pola komentar/reply (contoh asli dari ekspor), postingan sah tidak ikut terbuang, adapter melewati komentar, `skipped_comment`, pembersihan data lama |
 | `tests/test_ui_data.py` | 12 | hitungan per status filter, hapus per sumber (DEMO), pratinjau filter, "terapkan ulang filter" tanpa duplikasi |
 

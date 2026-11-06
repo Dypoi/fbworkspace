@@ -42,7 +42,8 @@ konten yang Anda akses sendiri.
 
 | Hal | Kenyataan |
 |---|---|
-| Titik masuk | Tautan `a[href*="/posts/"]` tanpa `comment_id=`, lalu naik ke kartu yang memuat **satu** postingan |
+| Titik masuk 1 | Tautan `a[href*="/posts/"]` tanpa `comment_id=`, lalu naik ke kartu yang memuat **satu** postingan |
+| Titik masuk 2 | Kartu feed `[aria-posinset]` untuk grup yang **tidak** memasang tautan postingan (umum di grup jual-beli) |
 | Selector cadangan | `div[role="article"]` hanya dipakai bila tidak ada tautan postingan. Pada grup nyata, elemen ini justru cocok ke **komentar** |
 | Perubahan halaman | Facebook dapat mengubah struktur kapan saja tanpa pemberitahuan |
 | Bahasa/akun | Tampilan berbeda per bahasa, per akun, per perangkat |
@@ -51,7 +52,7 @@ konten yang Anda akses sendiri.
 | Komentar | Ditolak: `article` bersarang & teks berpola "… Reply" dibuang (lihat §2b) |
 | Nama anggota | Tidak diambil, sengaja |
 | Waktu posting | Hanya jika terlihat di teks; sering tidak terbaca |
-| Tautan postingan | Diambil dari anchor dalam elemen; bisa tidak ditemukan |
+| Tautan postingan | Diambil dari anchor dalam kartu; pada grup tanpa tautan nilainya `tidak diketahui` (dedupe lewat hash teks) |
 
 Artinya: **hasil 0 postingan bukan bug otomatis**, melainkan sinyal bahwa grup
 tersebut tidak dapat dibaca dengan cara ini. Lihat [POC_FACEBOOK.md](POC_FACEBOOK.md).
@@ -85,7 +86,11 @@ Perbaikan yang aktif sekarang:
 - teks dipotong di bilah aksi `Like · Comment · Share` / `Suka · Komentar · Bagikan`,
 - teks berpola komentar (`… Reply`, `… Reply Edited`, `LikeReplyShare`) tetap
   ditolak sebagai jaring pengaman dan dihitung sebagai `skipped_comment`,
-- `div[role="article"]` hanya dipakai sebagai cadangan bila tidak ada tautan,
+- `div[role="article"]` hanya dipakai sebagai cadangan bila tidak ada tautan **dan**
+  tidak ada kartu feed,
+- isi kartu diambil dari blok `div[dir="auto"]`, bukan `inner_text` seluruh kartu;
+  label "Facebook" berulang dan huruf berjauhan (karakter tak terlihat U+034F)
+  dibuang lebih dulu,
 - pesan job menampilkan angka **Lolos filter**, **Tidak lolos**, dan **komentar dilewati**,
 - baris lama bisa dibersihkan di **Pengaturan → 💾 Data → 🧹 Hapus baris tidak layak**.
 
@@ -152,6 +157,9 @@ bisa salah diklasifikasi. Periksa manual untuk keputusan penting.
   rekomendasi investasi/kualitas.
 - Kategori "diskusi" adalah kategori sisa bila ada iPhone tetapi tanpa sinyal
   transaksi yang jelas.
+- Singkatan pasar dikenali: `ip x`, `ipx`, `iphonex`, `iphone xr/xs` dihitung
+  sebagai iPhone; kata kunci "iphone x" otomatis cocok dengan varian tersebut.
+  `ipad` dan "ip" sendirian tetap **bukan** iPhone.
 
 ---
 

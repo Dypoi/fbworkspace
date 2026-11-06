@@ -15,6 +15,7 @@ import pytest
 
 from fbworkspace.browser.playwright_fb import (
     DEFAULT_ARTICLE_SELECTOR,
+    FEED_CARD_SELECTOR,
     POST_LINK_SELECTOR,
     PlaywrightFacebookAdapter,
     _cut_at_action_bar,
@@ -54,10 +55,14 @@ class FakeElement:
         hrefs: tuple[str, ...] = (),
         nested: bool = False,
         evaluate_raises: bool = False,
+        blocks: tuple = (),
+        pos: str | None = None,
     ) -> None:
         self._text = text
         self._body = body
         self._hrefs = list(hrefs)
+        self._blocks = list(blocks)
+        self._pos = pos
         self._nested = nested
         self._evaluate_raises = evaluate_raises
 
@@ -71,14 +76,20 @@ class FakeElement:
             return self._body
         return self._nested
 
-    def query_selector_all(self, _selector: str):
+    def get_attribute(self, name: str):
+        return self._pos if name == "aria-posinset" else None
+
+    def query_selector_all(self, selector: str):
+        if "dir=" in selector:
+            return list(self._blocks)
         return [FakeAnchor(href) for href in self._hrefs]
 
 
 class FakePage:
-    def __init__(self, anchors=(), articles=(), link_fails: bool = False):
+    def __init__(self, anchors=(), articles=(), cards=(), link_fails: bool = False):
         self._anchors = list(anchors)
         self._articles = list(articles)
+        self._cards = list(cards)
         self._link_fails = link_fails
         self.queries: list[str] = []
 
@@ -88,6 +99,8 @@ class FakePage:
             raise RuntimeError("halaman berubah")
         if "/posts/" in selector:
             return self._anchors
+        if selector == FEED_CARD_SELECTOR:
+            return self._cards
         return self._articles
 
 
@@ -138,13 +151,20 @@ class TestCandidateElements:
         assert adapter._candidate_elements(page) == [container]
         assert adapter._last_source == "post-links"
 
+    def test_uses_feed_cards_when_no_links(self, adapter):
+        card = FakeElement("kartu")
+        page = FakePage(cards=[card])
+        assert adapter._candidate_elements(page) == [card]
+        assert adapter._last_source == "feed-cards"
+
     def test_falls_back_to_article_selector(self, adapter):
         article = FakeElement("artikel")
         page = FakePage(articles=[article])
         assert adapter._candidate_elements(page) == [article]
         assert adapter._last_source == "article-selector"
         assert page.queries[0] == POST_LINK_SELECTOR
-        assert page.queries[1] == DEFAULT_ARTICLE_SELECTOR
+        assert FEED_CARD_SELECTOR in page.queries
+        assert page.queries[-1] == DEFAULT_ARTICLE_SELECTOR
 
     def test_custom_selector_respected(self, tmp_path):
         custom = PlaywrightFacebookAdapter(
@@ -216,3 +236,78 @@ class TestCutAtActionBar:
     def test_leaves_text_without_action_bar(self):
         text = "Dijual iPhone X 5jt COD Tangerang"
         assert _cut_at_action_bar(text) == text
+
+
+class TestFeedCardExtraction:
+    """Kasus nyata grup tanpa tautan postingan (dump pengguna)."""
+
+    def _card(self, *blocks: str, text: str = "", hrefs: tuple[str, ...] = ()):
+        return FakeElement(
+            text=text,
+            hrefs=hrefs,
+            blocks=tuple(FakeElement(block) for block in blocks),
+        )
+
+    def test_blocks_text_used_instead_of_noisy_inner_text(self, adapter):
+        adapter._last_source = "feed-cards"
+        card = self._card(
+            "BU ip 14 256gb wifi only",
+            "minus kaya di foto, satset malem ini 4,5 ambil",
+        )
+        # inner_text kartu penuh label "Facebook" dan huruf berjauhan.
+        card._text = "Facebook | Facebook | s͏ | t͏ | o͏ | d͏ | p͏ | e͏ | r͏"
+        post = adapter._extract_post(card, GROUP_URL, {}, set())
+        assert post is not None
+        assert "ip 14 256gb" in post.text
+        assert "Facebook" not in post.text
+        assert "s͏" not in post.text
+
+    def test_post_without_link_saved_without_url(self, adapter):
+        adapter._last_source = "feed-cards"
+        card = self._card("ip11/64 ibox", "bh 74 kel hp+box, 4 jt ambil, lok tangsel")
+        post = adapter._extract_post(card, GROUP_URL, {}, set())
+        assert post is not None
+        assert post.post_url is None
+
+    def test_empty_skeleton_card_skipped_and_counted(self, adapter):
+        adapter._last_source = "feed-cards"
+        diagnostics: dict = {}
+        card = self._card(text="Facebook | Facebook")
+        assert adapter._extract_post(card, GROUP_URL, diagnostics, set()) is None
+        assert diagnostics["empty_cards"] == 1
+
+    def test_empty_card_counted_once_per_position(self, adapter):
+        adapter._last_source = "feed-cards"
+        diagnostics: dict = {}
+        card = FakeElement(text="Facebook | Facebook", pos="4")
+        for _ in range(3):
+            adapter._extract_post(card, GROUP_URL, diagnostics, set())
+        assert diagnostics["empty_cards"] == 1
+
+    def test_comment_block_inside_card_ignored(self, adapter):
+        adapter._last_source = "feed-cards"
+        card = self._card(
+            "Dijual iPhone X 64GB mulus 5jt",
+            "Ali Romlan · 1h Ram brp Like Reply Share",
+        )
+        post = adapter._extract_post(card, GROUP_URL, {}, set())
+        assert post is not None
+        assert "brp" not in post.text
+
+    def test_card_with_only_comment_text_rejected(self, adapter):
+        adapter._last_source = "feed-cards"
+        diagnostics: dict = {}
+        card = self._card(
+            "Zozo Yan · 1m Mahar Reply Share",
+            text="Zozo Yan · 1m Mahar Reply Share",
+        )
+        assert adapter._extract_post(card, GROUP_URL, diagnostics, set()) is None
+        assert diagnostics["skipped_comment"] == 1
+
+    def test_invisible_characters_removed(self, adapter):
+        adapter._last_source = "feed-cards"
+        card = self._card("Dijual iPhone X 64GB 5jt\u034f Tangerang")
+        post = adapter._extract_post(card, GROUP_URL, {}, set())
+        assert post is not None
+        assert "\u034f" not in post.text
+        assert "Tangerang" in post.text

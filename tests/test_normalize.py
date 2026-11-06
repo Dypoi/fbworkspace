@@ -15,6 +15,7 @@ from fbworkspace.normalize import (
     normalize_text,
     parse_group_urls,
     parse_posted_at,
+    strip_invisible_noise,
     text_hash,
     validate_group_url,
 )
@@ -178,3 +179,29 @@ class TestPostedAt:
         iso, precision, _note = parse_posted_at(None)
         assert iso is None
         assert precision == "tidak diketahui"
+
+
+class TestStripInvisibleNoise:
+    def test_removes_invisible_format_characters(self):
+        text = "Dijual iPhone\u034f X\u200b 64GB"
+        cleaned = strip_invisible_noise(text)
+        assert "\u034f" not in cleaned
+        assert "\u200b" not in cleaned
+        assert "iPhone" in cleaned and "64GB" in cleaned
+
+    def test_drops_facebook_label_lines(self):
+        text = "Facebook | Facebook | Facebook\nDijual iPhone X 64GB"
+        cleaned = strip_invisible_noise(text)
+        assert "Dijual iPhone X 64GB" in cleaned
+        assert "Facebook" not in cleaned
+
+    def test_drops_letter_spam_lines(self):
+        spam = "s\u034f t\u034f o\u034f d\u034f p\u034f e\u034f r\u034f S\u034f n\u034f o"
+        text = f"{spam}\nDijual iPhone X 64GB mulus 5jt"
+        cleaned = strip_invisible_noise(text)
+        assert "Dijual iPhone X 64GB mulus 5jt" in cleaned
+        assert "p e r" not in cleaned
+
+    def test_keeps_normal_post_text(self):
+        text = "ip11/64 ibox | bh 74 kel hp+box | 4 jt ambil | lok tangsel"
+        assert strip_invisible_noise(text) == text
