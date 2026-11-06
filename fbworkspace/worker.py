@@ -64,7 +64,7 @@ def run_job(job_id: int) -> int:
     counters = {
         "read": 0, "inserted": 0, "duplicates": 0, "filtered_out": 0,
         "analyzed": 0, "ollama_analyzed": 0, "errors": 0,
-        "skipped_comment": 0,
+        "skipped_comment": 0, "matched": 0,
     }
     new_relevant_ids: list[int] = []
     last_logged: list[str] = [""]
@@ -166,12 +166,14 @@ def run_job(job_id: int) -> int:
             if not result.filter_passed:
                 counters["filtered_out"] += 1
             else:
+                counters["matched"] += 1
                 new_relevant_ids.append(result.post_id)
         push_counters()
         db.log_event(
             job_id, "info",
-            f"Penyimpanan selesai: {counters['inserted']} baru, {counters['duplicates']} duplikat, "
+            f"Penyimpanan selesai: {counters['inserted']} baru, {counters['matched']} lolos filter, "
             f"{counters['filtered_out']} tidak lolos filter, "
+            f"{counters['duplicates']} duplikat, "
             f"{counters['skipped_comment']} komentar dilewati."
         )
 

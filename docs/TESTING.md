@@ -33,7 +33,7 @@ Lint (opsional, butuh `ruff`):
 pytest 8.x. Windows belum dijalankan dari lingkungan ini.
 
 ```
-276 passed in ~2s
+290 passed in ~2s
 ruff check . --select E,F,W,I  ->  All checks passed!
 ```
 
@@ -51,6 +51,7 @@ ruff check . --select E,F,W,I  ->  All checks passed!
 | `tests/test_pipeline.py` | 12 | parsing input manual, penyimpanan, dedupe, batch |
 | `tests/test_drafts.py` | 11 | draf netral, larangan klaim, placeholder, profil |
 | `tests/test_app_smoke.py` | 7 | dashboard dirender (kosong & setelah DEMO), hanya 3 tab, segmentasi Semua/Lolos/Tersembunyi, tombol filter ulang, hapus baris komentar |
+| `tests/test_post_extraction.py` | 14 | kartu postingan dari tautan `/posts/`, dedupe, lewati komentar, ambil isi via DOM, potong bilah aksi, fallback selector |
 | `tests/test_text_quality.py` | 26 | pola komentar/reply (contoh asli dari ekspor), postingan sah tidak ikut terbuang, adapter melewati komentar, `skipped_comment`, pembersihan data lama |
 | `tests/test_ui_data.py` | 12 | hitungan per status filter, hapus per sumber (DEMO), pratinjau filter, "terapkan ulang filter" tanpa duplikasi |
 
@@ -61,6 +62,7 @@ ruff check . --select E,F,W,I  ->  All checks passed!
 | Worker end-to-end (mode manual) | `python -m fbworkspace.worker --job-id 1` | Job `selesai`, event log lengkap, counter JSON benar |
 | Menunggu login (simulasi) | `wait_for_login` dengan jam & cookie palsu | Deteksi, timeout, dan berhenti bekerja tanpa menggantung |
 | Helper login tanpa Chromium | `scripts/login_helper.py` | Gagal dengan pesan + saran `playwright install chromium`, status ditulis ke marker |
+| Logika DOM ekstraksi (jsdom) | `npm install jsdom` lalu `node scripts/check_extraction_dom.cjs` (Python: `FBW_PYTHON`) | 9/9 pemeriksaan lulus: kartu postingan terdeteksi, komentar dibuang, postingan lain tidak ikut |
 | Penyaring komentar pada data nyata | `looks_like_comment` atas ekspor 122 baris pengguna | 122/122 terdeteksi; 9 teks DEMO & postingan contoh tidak ikut tertandai |
 | POC tanpa Chromium terpasang | `python scripts/poc_facebook.py --yes` | Gagal dengan pesan jelas + saran `playwright install chromium`, diagnostik JSON tersimpan, exit code kesalahan |
 | Server Streamlit | `streamlit run app.py` + `curl /_stcore/health` | `200 ok` |
@@ -103,7 +105,8 @@ Jalankan berurutan. Beri tanda centang hanya jika benar-benar terlihat.
 - [ ] Ekspor CSV terbuka di Excel; sel `=SUM(1+1)` tampil sebagai teks berawalan `'`.
 - [ ] Tab Mulai → ① Tempel manual menyimpan 1 postingan; duplikat tidak menambah baris.
 - [ ] Ubah filter → **Terapkan ulang filter** mengubah hitungan tanpa menambah baris.
-- [ ] Job baru: pesan job menyebut jumlah komentar dilewati (idealnya 0).
+- [ ] Job baru: panel job menampilkan angka **Lolos filter** dan **komentar dilewati**.
+- [ ] POC: `POSTINGAN TERBACA` > 0 dan contoh teksnya benar-benar kalimat postingan.
 - [ ] Pengaturan → 💾 Data menampilkan peringatan + tombol hapus baris komentar bila ada.
 - [ ] Draf respons muncul dan bisa disalin; placeholder `[NAMA TOKO]` terlihat.
 - [ ] Hapus data → tabel kosong; muat DEMO lagi berhasil.

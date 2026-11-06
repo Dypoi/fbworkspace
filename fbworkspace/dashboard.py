@@ -388,11 +388,12 @@ def _render_job_content(settings: Settings, db: Database, job_id: int, live: boo
     if job.get("message"):
         st.info(job["message"])
 
-    m = st.columns(4)
+    m = st.columns(5)
     m[0].metric("Postingan terbaca", counters.get("read", 0))
     m[1].metric("Baru disimpan", counters.get("inserted", 0))
-    m[2].metric("Duplikat", counters.get("duplicates", 0))
+    m[2].metric("Lolos filter", counters.get("matched", 0))
     m[3].metric("Tidak lolos filter", counters.get("filtered_out", 0))
+    m[4].metric("Duplikat", counters.get("duplicates", 0))
 
     skipped = int(counters.get("skipped_comment") or 0)
     if skipped:

@@ -24,6 +24,7 @@ Ini penting supaya Anda tidak salah harap.
 | Dashboard Streamlit (3 langkah: Mulai · Hasil · Pengaturan) | ✅ Berjalan & diuji (termasuk smoke test otomatis) |
 | Hitungan Semua/Lolos/Tersembunyi + "Terapkan ulang filter" | ✅ Diuji otomatis (data & UI) |
 | Penyaring komentar/reply + pembersih baris lama | ✅ Diuji otomatis (122 baris ekspor nyata terdeteksi) |
+| Ekstraksi isi postingan dari tautan `/posts/` (bukan komentar) | ✅ Unit + uji DOM (jsdom); ⚠️ tetap perlu POC di akun Anda |
 | SQLite, deduplikasi, status, penghapusan data | ✅ Diuji otomatis |
 | Filter kata kunci/lokasi/harga, mode longgar & ketat | ✅ Diuji otomatis |
 | Analisis aturan iPhone (kategori, model, harga vs budget, detail) | ✅ Diuji otomatis |
@@ -84,8 +85,11 @@ Ini penting supaya Anda tidak salah harap.
 - Status analisis dan status pengerjaan: **baru / diperiksa / relevan / diabaikan**.
 - Deduplikasi: ID tautan → fallback hash teks ternormalisasi (batasnya dijelaskan).
 - Penanda `tidak diketahui` untuk data yang tidak tersedia (bukan tebakan).
-- Komentar/reply **ditolak sebelum disimpan**: elemen `article` bersarang dan teks
-  berpola `… Reply`/`LikeReplyShare` dihitung sebagai "komentar dilewati".
+- Isi postingan diambil dari **kartu postingan** yang ditemukan lewat tautan
+  `/posts/` (bukan dari `div[role="article"]`, yang di grup nyata justru komentar).
+  Komentar di dalam kartu dibuang, lalu teks dipotong di bilah `Like · Comment · Share`.
+- Komentar/reply tetap ditolak sebagai jaring pengaman: teks berpola `… Reply`/
+  `LikeReplyShare` dihitung sebagai "komentar dilewati" dan tidak disimpan.
 
 **Analisis iPhone (tanpa AI)**
 - Kategori: `mencari`, `menjual`, `diskusi`, `tidak relevan`.
@@ -138,10 +142,11 @@ fbworkspace/
 │   ├── setup_windows.ps1       # setup otomatis Windows
 │   ├── run_windows.ps1         # menjalankan dashboard
 │   ├── poc_windows.ps1         # pembungkus POC
+│   └── check_extraction_dom.cjs # uji logika ekstraksi DOM (Node + jsdom, opsional)
 │   └── load_demo.py            # muat data DEMO via CLI
 ├── data/demo_posts_DEMO.json   # data sintetis berlabel DEMO
 ├── docs/                       # instalasi, POC, batasan, Git, testing
-├── tests/                      # 276 tes otomatis
+├── tests/                      # 290 tes otomatis
 ├── requirements.txt
 ├── .env.example
 └── .gitignore
@@ -308,7 +313,7 @@ Penghapusan data tersedia di tab **Pengaturan → 💾 Data** (postingan, log, p
 .\.venv\Scripts\python.exe -m pytest
 ```
 
-Hasil terakhir di lingkungan pengembangan: **276 tes lulus** (termasuk smoke test
+Hasil terakhir di lingkungan pengembangan: **290 tes lulus** (termasuk smoke test
 dashboard Streamlit untuk 3 tab, segmentasi hasil, dan filter ulang), `ruff check` bersih. Detail: **[docs/TESTING.md](docs/TESTING.md)**.
 
 Yang **belum** diuji dan harus Anda validasi sendiri:
@@ -330,9 +335,10 @@ Ringkasan (lengkap di **[docs/LIMITATIONS.md](docs/LIMITATIONS.md)**):
 - Waktu relatif ("3 jam lalu") hanya perkiraan.
 - Model kecil bisa salah membaca model/harga; selalu periksa manual.
 - Aplikasi tidak mengirim pesan; semua respons Anda kirim sendiri.
-- Komentar bisa tertangkap sebagai "postingan" bila selector meleset; penyaring
-  `… Reply`/`LikeReplyShare` menolaknya, tetapi periksa contoh teks di POC. Baris
-  lama yang terlanjur masuk bisa dibersihkan di **Pengaturan → 💾 Data**.
+- Ekstraksi memakai tautan `/posts/` + naik ke kartu postingan. Postingan tanpa
+  tautan (mis. anonim) bisa terlewat; komentar dalam kartu dibuang lewat DOM dan
+  pemotongan bilah aksi, tetapi struktur Facebook bisa berubah kapan saja.
+- Komentar yang lolos jaring pengaman bisa dibersihkan di **Pengaturan → 💾 Data**.
 
 ---
 

@@ -42,7 +42,8 @@ konten yang Anda akses sendiri.
 
 | Hal | Kenyataan |
 |---|---|
-| Selector | `div[role="article"]` adalah **tebakan konservatif**, belum diverifikasi pada akun nyata |
+| Titik masuk | Tautan `a[href*="/posts/"]` tanpa `comment_id=`, lalu naik ke kartu yang memuat **satu** postingan |
+| Selector cadangan | `div[role="article"]` hanya dipakai bila tidak ada tautan postingan. Pada grup nyata, elemen ini justru cocok ke **komentar** |
 | Perubahan halaman | Facebook dapat mengubah struktur kapan saja tanpa pemberitahuan |
 | Bahasa/akun | Tampilan berbeda per bahasa, per akun, per perangkat |
 | Teks terpotong | Tombol "Lihat selengkapnya" **tidak** diklik otomatis, jadi teks bisa terpotong |
@@ -71,18 +72,28 @@ Semua baris itu komentar (median 36 karakter, 0 menyebut iPhone), lalu digugurka
 filter "wajib iPhone". Dari luar terlihat seperti filter yang salah — padahal
 sumber datanya yang salah.
 
+Akar masalahnya: di antarmuka grup, postingan **tidak** memakai
+`div[role="article"]`, sedangkan komentar memakainya. Jadi selector lama hanya
+mengumpulkan komentar.
+
 Perbaikan yang aktif sekarang:
-- elemen `article` yang **bersarang di `article` lain** (komentar) dilewati;
-- tautan yang hanya memuat `comment_id=` dianggap komentar;
-- teks berpola komentar (`… Reply`, `… Reply Edited`, `LikeReplyShare`) ditolak
-  sebelum disimpan, dihitung sebagai `skipped_comment`, dan tidak masuk database;
-- pesan job menampilkan "N komentar/reply dilewati" dan POC mencetak 3 contoh teks;
+- titik masuk diganti ke tautan `a[href*="/posts/"]` (tanpa `comment_id=`),
+- dari tautan itu aplikasi naik ke **kartu postingan** terdekat yang hanya memuat
+  satu postingan (berhenti bila ada tautan postingan kedua),
+- isi kartu diambil lewat DOM: `div[role="article"]` (komentar), daftar yang
+  memuat tautan `comment_id=`, dan blok ber-aria-label komentar **dibuang**,
+- teks dipotong di bilah aksi `Like · Comment · Share` / `Suka · Komentar · Bagikan`,
+- teks berpola komentar (`… Reply`, `… Reply Edited`, `LikeReplyShare`) tetap
+  ditolak sebagai jaring pengaman dan dihitung sebagai `skipped_comment`,
+- `div[role="article"]` hanya dipakai sebagai cadangan bila tidak ada tautan,
+- pesan job menampilkan angka **Lolos filter**, **Tidak lolos**, dan **komentar dilewati**,
 - baris lama bisa dibersihkan di **Pengaturan → 💾 Data → 🧹 Hapus baris tidak layak**.
 
-Yang **masih mungkin**: komentar yang tidak menampilkan tombol Reply (UI
-terpotong) atau komentar panjang yang kebetulan tidak cocok pola. Penyaring ini
-konservatif — lebih baik menyimpan satu baris aneh daripada membuang postingan sah.
-Karena itu: periksa contoh teks di POC **sebelum** memakai hasilnya untuk keputusan.
+Yang **masih mungkin**: postingan tanpa tautan `/posts/` (mis. anonim) terlewat;
+komentar yang tidak memuat pola di atas bisa lolos; struktur DOM bisa berubah.
+Penyaring sengaja konservatif — lebih baik menyimpan satu baris aneh daripada
+membuang postingan sah. Karena itu: periksa contoh teks di POC **sebelum** memakai
+hasilnya untuk keputusan.
 
 ---
 
