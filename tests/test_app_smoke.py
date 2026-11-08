@@ -114,3 +114,36 @@ def test_comment_rows_are_flagged_and_cleanable(tmp_path, monkeypatch):
     at.button(key="del_suspect").click().run()
     assert not at.exception, [str(e) for e in at.exception]
     assert Database(db_path).count_posts() == 1
+
+
+def test_messenger_panel_with_zero_chats_renders_without_duplicate_key(tmp_path, monkeypatch):
+    """Regresi nyata: 0 chat + panel dirender dua kali -> StreamlitDuplicateElementKey."""
+    from fbworkspace.db import Database
+
+    db_path = tmp_path / "messenger.db"
+    monkeypatch.setenv("FBW_DB_PATH", str(db_path))
+    monkeypatch.setenv("FBW_OLLAMA_ENABLED", "false")
+    seed = Database(db_path)
+    job_id = seed.create_job(
+        kind="messenger",
+        group_urls=[],
+        config={"dry_run": True, "max_threads": 5, "max_replies": 5},
+    )
+    seed.update_job(
+        job_id,
+        status="diblokir/tidak diizinkan",
+        message="Tidak ada chat yang terbaca di Messenger.",
+        counters_json='{"threads": 0, "messages": 0, "replies": 0}',
+        diagnostics_json=(
+            '{"url": "https://www.facebook.com/messages/", "title": "Messenger",'
+            ' "thread_links": 1, "chat_links": 13, "rows": 13, "composer": "",'
+            ' "text": "Chats"}'
+        ),
+    )
+
+    at = AppTest.from_file(APP, default_timeout=60).run()
+    assert not at.exception, [str(e) for e in at.exception]
+    assert _by_key(at.button, f"msg_diag_{job_id}"), "Tombol periksa inbox tidak muncul"
+    assert any("tautan chat" in str(e.value).lower() for e in at.error) or any(
+        "13" in str(e.value) for e in at.error
+    )

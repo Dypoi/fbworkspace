@@ -172,7 +172,7 @@ fbworkspace/
 │   └── check_extraction_dom.cjs # uji logika ekstraksi DOM (Node + jsdom, opsional)
 ├── data/demo_posts_DEMO.json   # data sintetis berlabel DEMO
 ├── docs/                       # instalasi, POC, batasan, Git, testing
-├── tests/                      # 532 tes otomatis
+├── tests/                      # 536 tes otomatis
 ├── requirements.txt
 ├── .env.example
 └── .gitignore
@@ -401,7 +401,7 @@ Penghapusan data tersedia di tab **Pengaturan → 💾 Data** (postingan, log, p
 .\.venv\Scripts\python.exe -m pytest
 ```
 
-Hasil terakhir di lingkungan pengembangan: **532 tes lulus** (termasuk smoke test
+Hasil terakhir di lingkungan pengembangan: **536 tes lulus** (termasuk smoke test
 dashboard Streamlit untuk 4 tab, segmentasi hasil, filter ulang, daftar harga,
 penyusun balasan, worker balas DM dengan adapter palsu, format notifikasi
 WhatsApp, dan variasi AI yang menolak perubahan fakta), `ruff check` bersih. Detail: **[docs/TESTING.md](docs/TESTING.md)**.

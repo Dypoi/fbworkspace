@@ -143,8 +143,10 @@ def _msg_key(thread_key: str, index: int, text: str) -> str:
 
 
 def _thread_key(url: str) -> str:
-    if "/messages/t/" in url:
-        return url.split("/messages/t/")[1].split("/")[0].split("?")[0]
+    """ID percakapan, baik dari tautan ``/messages/t/<id>`` maupun ``/t/<id>``."""
+    for marker in ("/messages/t/", "/t/"):
+        if marker in url:
+            return url.split(marker)[1].split("/")[0].split("?")[0]
     return url
 
 
@@ -187,14 +189,32 @@ def _first_match(page, selectors: tuple[str, ...]):
 
 
 def _first_match_all(page, selectors: tuple[str, ...]) -> tuple[str | None, list]:
+    """Coba semua selector dan GABUNGkan hasilnya (tanpa duplikat).
+
+    Penting: jangan berhenti di selector pertama yang menemukan sesuatu. Pada akun
+    nyata, ``a[href*="/messages/t/"]`` hanya menemukan 1 tautan sementara daftar
+    chat sebenarnya memakai bentuk ``/t/...`` (13 tautan). Berhenti di selector
+    pertama membuat inbox terlihat kosong.
+    """
+    collected: list = []
+    seen_ids: set[int] = set()
+    used: list[str] = []
     for selector in selectors:
         try:
             elements = page.query_selector_all(selector)
         except Exception:  # noqa: BLE001
             elements = []
-        if elements:
-            return selector, elements
-    return None, []
+        if not elements:
+            continue
+        used.append(selector)
+        for element in elements:
+            handle = getattr(element, "_impl_obj", None) or id(element)
+            marker = ("h", repr(handle)) if handle is not None else ("o", id(element))
+            if marker in seen_ids:
+                continue
+            seen_ids.add(marker)
+            collected.append(element)
+    return (" + ".join(used) or None), collected
 
 
 class MessengerAdapter:
@@ -469,10 +489,12 @@ class MessengerAdapter:
 
             threads: list[Thread] = []
             seen: set[str] = set()
+            candidates = 0
             for anchor in anchors:
                 href = _safe_attr(anchor, "href")
                 if "/t/" not in href:
                     continue
+                candidates += 1
                 key = _thread_key(href)
                 if not key or key in seen:
                     continue
@@ -486,6 +508,7 @@ class MessengerAdapter:
                     break
 
             diagnostics["threads"] = len(threads)
+            diagnostics["candidates"] = candidates
             diagnostics["status"] = "ok" if threads else "tidak_ada_chat"
             self.last_diagnostics = diagnostics
             return ThreadList(

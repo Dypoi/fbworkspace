@@ -279,3 +279,42 @@ class TestUnavailable:
         )
         payload = diagnose("/tmp/x")
         assert payload["ok"] is False
+
+
+class TestRealAccountShape:
+    """Bentuk halaman nyata (laporan pengguna 8 Nov): 1 tautan /messages/t/,
+    13 tautan /t/ — versi lama berhenti di selector pertama sehingga 0 chat."""
+
+    def _page(self):
+        return FakePage(
+            elements={
+                'a[href*="/messages/t/"]': [FakeSkill(href="/messages/t/999/")],
+                'div[role="listitem"] a[href*="/t/"]': [
+                    FakeSkill(href=f"/t/{100 + i}/", text=f"Chat {i}") for i in range(13)
+                ],
+            }
+        )
+
+    def test_all_selectors_are_combined(self, monkeypatch):
+        adapter = adapter_with_page(self._page(), monkeypatch)
+        result = adapter.list_threads_detailed(limit=20)
+        assert result.status == "ok"
+        assert len(result.threads) == 14
+        assert result.threads[0].key == "999"
+        assert result.diagnostics["candidates"] == 14
+
+    def test_duplicates_removed_across_selectors(self, monkeypatch):
+        page = FakePage(
+            elements={
+                'a[href*="/messages/t/"]': [FakeSkill(href="/messages/t/111/")],
+                'div[role="listitem"] a[href*="/t/"]': [FakeSkill(href="/t/111/")],
+            }
+        )
+        adapter = adapter_with_page(page, monkeypatch)
+        result = adapter.list_threads_detailed()
+        assert [t.key for t in result.threads] == ["111"]
+
+    def test_limit_applied(self, monkeypatch):
+        adapter = adapter_with_page(self._page(), monkeypatch)
+        result = adapter.list_threads_detailed(limit=3)
+        assert len(result.threads) == 3

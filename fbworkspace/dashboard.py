@@ -15,6 +15,7 @@ Logika bisnis tetap di modul inti (db, filters, analyzer, pipeline, export).
 from __future__ import annotations
 
 import json
+import threading
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -376,7 +377,9 @@ def render_login_card(settings: Settings, *, job_active: bool, compact: bool = F
 # Panel job
 # ---------------------------------------------------------------------------
 
-def _render_job_content(settings: Settings, db: Database, job_id: int, live: bool) -> None:
+def _render_job_content(
+    settings: Settings, db: Database, job_id: int, live: bool, key_suffix: str = ""
+) -> None:
     job = db.get_job(job_id)
     if not job:
         st.info("Belum ada sesi pembacaan.")
@@ -411,12 +414,17 @@ def _render_job_content(settings: Settings, db: Database, job_id: int, live: boo
                     "Menjalankan pemeriksaan singkat dengan profil browser yang sama: "
                     "URL, judul halaman, jumlah tautan chat, dan cuplikan teks."
                 )
-                if st.button("Periksa sekarang", key=f"msg_diag_{job_id}"):
-                    st.session_state["fbw_msg_diag"] = _run_messenger_probe(settings)
-                probe = st.session_state.get("fbw_msg_diag")
-                if probe:
+                if st.button("Periksa sekarang", key=f"msg_diag_{job_id}{key_suffix}"):
+                    _start_probe(settings)
+                    st.rerun()
+                probe = _poll_probe()
+                if probe is None:
+                    st.info("Pemeriksaan berjalan… halaman ini akan diperbarui.")
+                elif probe:
                     st.json(probe)
-                    if st.button("📋 Salin hasil pemeriksaan", key=f"msg_diag_copy_{job_id}"):
+                    if st.button(
+                        "📋 Salin hasil pemeriksaan", key=f"msg_diag_copy_{job_id}{key_suffix}"
+                    ):
                         st.code(json.dumps(probe, ensure_ascii=False, indent=2), language="json")
         if blocked:
             st.warning(
@@ -463,14 +471,16 @@ def _render_job_content(settings: Settings, db: Database, job_id: int, live: boo
         )
 
     if active:
-        if st.button("🛑 Hentikan proses", type="primary", key=f"stop_{job_id}"):
+        if st.button(
+            "🛑 Hentikan proses", type="primary", key=f"stop_{job_id}{key_suffix}"
+        ):
             db.request_stop(job_id)
             st.toast("Permintaan berhenti dikirim. Worker akan berhenti dengan rapi.")
         st.caption("Proses akan berhenti di batas aman. Tidak ada pengulangan otomatis.")
 
     _render_job_events(db, job_id, active)
     with st.expander("Diagnostik (hanya bila ada masalah)"):
-        _render_job_diagnostics(settings, db, job_id, live)
+        _render_job_diagnostics(settings, db, job_id, live, key_suffix)
 
 
 def _diagnostics_line(diagnostics: dict) -> str:
@@ -493,6 +503,38 @@ def _diagnostics_line(diagnostics: dict) -> str:
     if text:
         parts.append(f"teks halaman: “{text}”")
     return " · ".join(parts)
+
+
+class _ProbeRunner(threading.Thread):
+    """Jalankan pemeriksaan inbox di latar belakang agar UI tidak membeku."""
+
+    def __init__(self, settings: Settings) -> None:
+        super().__init__(daemon=True)
+        self.settings = settings
+        self.result: dict = {"status": "berjalan"}
+
+    def run(self) -> None:  # pragma: no cover - diuji lewat pemakaian nyata
+        self.result = _run_messenger_probe(self.settings)
+
+
+def _start_probe(settings: Settings) -> None:
+    runner = _ProbeRunner(settings)
+    runner.start()
+    st.session_state["fbw_msg_probe_thread"] = runner
+    st.session_state["fbw_msg_diag"] = {"status": "berjalan"}
+
+
+def _poll_probe() -> dict | None:
+    """Ambil hasil pemeriksaan bila sudah selesai (tanpa blocking)."""
+    runner = st.session_state.get("fbw_msg_probe_thread")
+    if runner is None:
+        return st.session_state.get("fbw_msg_diag")
+    if runner.is_alive():
+        return None
+    result = runner.result
+    st.session_state["fbw_msg_diag"] = result
+    st.session_state["fbw_msg_probe_thread"] = None
+    return result
 
 
 def _run_messenger_probe(settings: Settings) -> dict:
@@ -534,7 +576,9 @@ def _render_job_events(db: Database, job_id: int, active: bool) -> None:
                 )
 
 
-def _render_job_diagnostics(settings: Settings, db: Database, job_id: int, live: bool) -> None:
+def _render_job_diagnostics(
+    settings: Settings, db: Database, job_id: int, live: bool, key_suffix: str = ""
+) -> None:
     job = db.get_job(job_id) or {}
     active = (job.get("status") or "") in ACTIVE_STATUSES
     age = _age_seconds(job.get("heartbeat_at"))
@@ -544,10 +588,10 @@ def _render_job_diagnostics(settings: Settings, db: Database, job_id: int, live:
             "Proses mungkin macet."
         )
     dcols = st.columns(2)
-    if active and dcols[0].button("⛔ Hentikan paksa", key=f"force_{job_id}"):
+    if active and dcols[0].button("⛔ Hentikan paksa", key=f"force_{job_id}{key_suffix}"):
         st.toast(jobs.force_stop(db, job_id, st.session_state.get("worker_proc")))
         st.rerun()
-    if active and dcols[1].button("🩺 Tandai gagal", key=f"fail_{job_id}"):
+    if active and dcols[1].button("🩺 Tandai gagal", key=f"fail_{job_id}{key_suffix}"):
         jobs.mark_failed(db, job_id, "Ditandai gagal manual karena proses macet.")
         st.rerun()
     log_text = jobs.tail_log(job_id, settings, max_lines=120)
@@ -559,11 +603,16 @@ def _render_job_diagnostics(settings: Settings, db: Database, job_id: int, live:
 
 
 @st.fragment(run_every="2s")
-def job_live_panel(settings: Settings, db: Database, job_id: int) -> None:
-    _render_job_content(settings, db, job_id, live=True)
+def job_live_panel(settings: Settings, db: Database, job_id: int, key_suffix: str = "_live") -> None:
+    _render_job_content(settings, db, job_id, live=True, key_suffix=key_suffix)
 
 
-def render_job_panel(settings: Settings, db: Database) -> None:
+def render_job_panel(settings: Settings, db: Database, *, scope: str = "") -> None:
+    """Tampilkan status job. ``scope`` membuat widget unik per tab.
+
+    Panel ini muncul di tab Mulai dan tab Balas. Tanpa ``scope``, Streamlit
+    menolak karena dua widget memakai key yang sama (bug yang dilaporkan pengguna).
+    """
     job_id = st.session_state.get("job_id")
     if job_id is None:
         latest = db.latest_job()
@@ -571,11 +620,12 @@ def render_job_panel(settings: Settings, db: Database) -> None:
     if job_id is None:
         return
 
+    suffix = f"_{scope}" if scope else ""
     job = db.get_job(job_id)
     if job and job.get("status") in ACTIVE_STATUSES:
-        job_live_panel(settings, db, job_id)
+        job_live_panel(settings, db, job_id, key_suffix=f"_live{suffix}")
     else:
-        _render_job_content(settings, db, job_id, live=False)
+        _render_job_content(settings, db, job_id, live=False, key_suffix=suffix)
 
 
 # ---------------------------------------------------------------------------
@@ -1726,7 +1776,7 @@ def render_balas(settings: Settings, db: Database) -> None:
     if blocked:
         st.caption("Tombol aktif bila tidak ada sesi lain dan pernyataan sudah dicentang.")
 
-    render_job_panel(settings, db)
+    render_job_panel(settings, db, scope="balas")
 
     # --- Notifikasi WhatsApp ----------------------------------------------
     with st.expander("📲 Notifikasi WhatsApp ke pemilik"):
