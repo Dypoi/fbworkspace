@@ -200,6 +200,11 @@ class Database:
                 (SCHEMA_VERSION,),
             )
         self.seed_prices_if_empty()
+        # Migrasi perbaikan: buang tanda "terjawab" tanpa balasan (uji kering lama).
+        try:
+            self.reset_unanswered_marks()
+        except Exception:  # noqa: BLE001 - jangan gagalkan pembukaan database
+            pass
 
     @staticmethod
     def _ensure_columns(conn: sqlite3.Connection) -> None:
@@ -693,23 +698,54 @@ class Database:
                 (now, reply_text, now, thread_key),
             )
 
-    def mark_answered_many(self, thread_key: str, msg_keys: list[str], reply_text: str) -> None:
+    def mark_answered_many(
+        self,
+        thread_key: str,
+        msg_keys: list[str],
+        reply_text: str,
+        *,
+        note: str = "dibalas",
+    ) -> None:
+        """Tandai pesan sudah ditangani.
+
+        ``note`` membedakan "dibalas" (ada balasan nyata) dari "diam" (keputusan
+        sengaja tidak menjawab). Pesan yang hanya diuji kering TIDAK boleh
+        ditandai, supaya putaran berikutnya masih bisa mengirim.
+        """
         if not msg_keys:
             return
         now = utcnow_iso()
         placeholders = ",".join("?" for _ in msg_keys)
         with self.conn() as conn:
             conn.execute(
-                f"UPDATE chat_messages SET answered=1, reply_text=?, replied_at=? "
+                f"UPDATE chat_messages SET answered=1, reply_text=?, replied_at=?, "
+                f"author=CASE WHEN author='' THEN ? ELSE author END "
                 f"WHERE thread_key=? AND msg_key IN ({placeholders})",
-                [reply_text, now, thread_key, *msg_keys],
+                [reply_text, now, note, thread_key, *msg_keys],
             )
-            if reply_text:
+            conn.execute(
+                "UPDATE chats SET last_checked_at=?, updated_at=? WHERE thread_key=?",
+                (now, now, thread_key),
+            )
+            if reply_text and note == "dibalas":
                 conn.execute(
                     "UPDATE chats SET last_reply_at=?, last_reply_text=?, updated_at=? "
                     "WHERE thread_key=?",
                     (now, reply_text, now, thread_key),
                 )
+
+    def reset_unanswered_marks(self) -> int:
+        """Perbaiki tanda 'terjawab' yang dibuat tanpa balasan (bug uji kering).
+
+        Hanya berlaku untuk baris tanpa balasan (``reply_text=''``), jadi pesan
+        yang benar-benar dibalas tidak tersentuh. Idempoten.
+        """
+        with self.conn() as conn:
+            cursor = conn.execute(
+                "UPDATE chat_messages SET answered=0, replied_at=NULL "
+                "WHERE answered=1 AND reply_text=''"
+            )
+            return int(cursor.rowcount or 0)
 
     def escalation_exists(self, chat_url: str, message: str) -> bool:
         with self.conn() as conn:

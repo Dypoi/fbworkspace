@@ -218,6 +218,7 @@ batasnya harus jelas.
 | Variasi bahasa AI | Bila Ollama aktif, gaya kalimat boleh divariasikan, tetapi hasilnya diperiksa: angka harus identik, lokasi & nomor WA harus tetap ada, klaim terlarang menggugurkan hasil, lalu jatuh ke teks template. AI **tidak pernah** menentukan harga. Model kecil tetap bisa menghasilkan kalimat aneh yang lolos pemeriksaan — periksa beberapa putaran uji kering. |
 | Profil browser dipakai bersamaan | Chromium menolak dua proses memakai folder profil yang sama. Worker menulis `data/browser_profile/.fbworkspace.lock`; bila proses lain masih hidup, perintah berhenti dengan pesan yang menyebut PID-nya. Samakan selalu `FBW_BROWSER_PROFILE_DIR` worker & `fbworkspace.browser.messenger` (worker sudah mewarisi nilainya dari dashboard). |
 | PIN pemulihan chat | Kalau Facebook meminta PIN, worker mengisinya **hanya** bila (a) `FBW_CHAT_PIN` diisi dan (b) layar yang terdeteksi memang "masukkan PIN pemulihan chat". Di layar checkpoint/verifikasi identitas/kode 2FA password worker **berhenti** dan memberi tahu Anda. Deteksi layar berbasis teks halaman — bisa salah baca; maksimum 2 percobaan per putaran. PIN tidak pernah ditulis ke log, database, atau pesan WhatsApp. |
+| Uji kering | Uji kering **tidak** menandai pesan terjawab; setelah uji kering dimatikan, putaran berikutnya mengirim balasan untuk pesan yang sama. Tanda lama yang salah sudah dibersihkan otomatis saat database dibuka. |
 | Anti-balas-ganda | Berbasis `msg_key` (hash pesan). Pesan yang diedit/dihapus Facebook bisa terbaca sebagai pesan baru. |
 
 ---

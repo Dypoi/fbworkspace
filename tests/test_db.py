@@ -228,3 +228,51 @@ class TestSchemaMigration:
         Database(path)
         Database(path)  # tidak boleh error karena kolom sudah ada
         assert Database(path).list_prices()
+
+
+class TestUnansweredMarks:
+    """Bug nyata: uji kering menandai pesan terjawab walau tidak ada balasan."""
+
+    def _seed(self, path):
+        from fbworkspace.db import Database
+
+        db = Database(path)
+        db.upsert_chat("t1", name="Rian", url="https://x/messages/t/t1/")
+        db.record_message("t1", "m1", direction="in", text="iphone 11 ready?")
+        return db
+
+    def test_marked_with_reply_needs_text(self, tmp_path):
+        db = self._seed(tmp_path / "a.db")
+        db.mark_answered_many("t1", ["m1"], "Ready kak")
+        assert db.unanswered_incoming("t1") == []
+        assert db.get_chat("t1")["last_reply_at"]
+
+    def test_silent_mark_does_not_set_last_reply(self, tmp_path):
+        db = self._seed(tmp_path / "b.db")
+        db.mark_answered_many("t1", ["m1"], "", note="diam")
+        assert db.unanswered_incoming("t1") == []
+        assert not db.get_chat("t1")["last_reply_at"]
+
+    def test_reset_clears_marks_without_reply(self, tmp_path):
+        db = self._seed(tmp_path / "c.db")
+        # meniru data lama yang rusak: terjawab tanpa balasan
+        with db.conn() as conn:
+            conn.execute("UPDATE chat_messages SET answered=1 WHERE msg_key='m1'")
+        assert db.reset_unanswered_marks() == 1
+        assert len(db.unanswered_incoming("t1")) == 1
+
+    def test_reset_keeps_real_replies(self, tmp_path):
+        db = self._seed(tmp_path / "d.db")
+        db.mark_answered_many("t1", ["m1"], "Ready kak")
+        assert db.reset_unanswered_marks() == 0
+        assert db.unanswered_incoming("t1") == []
+
+    def test_init_migrates_old_bad_marks(self, tmp_path):
+        from fbworkspace.db import Database
+
+        path = tmp_path / "e.db"
+        db = self._seed(path)
+        with db.conn() as conn:
+            conn.execute("UPDATE chat_messages SET answered=1 WHERE msg_key='m1'")
+        reopened = Database(path)  # init() membersihkan tanda rusak
+        assert len(reopened.unanswered_incoming("t1")) == 1

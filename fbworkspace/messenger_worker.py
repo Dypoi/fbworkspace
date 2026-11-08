@@ -348,6 +348,11 @@ def _handle_thread(
     pending = db.unanswered_incoming(thread.key)
     if not pending:
         counters["silent"] += 1
+        log(
+            "info",
+            f"[{thread.name}] tidak ada pesan masuk yang belum dijawab "
+            f"({len(read.messages)} pesan terbaca di percakapan)",
+        )
         return new_messages
 
     latest = pending[-1]
@@ -414,7 +419,18 @@ def _handle_thread(
             log,
         )
 
-    db.mark_answered_many(thread.key, keys, sent_text)
+    if dry_run and plan.should_send and not sent_text:
+        # Uji kering: JANGAN tandai terjawab, supaya putaran berikutnya (tanpa uji
+        # kering) masih bisa mengirim balasan ini.
+        log(
+            "info",
+            f"[{thread.name}] belum ditandai terjawab karena uji kering "
+            "(matikan uji kering untuk mengirim)",
+        )
+        return new_messages
+
+    note = "dibalas" if sent_text else ("diam" if not plan.should_send else "gagal_kirim")
+    db.mark_answered_many(thread.key, keys, sent_text, note=note)
     return new_messages
 
 

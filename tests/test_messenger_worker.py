@@ -99,7 +99,8 @@ def test_dry_run_does_not_send_but_records(tmp_path):
     assert job["counters"]["replies"] == 0
     assert adapter.sent == []
     assert sender.sent == []
-    assert db.unanswered_incoming(THREAD_KEY) == []
+    # uji kering TIDAK menandai terjawab -> putaran berikutnya masih bisa mengirim
+    assert len(db.unanswered_incoming(THREAD_KEY)) == 1
 
 
 def test_live_reply_uses_pricelist(tmp_path):
@@ -443,3 +444,77 @@ def test_send_needs_pin_fails_job(tmp_path):
     assert code == 1
     assert job["status"] == "gagal"
     assert "PIN" in job["message"]
+
+
+def test_dry_run_then_live_sends_the_same_message(tmp_path):
+    """Bug nyata 8 Nov 17:58: uji kering menandai terjawab, putaran nyata jadi diam."""
+    db = Database(tmp_path / "chat.db")
+    adapter = FakeMessenger(
+        [Thread(THREAD_KEY, "Rian", THREAD_URL)],
+        {THREAD_URL: [_incoming("Iphone 11 ready?")]},
+    )
+    settings = _settings(tmp_path)
+
+    dry = _job(db, dry_run=True)
+    run(dry, adapter=adapter, sender=MemorySender(), database=db, settings=settings, sleep=lambda s: None)
+    assert adapter.sent == []
+
+    live = _job(db, dry_run=False, cooldown_seconds=0)
+    run(live, adapter=adapter, sender=MemorySender(), database=db, settings=settings, sleep=lambda s: None)
+
+    assert adapter.sent == [(THREAD_URL, "Ready kak")]
+    assert db.get_job(live)["counters"]["replies"] == 1
+
+
+def test_live_run_after_dry_is_logged(tmp_path):
+    db = Database(tmp_path / "chat.db")
+    adapter = FakeMessenger(
+        [Thread(THREAD_KEY, "Rian", THREAD_URL)],
+        {THREAD_URL: [_incoming("harga iphone 11 64gb?")]},
+    )
+    settings = _settings(tmp_path)
+    run(_job(db, dry_run=True), adapter=adapter, sender=MemorySender(), database=db,
+        settings=settings, sleep=lambda s: None)
+    live = _job(db, dry_run=False, cooldown_seconds=0)
+    run(live, adapter=adapter, sender=MemorySender(), database=db, settings=settings,
+        sleep=lambda s: None)
+
+    assert adapter.sent == [(THREAD_URL, "2.400.000 kak")]
+
+
+def test_no_pending_messages_is_logged(tmp_path):
+    db = Database(tmp_path / "chat.db")
+    job_id = _job(db, dry_run=False)
+    adapter = FakeMessenger([Thread(THREAD_KEY, "Rian", THREAD_URL)], {THREAD_URL: []})
+
+    run(job_id, adapter=adapter, sender=MemorySender(), database=db, settings=_settings(tmp_path), sleep=lambda s: None)
+
+    messages = [e["message"] for e in db.get_events(job_id)]
+    assert any("tidak ada pesan masuk yang belum dijawab" in m for m in messages)
+    assert any("0 pesan terbaca" in m for m in messages)
+
+
+def test_dry_run_log_explains_not_marked(tmp_path):
+    db = Database(tmp_path / "chat.db")
+    job_id = _job(db, dry_run=True)
+    adapter = FakeMessenger(
+        [Thread(THREAD_KEY, "Rian", THREAD_URL)], {THREAD_URL: [_incoming("iphone 11 ready?")]}
+    )
+
+    run(job_id, adapter=adapter, sender=MemorySender(), database=db, settings=_settings(tmp_path), sleep=lambda s: None)
+
+    messages = [e["message"] for e in db.get_events(job_id)]
+    assert any("belum ditandai terjawab karena uji kering" in m for m in messages)
+
+
+def test_dm_notes_distinguish_reply_and_silence(tmp_path):
+    db = Database(tmp_path / "chat.db")
+    adapter = FakeMessenger(
+        [Thread(THREAD_KEY, "Rian", THREAD_URL)],
+        {THREAD_URL: [_incoming("iphone 11 ready?"), _incoming("ok makasih", key="m2")]},
+    )
+    job_id = _job(db, dry_run=False)
+    run(job_id, adapter=adapter, sender=MemorySender(), database=db, settings=_settings(tmp_path), sleep=lambda s: None)
+
+    rows = db.unanswered_incoming(THREAD_KEY)
+    assert rows == []
