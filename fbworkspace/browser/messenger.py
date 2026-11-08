@@ -199,11 +199,22 @@ EXTRACT_JS = """
     ));
   nodes = nodes.concat(media);
 
+  // Petunjuk struktur: apakah ini "Messenger baru" (input berupa contenteditable
+  // di dalam panel) atau halaman klasik (input berupa <textarea> di form)?
+  const textarea = document.querySelector('textarea[name="message"], form textarea, textarea');
+  const editableInForm = document.querySelector('form div[contenteditable="true"]');
+  let variant = 'tidak_diketahui';
+  if (composer) variant = 'baru';
+  else if (textarea || editableInForm) variant = 'klasik';
+
   return {
     nodes: nodes,
     composer: composer ? box(composer) : null,
     container: container ? box(container) : null,
     found_container: !!container,
+    variant: variant,
+    has_textarea: !!textarea,
+    editable_count: document.querySelectorAll('[contenteditable="true"]').length,
     url: location.href,
     title: document.title,
     vw: window.innerWidth,
@@ -1062,6 +1073,12 @@ class MessengerAdapter:
                     page.wait_for_timeout(1000)
                 selector, anchors = _first_match_all(page, THREAD_SELECTORS)
 
+            payload_hint: dict = {}
+            try:
+                payload_hint = page.evaluate(EXTRACT_JS) or {}
+            except Exception:  # noqa: BLE001
+                payload_hint = {}
+
             pin_state = self._handle_pin(page, stage="daftar_chat")
             if pin_state == "terisi":
                 selector, anchors = _first_match_all(page, THREAD_SELECTORS)
@@ -1072,6 +1089,8 @@ class MessengerAdapter:
             diagnostics["thread_selector"] = selector or ""
             diagnostics["attempts"] = attempts
             diagnostics["pin"] = self.pin_status
+            diagnostics["variant"] = payload_hint.get("variant", "")
+            diagnostics["has_textarea"] = payload_hint.get("has_textarea")
 
             if pin_state == "perlu_pin":
                 diagnostics["status"] = "perlu_pin"

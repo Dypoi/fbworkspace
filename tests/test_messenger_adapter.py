@@ -773,3 +773,62 @@ class TestRealPageReport:
         plan = compose_reply(incoming[-1], default_entries())
         assert plan.should_send
         assert plan.body == "Ready kak"
+
+
+class TestVariantReporting:
+    """Jika struktur Messenger berbeda (klasik: <textarea>), harus terlihat jelas."""
+
+    def test_classic_variant_reported(self, monkeypatch):
+        page = FakePage(
+            payload={
+                "nodes": [],
+                "composer": None,
+                "container": None,
+                "found_container": False,
+                "variant": "klasik",
+                "has_textarea": True,
+                "vw": 1280,
+            },
+            elements={'a[href*="/messages/t/"]': [FakeSkill(href="/messages/t/1/")]},
+        )
+        adapter = adapter_with_page(page, monkeypatch)
+        result = adapter.list_threads_detailed()
+        assert result.status == "ok"
+        assert result.diagnostics["variant"] == "klasik"
+        assert result.diagnostics["has_textarea"] is True
+
+    def test_new_variant_reported(self, monkeypatch):
+        page = FakePage(
+            payload={"nodes": [], "composer": {"x": 1, "y": 2, "w": 3, "h": 4}, "vw": 1280,
+                     "variant": "baru", "has_textarea": False},
+            elements={'a[href*="/messages/t/"]': []},
+        )
+        adapter = adapter_with_page(page, monkeypatch)
+        result = adapter.list_threads_detailed()
+        assert result.diagnostics["variant"] == "baru"
+
+    def test_diagnose_surfaces_variant(self, monkeypatch):
+        from fbworkspace.browser import messenger as mod
+
+        class FakeAdapter:
+            def __init__(self, *a, **k):
+                self.last_debug = {}
+                self.last_diagnostics = {}
+                self.lock_warning = ""
+
+            def is_available(self):
+                return True, ""
+
+            def list_threads_detailed(self, limit=10):
+                from fbworkspace.browser.messenger import ThreadList
+
+                return ThreadList(
+                    threads=[],
+                    status="tidak_ada_chat",
+                    diagnostics={"variant": "klasik", "has_textarea": True},
+                )
+
+        monkeypatch.setattr(mod, "MessengerAdapter", FakeAdapter)
+        payload = mod.diagnose("/tmp/x")
+        assert payload["variant"] == "klasik"
+        assert payload["has_textarea"] is True
