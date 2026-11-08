@@ -221,7 +221,7 @@ class TestReadThread:
         )
         page = FakePage(
             elements={
-                'div[role="row"]': [incoming, outgoing],
+                'div[role="main"] div[role="row"]': [incoming, outgoing],
                 'div[dir="auto"]': FakeSkill(text="x"),
             }
         )
@@ -232,7 +232,7 @@ class TestReadThread:
         assert [m.direction for m in read.messages] == ["in", "out"]
 
     def test_no_message_rows(self, monkeypatch):
-        page = FakePage(elements={'div[role="row"]': []})
+        page = FakePage(elements={'div[role="main"] div[role="row"]': []})
         adapter = adapter_with_page(page, monkeypatch)
         read = adapter.read_thread("https://www.facebook.com/messages/t/999/")
         assert read.status == "tidak_ada_pesan"
@@ -318,3 +318,53 @@ class TestRealAccountShape:
         adapter = adapter_with_page(self._page(), monkeypatch)
         result = adapter.list_threads_detailed(limit=3)
         assert len(result.threads) == 3
+
+
+class TestConversationReading:
+    """Regresi nyata: worker sempat membaca label sidebar ('Chat Info') sebagai pesan."""
+
+    def test_ui_labels_are_dropped(self):
+        from fbworkspace.browser.messenger import _clean_message_text, _is_ui_noise
+
+        assert _is_ui_noise("Chat Info") is True
+        assert _is_ui_noise("Ketik pesan") is True
+        assert _is_ui_noise("Active now") is True
+        assert _is_ui_noise("Iphone 11 ready?") is False
+        assert _clean_message_text("Chat Info\nIphone 11 ready?\nAktif sekarang") == "Iphone 11 ready?"
+
+    def test_conversation_url_is_direct(self):
+        adapter = MessengerAdapter(profile_dir="/tmp/x")
+        assert adapter.conversation_url("https://www.facebook.com/t/123456/") == (
+            "https://www.facebook.com/messages/t/123456/"
+        )
+        assert adapter.conversation_url("https://www.facebook.com/messages/t/99/?x=1") == (
+            "https://www.facebook.com/messages/t/99/"
+        )
+
+    def test_sidebar_rows_not_used_as_messages(self, monkeypatch):
+        # Sidebar punya 13 baris; area percakapan kosong -> harus 'tidak_ada_pesan'
+        sidebar = FakeSkill(children={'div[dir="auto"]': FakeSkill(text="Chat Info")})
+        page = FakePage(
+            elements={
+                'div[role="row"]': [sidebar] * 13,
+                'div[role="main"] div[role="row"]': [],
+            }
+        )
+        adapter = adapter_with_page(page, monkeypatch)
+        read = adapter.read_thread("https://www.facebook.com/messages/t/123/")
+        assert read.status == "tidak_ada_pesan"
+        assert "baris di halaman: 13" in read.note
+
+    def test_real_message_in_conversation_area(self, monkeypatch):
+        bubble = FakeSkill(children={'div[dir="auto"]': FakeSkill(text="Iphone 11 ready?")})
+        header = FakeSkill(children={'div[dir="auto"]': FakeSkill(text="Chat Info")})
+        page = FakePage(
+            elements={
+                'div[role="row"]': [header] * 13,
+                'div[role="main"] div[role="row"]': [header, bubble],
+            }
+        )
+        adapter = adapter_with_page(page, monkeypatch)
+        read = adapter.read_thread("https://www.facebook.com/messages/t/123/")
+        assert read.status == "ok"
+        assert [m.text for m in read.messages] == ["Iphone 11 ready?"]

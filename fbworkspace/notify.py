@@ -16,6 +16,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 import sys
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
@@ -110,13 +111,31 @@ class WhatsAppWebSender:
     def url_for(self, text: str) -> str:
         return f"https://web.whatsapp.com/send?phone={self.phone}&text={quote(text)}"
 
-    def send(self, text: str) -> tuple[bool, str]:
+    def send(self, text: str, *, blocking: bool = True) -> tuple[bool, str]:
+        """Kirim teks lewat WhatsApp Web.
+
+        ``blocking=False`` berarti "kirim di latar belakang": yang dilaporkan hanya
+        apakah pengiriman berhasil DIMULAI, bukan hasil akhirnya. Dipakai dashboard
+        supaya tombol tes tidak membekukan halaman 1 menit.
+        """
         try:
             from playwright.sync_api import sync_playwright
         except Exception as exc:  # noqa: BLE001
             return False, f"Playwright tidak tersedia: {exc.__class__.__name__}"
 
         self.profile_dir.mkdir(parents=True, exist_ok=True)
+        if not blocking:
+            thread = threading.Thread(
+                target=self._send_blocking, args=(sync_playwright, text), daemon=True
+            )
+            thread.start()
+            return True, (
+                "pengiriman dimulai di latar belakang — cek WhatsApp Anda beberapa detik lagi; "
+                "bila tidak masuk, jalankan: python -m fbworkspace.notify --test"
+            )
+        return self._send_blocking(sync_playwright, text)
+
+    def _send_blocking(self, sync_playwright, text: str) -> tuple[bool, str]:
         try:
             with sync_playwright() as p:
                 context = p.chromium.launch_persistent_context(
@@ -124,19 +143,94 @@ class WhatsAppWebSender:
                 )
                 try:
                     page = context.pages[0] if context.pages else context.new_page()
-                    page.goto(self.url_for(text), wait_until="domcontentloaded", timeout=self.timeout_ms)
+                    page.goto(
+                        self.url_for(text),
+                        wait_until="domcontentloaded",
+                        timeout=self.timeout_ms,
+                    )
+                    # Beri waktu WhatsApp Web memuat sesi sebelum menyimpulkan.
+                    try:
+                        page.wait_for_load_state("networkidle", timeout=min(20_000, self.timeout_ms))
+                    except Exception:  # noqa: BLE001
+                        pass
                     if page.query_selector(_WA_QR):
-                        return False, "WhatsApp Web belum login (perlu scan QR)"
-                    composer = page.wait_for_selector(_WA_COMPOSER, timeout=self.timeout_ms)
+                        return False, "WhatsApp Web belum login (perlu scan QR lewat scripts/wa_login.py)"
+
+                    composer = None
+                    for selector in _WA_COMPOSER.split(","):
+                        selector = selector.strip()
+                        if not selector:
+                            continue
+                        try:
+                            composer = page.wait_for_selector(selector, timeout=8_000)
+                        except Exception:  # noqa: BLE001
+                            composer = None
+                        if composer is not None:
+                            break
+                    if composer is None:
+                        detail = self._diagnose(page)
+                        return False, f"kotak tulis WhatsApp tidak ditemukan ({detail})"
+
                     composer.click()
                     page.keyboard.type(text, delay=12)
+                    page.wait_for_timeout(600)
                     page.keyboard.press("Enter")
-                    page.wait_for_timeout(2500)
-                    return True, "terkirim"
+                    page.wait_for_timeout(3000)
+
+                    needle = " ".join(text.split())[:30].lower()
+                    body = " ".join(page.inner_text("body").split()).lower()
+                    if needle and needle in body:
+                        return True, "terkirim (terlihat di halaman)"
+                    # Pesan sudah keluar dari kotak tulis = biasanya terkirim.
+                    try:
+                        still_there = composer.inner_text() or ""
+                    except Exception:  # noqa: BLE001
+                        still_there = ""
+                    if needle and needle in " ".join(still_there.split()).lower():
+                        return False, "pesan masih di kotak tulis (belum terkirim)"
+                    return True, "terkirim (kotak tulis kosong)"
                 finally:
-                    context.close()
+                    try:
+                        context.close()
+                    except Exception:  # noqa: BLE001
+                        pass
         except Exception as exc:  # noqa: BLE001
-            return False, f"{exc.__class__.__name__}: {str(exc)[:200]}"
+            return False, _friendly_wa_error(exc)
+
+    @staticmethod
+    def _diagnose(page) -> str:
+        """Ringkasan keadaan halaman WhatsApp untuk laporan kegagalan."""
+        parts = []
+        try:
+            parts.append(f"url={page.url[:100]}")
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            parts.append(f"judul={page.title()[:60]!r}")
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            body = " ".join(page.inner_text("body").split())[:200]
+            parts.append(f"teks={body!r}")
+        except Exception:  # noqa: BLE001
+            pass
+        return " | ".join(parts)
+
+
+def _friendly_wa_error(exc: Exception) -> str:
+    """Terjemahkan error Playwright jadi langkah konkret untuk WhatsApp."""
+    raw = f"{exc.__class__.__name__}: {str(exc)[:200]}"
+    lowered = raw.lower()
+    if "executable doesn't exist" in lowered or "looks like playwright" in lowered:
+        return "Chromium Playwright belum terpasang. Jalankan: playwright install chromium"
+    if "profile" in lowered and ("in use" in lowered or "locked" in lowered):
+        return (
+            "Profil WhatsApp sedang dipakai jendela lain. Tutup jendela WhatsApp Web "
+            "milik aplikasi ini (atau jendela wa_login.py yang masih terbuka), lalu ulangi."
+        )
+    if "timeout" in lowered:
+        return f"WhatsApp Web tidak selesai dimuat dalam batas waktu ({raw[:120]})"
+    return raw
 
 
 def _normalize_phone(phone: str) -> str:
@@ -158,6 +252,42 @@ def build_login_escalation(url: str = "") -> Escalation:
         url=url,
         header=STOP_HEADER,
     )
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Periksa pengiriman WhatsApp tanpa membuka dashboard.
+
+        python -m fbworkspace.notify --test
+    """
+    import argparse
+    import json
+
+    parser = argparse.ArgumentParser(description="Tes notifikasi WhatsApp (tidak lewat dashboard)")
+    parser.add_argument("--test", action="store_true", help="Kirim satu pesan uji")
+    parser.add_argument("--show", action="store_true", help="Tampilkan jendela browser")
+    parser.add_argument("--text", default="tes notifikasi fbworkspace")
+    args = parser.parse_args(argv)
+
+    from .config import get_settings
+
+    settings = get_settings()
+    sender = WhatsAppWebSender(
+        profile_dir=settings.wa_profile_dir,
+        phone=settings.wa_phone,
+        headless=not args.show,
+    )
+    print(f"Tujuan : {sender.phone}")
+    print(f"Profil : {sender.profile_dir}")
+    ok, note = sender.send(args.text, blocking=True)
+    print(json.dumps({"ok": ok, "keterangan": note}, ensure_ascii=False, indent=2))
+    if not ok:
+        print(
+            "\nPerbaikan yang paling sering berhasil:\n"
+            "  1. .\\.venv\\Scripts\\python.exe scripts\\wa_login.py --show  (scan QR)\n"
+            "  2. pastikan tidak ada jendela WhatsApp Web lain yang terbuka\n"
+            "  3. ulangi perintah ini"
+        )
+    return 0 if ok else 1
 
 
 def windows_toast(title: str, message: str) -> tuple[bool, str]:
@@ -187,3 +317,7 @@ def windows_toast(title: str, message: str) -> tuple[bool, str]:
         return True, "notifikasi Windows dikirim"
     except Exception as exc:  # noqa: BLE001
         return False, f"{exc.__class__.__name__}: {exc}"
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())

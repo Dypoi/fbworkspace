@@ -55,6 +55,65 @@ COMPOSER_SELECTORS = (
     'div[aria-label*="Message"][contenteditable="true"]',
     'div[contenteditable="true"]',
 )
+# Baris pesan di dalam percakapan (bukan daftar chat di sidebar).
+CONVERSATION_ROW_SELECTORS = (
+    'div[role="main"] div[role="row"]',
+    'div[role="main"] div[role="listitem"]',
+    'div[role="log"] div[role="row"]',
+    'div[role="log"] [role="listitem"]',
+    'div[aria-label*="Pesan"][role="main"] div[role="row"]',
+)
+
+# Label antarmuka yang sering terbaca sebagai "pesan" — harus dibuang.
+UI_NOISE_LABELS = (
+    "chat info",
+    "info chat",
+    "detail percakapan",
+    "conversation details",
+    "lihat profil",
+    "view profile",
+    "ketik pesan",
+    "type a message",
+    "tulis pesan",
+    "kirim pesan",
+    "send message",
+    "pesan ini",
+    "emoji",
+    "lampiran",
+    "attachment",
+    "pesan suara",
+    "voice message",
+    "balas",
+    "reply",
+    "teruskan",
+    "forward",
+    "suka",
+    "like",
+    "reaksi",
+    "react",
+    "opsi",
+    "options",
+    "tutup",
+    "close",
+    "kembali",
+    "back",
+    "lainnya",
+    "more",
+    "lalu",
+    "next",
+    "sebelumnya",
+    "previous",
+    "muat lebih",
+    "load more",
+    "aktif sekarang",
+    "active now",
+    "terkirim",
+    "sent",
+    "dibaca",
+    "seen",
+    "delivered",
+)
+
 LOGIN_MARKERS = (
     'input[name="email"]',
     "#email",
@@ -135,6 +194,27 @@ def _safe_body_text(page, limit: int = 400) -> str:
     except Exception:  # noqa: BLE001
         return ""
     return " ".join(str(raw).split())[:limit]
+
+
+def _is_ui_noise(text: str) -> bool:
+    """True bila teks hanyalah label antarmuka (bukan isi pesan)."""
+    cleaned = " ".join((text or "").lower().split())
+    cleaned = cleaned.strip(" .:·—–-\n\t")
+    if not cleaned:
+        return True
+    if cleaned in UI_NOISE_LABELS:
+        return True
+    # "Chat Info" + nama, dsb.
+    return any(cleaned == label or cleaned.startswith(label + " ") for label in UI_NOISE_LABELS)
+
+
+def _clean_message_text(text: str) -> str:
+    """Buang baris label UI; sisakan isi pesan sebenarnya."""
+    lines = [line.strip() for line in (text or "").split("\n")]
+    kept = [line for line in lines if line and not _is_ui_noise(line)]
+    if not kept:
+        return ""
+    return "\n".join(kept).strip()
 
 
 def _msg_key(thread_key: str, index: int, text: str) -> str:
@@ -356,6 +436,7 @@ class MessengerAdapter:
             ('a[href*="/t/"]', "chat_links"),
             ('div[role="row"]', "rows"),
             ('div[role="listitem"]', "listitems"),
+            ('div[role="main"] div[role="row"]', "main_rows"),
         ):
             try:
                 diagnostics[key] = len(page.query_selector_all(selector))
@@ -540,7 +621,9 @@ class MessengerAdapter:
             playwright = self._launch()
             context = self._context(playwright)
             page = context.pages[0] if context.pages else context.new_page()
-            page.goto(url, wait_until="domcontentloaded", timeout=self.timeout_ms)
+            page.goto(
+                self.conversation_url(url), wait_until="domcontentloaded", timeout=self.timeout_ms
+            )
             try:
                 page.wait_for_load_state("networkidle", timeout=min(15_000, self.timeout_ms))
             except Exception:  # noqa: BLE001
@@ -558,15 +641,23 @@ class MessengerAdapter:
             if word or self._blocked(page, diagnostics):
                 return ThreadRead(status="pemblokiran", note=word or "halaman pembatasan")
 
-            selector, rows = _first_match_all(page, MESSAGE_ROW_SELECTORS)
+            selector, rows = _first_match_all(page, CONVERSATION_ROW_SELECTORS)
             attempts = 0
             while not rows and attempts < 2:
                 attempts += 1
                 page.wait_for_timeout(1500)
-                selector, rows = _first_match_all(page, MESSAGE_ROW_SELECTORS)
+                selector, rows = _first_match_all(page, CONVERSATION_ROW_SELECTORS)
             if not rows:
-                self.last_diagnostics = dict(diagnostics, status="tidak_ada_pesan")
-                return ThreadRead(status="tidak_ada_pesan", note=diagnostics.get("text", "")[:160])
+                self.last_diagnostics = dict(
+                    diagnostics, status="tidak_ada_pesan", conversation_selector=""
+                )
+                return ThreadRead(
+                    status="tidak_ada_pesan",
+                    note=(
+                        "tidak ada baris pesan di area percakapan "
+                        f"(baris di halaman: {diagnostics.get('rows', 0)})"
+                    ),
+                )
 
             text_selector = MESSAGE_TEXT_SELECTORS[0]
             for candidate in MESSAGE_TEXT_SELECTORS:
@@ -588,7 +679,7 @@ class MessengerAdapter:
                     text = ""
                 if not text:
                     text = _text_of(row)
-                text = text.strip()
+                text = _clean_message_text(text)
                 if not text:
                     continue
                 messages.append(
@@ -598,8 +689,25 @@ class MessengerAdapter:
                         text=text[:2000],
                     )
                 )
+            if not messages:
+                self.last_diagnostics = dict(
+                    diagnostics,
+                    status="tidak_ada_pesan",
+                    rows=len(rows),
+                    messages=0,
+                    conversation_selector=selector or "",
+                )
+                return ThreadRead(
+                    status="tidak_ada_pesan",
+                    note=f"{len(rows)} baris di area percakapan, semuanya label antarmuka",
+                )
+
             self.last_diagnostics = dict(
-                diagnostics, status="ok", rows=len(rows), messages=len(messages), selector=selector
+                diagnostics,
+                status="ok",
+                rows=len(rows),
+                messages=len(messages),
+                conversation_selector=selector or "",
             )
             return ThreadRead(messages=messages, status="ok", note=f"{len(rows)} baris")
         except Exception as exc:  # noqa: BLE001
@@ -608,6 +716,32 @@ class MessengerAdapter:
             self._close(playwright, context)
 
     # ------------------------------------------------------------------ kirim
+    @staticmethod
+    def conversation_url(url: str) -> str:
+        """URL percakapan langsung (bukan tautan sidebar yang bisa tanpa ID)."""
+        key = _thread_key(url)
+        if key and key.isdigit():
+            return f"https://www.facebook.com/messages/t/{key}/"
+        return url
+
+    def _open_conversation(self, page, url: str, *, stage: str) -> tuple[bool, str]:
+        """Buka URL percakapan langsung lalu pastikan kotak tulis muncul."""
+        target = self.conversation_url(url)
+        try:
+            if page.url.rstrip("/") != target.rstrip("/"):
+                page.goto(target, wait_until="domcontentloaded", timeout=self.timeout_ms)
+        except Exception as exc:  # noqa: BLE001
+            return False, self._friendly_error(exc)
+        try:
+            page.wait_for_load_state("networkidle", timeout=min(15_000, self.timeout_ms))
+        except Exception:  # noqa: BLE001
+            pass
+        self._handle_pin(page, stage=stage)
+        selector, composer = _first_match(page, COMPOSER_SELECTORS)
+        if composer is None:
+            return False, "kotak tulis tidak ditemukan di halaman percakapan"
+        return True, ""
+
     def send_message(self, url: str, text: str) -> tuple[bool, str]:
         if not text.strip():
             return False, "teks kosong"
@@ -617,7 +751,9 @@ class MessengerAdapter:
             playwright = self._launch()
             context = self._context(playwright)
             page = context.pages[0] if context.pages else context.new_page()
-            page.goto(url, wait_until="domcontentloaded", timeout=self.timeout_ms)
+            page.goto(
+                self.conversation_url(url), wait_until="domcontentloaded", timeout=self.timeout_ms
+            )
             diagnostics = self._inspect(page)
             if self._login_required(page):
                 return False, "perlu_login"

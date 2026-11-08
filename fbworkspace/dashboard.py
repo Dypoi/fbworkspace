@@ -1791,7 +1791,8 @@ def render_balas(settings: Settings, db: Database) -> None:
             sender = WhatsAppWebSender(
                 profile_dir=settings.wa_profile_dir, phone=settings.wa_phone, headless=True
             )
-            ok, message = sender.send("tes notifikasi fbworkspace")
+            # Non-blocking: dashboard tidak membeku; hasil pasti dilihat lewat CLI.
+            ok, message = sender.send("tes notifikasi fbworkspace", blocking=False)
             st.session_state["fbw_wa_result"] = (ok, message)
         result = st.session_state.get("fbw_wa_result")
         if result:
@@ -1799,6 +1800,14 @@ def render_balas(settings: Settings, db: Database) -> None:
             (st.success if ok else st.error)(message)
             if not ok and "QR" in str(message):
                 st.info("WhatsApp Web belum login. Jalankan skrip di atas, scan QR, lalu ulangi.")
+        st.caption(
+            "Bila pesan tidak masuk, jalankan perintah ini di PowerShell — hasilnya jelas "
+            "tanpa perlu membuka dashboard:"
+        )
+        st.code(
+            ".\\.venv\\Scripts\\python.exe -m fbworkspace.notify --test --show",
+            language="powershell",
+        )
 
     # --- Eskalasi ----------------------------------------------------------
     st.markdown("**Eskalasi (chat yang bukan ranah worker)**")

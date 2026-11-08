@@ -8,9 +8,118 @@ from fbworkspace.notify import (
     Escalation,
     MemorySender,
     WhatsAppWebSender,
+    _friendly_wa_error,
     _normalize_phone,
     build_login_escalation,
 )
+
+
+class FakeWaPage:
+    """Halaman WhatsApp Web palsu untuk menguji jalur kirim."""
+
+    def __init__(self, *, qr=False, composer_text="", body=""):
+        self._qr = object() if qr else None
+        self._composer_text = composer_text
+        self._body = body
+        self.url = "https://web.whatsapp.com/send?phone=6281513839973"
+        self.typed: list[str] = []
+        self.keys: list[str] = []
+
+        class Keyboard:
+            def __init__(self, page):
+                self.page = page
+
+            def type(self, text, delay=0):
+                self.page.typed.append(text)
+
+            def press(self, key):
+                self.page.keys.append(key)
+
+        self.keyboard = Keyboard(self)
+
+    def title(self):
+        return "WhatsApp"
+
+    def inner_text(self, selector):
+        if selector == "body":
+            return self._body
+        return self._composer_text
+
+    def query_selector(self, selector):
+        return self._qr
+
+    def wait_for_selector(self, selector, timeout=None):
+        if "contenteditable" in selector:
+            return self
+        raise TimeoutError(selector)
+
+    def wait_for_load_state(self, *_a, **_k):
+        return None
+
+    def wait_for_timeout(self, _ms):
+        return None
+
+    def click(self):
+        return None
+
+    def goto(self, url, **_k):
+        self.url = url
+
+
+def _sender_with(page, monkeypatch):
+    sender = WhatsAppWebSender(profile_dir="/tmp/wa", phone="081513839973")
+    monkeypatch.setattr(sender, "_diagnose", lambda p: "url=http://x | judul='WhatsApp'")
+    return sender, page
+
+
+class TestSendFlow:
+    def test_qr_page_detected_as_not_logged_in(self):
+        sender = WhatsAppWebSender(profile_dir="/tmp/wa", phone="081513839973")
+        page = FakeWaPage(qr=True)
+        assert page.query_selector('canvas[aria-label*="Scan"]') is not None
+        assert "url=" in sender._diagnose(page)
+
+    def test_success_when_text_visible(self, monkeypatch):
+        sender = WhatsAppWebSender(profile_dir="/tmp/wa", phone="081513839973")
+        monkeypatch.setattr(
+            sender, "_send_blocking", lambda pw, text, _p=FakeWaPage(body="cek facebook halo"): (True, "terkirim (terlihat di halaman)")
+        )
+        ok, note = sender.send("cek facebook halo")
+        assert ok is True
+
+    def test_diagnose_contains_state(self):
+        sender = WhatsAppWebSender(profile_dir="/tmp/wa", phone="081513839973")
+        detail = sender._diagnose(FakeWaPage(body="Scan QR code"))
+        assert "url=" in detail
+        assert "judul=" in detail
+        assert "teks=" in detail
+
+    def test_non_blocking_returns_quickly(self, monkeypatch):
+        sender = WhatsAppWebSender(profile_dir="/tmp/wa", phone="081513839973")
+        started = []
+
+        monkeypatch.setattr(
+            sender,
+            "_send_blocking",
+            lambda pw, text: started.append(text) or (True, "terkirim"),
+        )
+        ok, note = sender.send("halo", blocking=False)
+        assert ok is True
+        assert "latar belakang" in note
+
+
+class TestFriendlyErrors:
+    def test_missing_chromium(self):
+        note = _friendly_wa_error(RuntimeError("Executable doesn't exist at /x"))
+        assert "playwright install chromium" in note
+
+    def test_profile_in_use(self):
+        note = _friendly_wa_error(RuntimeError("ProcessSingleton: profile in use"))
+        assert "dipakai jendela lain" in note
+
+    def test_timeout(self):
+        note = _friendly_wa_error(TimeoutError("Timeout 60000ms exceeded"))
+        assert "batas waktu" in note
 
 
 class TestEscalationText:
