@@ -230,6 +230,11 @@ def run(
                 f"{counters['escalations']} eskalasi, {counters['errors']} error."
                 + (" (uji kering: tidak ada yang dikirim)" if dry_run else "")
             )
+            if counters.get("skipped_cooldown"):
+                summary += (
+                    f" {counters['skipped_cooldown']} chat ditunda karena jeda minimal; "
+                    "akan dijawab pada putaran berikutnya."
+                )
             if counters.get("notify_failed"):
                 summary += (
                     f" PERHATIAN: {counters['notify_failed']} notifikasi WhatsApp GAGAL — "
@@ -356,12 +361,6 @@ def _watch_cycle(
             counters["skipped_limit"] += 1
             continue
 
-        chat = db.get_chat(thread.key)
-        if chat and chat.get("last_reply_at") and cooldown:
-            if _seconds_since(chat["last_reply_at"]) < cooldown:
-                counters["skipped_cooldown"] += 1
-                continue
-
         db.upsert_chat(thread.key, name=thread.name, url=thread.url)
         incoming_count = _handle_thread(
             db=db,
@@ -377,6 +376,7 @@ def _watch_cycle(
             sleep=sleep,
             entries=entries,
             style_config=style_config,
+            cooldown=cooldown,
         )
         counters["messages"] += incoming_count
         push()
@@ -445,6 +445,7 @@ def _handle_thread(
     sleep,
     entries,
     style_config=None,
+    cooldown: int = 0,
 ) -> int:
     """Baca & tanggapi satu percakapan. Kembalikan jumlah pesan masuk baru."""
     known_out = db.outgoing_texts(thread.key)
@@ -553,6 +554,31 @@ def _handle_thread(
         elif styled.reason:
             log("info", f"[{thread.name}] variasi AI dilewati: {styled.reason}")
 
+    deferred = False
+    if plan.should_send and cooldown:
+        chat = db.get_chat(thread.key)
+        last = (chat or {}).get("last_reply_at")
+        if last:
+            elapsed = _seconds_since(last)
+            if elapsed < cooldown:
+                remaining = int(cooldown - elapsed)
+                counters["skipped_cooldown"] += 1
+                log(
+                    "info",
+                    f"[{thread.name}] ditunda {remaining} detik: baru saja dibalas "
+                    f"{int(elapsed)} detik lalu (jeda minimal {cooldown} detik). "
+                    "Pesan pembeli tetap tersimpan dan akan dijawab setelah itu.",
+                )
+                plan = type(plan)(
+                    action="diam",
+                    body="",
+                    reason=f"jeda minimal {cooldown} detik belum lewat",
+                    intents=plan.intents,
+                    model_key=plan.model_key,
+                    storage=plan.storage,
+                )
+                deferred = True
+
     if plan.should_send:
         if dry_run:
             counters["dry_run"] += 1
@@ -605,6 +631,15 @@ def _handle_thread(
             "info",
             f"[{thread.name}] belum ditandai terjawab karena uji kering "
             "(matikan uji kering untuk mengirim)",
+        )
+        return new_messages
+
+    if deferred:
+        # Penting: jangan tandai pesan sebagai sudah ditangani, supaya putaran
+        # berikutnya (setelah jeda lewat) benar-benar mengirim balasannya.
+        log(
+            "info",
+            f"[{thread.name}] pesan tetap menunggu jawaban (ditunda karena jeda).",
         )
         return new_messages
 

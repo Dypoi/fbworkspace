@@ -153,18 +153,37 @@ def test_escalation_not_duplicated(tmp_path):
     assert len(sender.sent) == 1
 
 
-def test_cooldown_skips_same_chat(tmp_path):
+def test_cooldown_delays_new_question_and_says_why(tmp_path):
+    """Cooldown tidak lagi membisukan chat: pesan baru dijawab setelah jeda.
+
+    Kejadian nyata 8 Nov 21:00-21:04: worker membalas "Ready kak", lalu chat itu
+    dilewati diam-diam selama 10 menit sehingga pesan "berapa" berikutnya tidak
+    pernah dibaca (bahkan tidak muncul di log).
+    """
     db = Database(tmp_path / "chat.db")
-    adapter = FakeMessenger([Thread(THREAD_KEY, "Rian", THREAD_URL)], {THREAD_URL: [_incoming("harga iphone 8 64gb?")]})
-
+    adapter = FakeMessenger(
+        [Thread(THREAD_KEY, "Pak Bagus", THREAD_URL)],
+        {THREAD_URL: [_incoming("Iphone 8 ready?")]},
+    )
     first = _job(db, dry_run=False)
-    run(first, adapter=adapter, sender=MemorySender(), database=db, settings=_settings(tmp_path), sleep=lambda s: None)
+    run(first, adapter=adapter, sender=MemorySender(), database=db,
+        settings=_settings(tmp_path), sleep=lambda s: None)
     assert len(adapter.sent) == 1
 
+    # pesan baru masuk, tetapi jeda minimal belum lewat
+    adapter.messages[THREAD_URL] = [_UnreadMsg("m2", "in", "iphone 8 64gb berapa", unread=True)]
     second = _job(db, dry_run=False, cooldown_seconds=600)
-    run(second, adapter=adapter, sender=MemorySender(), database=db, settings=_settings(tmp_path), sleep=lambda s: None)
-    assert len(adapter.sent) == 1
+    run(second, adapter=adapter, sender=MemorySender(), database=db,
+        settings=_settings(tmp_path), sleep=lambda s: None)
+
+    assert len(adapter.sent) == 1, "belum boleh kirim dalam masa jeda"
     assert db.get_job(second)["counters"]["skipped_cooldown"] == 1
+    events = [e["message"] for e in db.get_events(second)]
+    assert any("ditunda" in m and "jeda minimal" in m for m in events)
+    # pesannya TETAP menunggu, jadi akan dijawab setelah jeda lewat
+    assert [row["text"] for row in db.unanswered_incoming(THREAD_KEY)] == [
+        "iphone 8 64gb berapa"
+    ]
 
 
 def test_reply_limit_enforced(tmp_path):
@@ -1115,3 +1134,24 @@ def test_closing_does_not_guess_when_messages_have_no_order(tmp_path):
     )
     assert _close_answered_by_reply(db, THREAD_KEY, read, ["Storage-nya 64 atau 128 kak?"]) == 0
     assert len(db.unanswered_incoming(THREAD_KEY)) == 1
+
+
+def test_summary_mentions_deferred_chat(tmp_path):
+    """Ringkasan putaran harus jelas soal chat yang ditunda, bukan terlihat kosong."""
+    db = Database(tmp_path / "chat.db")
+    adapter = FakeMessenger(
+        [Thread(THREAD_KEY, "Pak Bagus", THREAD_URL)],
+        {THREAD_URL: [_incoming("iphone 8 64gb berapa")]},
+    )
+    first = _job(db, dry_run=False)
+    run(first, adapter=adapter, sender=MemorySender(), database=db,
+        settings=_settings(tmp_path), sleep=lambda s: None)
+
+    adapter.messages[THREAD_URL] = [
+        _UnreadMsg("m2", "in", "iphone 8 64gb berapa", unread=True)
+    ]
+    second = _job(db, dry_run=False, cooldown_seconds=600)
+    run(second, adapter=adapter, sender=MemorySender(), database=db,
+        settings=_settings(tmp_path), sleep=lambda s: None)
+
+    assert "ditunda karena jeda minimal" in db.get_job(second)["message"]
