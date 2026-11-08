@@ -560,6 +560,14 @@ def _run_messenger_probe(settings: Settings) -> dict:
     return payload
 
 
+def _safe_force_stop(db: Database, job_id: int) -> str:
+    """Hentikan paksa tanpa pernah menjatuhkan dashboard (mis. WinError 87)."""
+    try:
+        return jobs.force_stop(db, job_id, st.session_state.get("worker_proc"))
+    except Exception as exc:  # noqa: BLE001
+        return f"Gagal menghentikan paksa: {exc.__class__.__name__}: {exc}"
+
+
 def _render_stop_controls(db: Database, job_id: int, active: bool, key_suffix: str = "") -> None:
     """Tombol berhenti yang selalu terlihat, termasuk saat worker macet."""
     job = db.get_job(job_id) or {}
@@ -581,7 +589,7 @@ def _render_stop_controls(db: Database, job_id: int, active: bool, key_suffix: s
             key=f"force_stop_pending_{job_id}{key_suffix}",
             help="Hentikan paksa bila worker tampak tidak merespons.",
         ):
-            st.toast(jobs.force_stop(db, job_id, st.session_state.get("worker_proc")))
+            st.toast(_safe_force_stop(db, job_id))
             st.rerun()
         return
 
@@ -626,7 +634,7 @@ def _render_job_diagnostics(
         )
     dcols = st.columns(2)
     if active and dcols[0].button("⛔ Hentikan paksa", key=f"force_{job_id}{key_suffix}"):
-        st.toast(jobs.force_stop(db, job_id, st.session_state.get("worker_proc")))
+        st.toast(_safe_force_stop(db, job_id))
         st.rerun()
     if active and dcols[1].button("🩺 Tandai gagal", key=f"fail_{job_id}{key_suffix}"):
         jobs.mark_failed(db, job_id, "Ditandai gagal manual karena proses macet.")

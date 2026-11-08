@@ -461,6 +461,14 @@ def _handle_thread(
             f"[{thread.name}] tidak ada pesan masuk yang belum dijawab "
             f"({len(read.messages)} pesan terbaca di percakapan){preview}",
         )
+        # Tampilkan seluruh isi yang terbaca: supaya "tidak ada" bisa diperiksa,
+        # bukan dipercaya begitu saja.
+        debug = getattr(adapter, "last_debug", {}) or {}
+        if debug.get("lines"):
+            log(
+                "info",
+                f"[{thread.name}] isi terbaca: " + " | ".join(debug["lines"])[:480],
+            )
         # Jangan biarkan pertanyaan pembeli hilang tanpa jejak: kalau daftar chat
         # menandai belum dibaca (atau cuplikannya berbunyi seperti pertanyaan),
         # beri tahu pemilik alih-alih diam.

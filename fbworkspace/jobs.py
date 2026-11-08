@@ -127,16 +127,71 @@ def request_stop(db: Database, job_id: int) -> None:
 
 
 def _pid_alive(pid: int) -> bool:
-    """True bila proses dengan PID itu masih berjalan."""
-    if not pid:
-        return False
-    try:
-        import os
+    """True bila proses dengan PID itu masih berjalan.
 
+    Di Windows ``os.kill(pid, 0)`` BUKAN cara memeriksa proses: ia memanggil
+    TerminateProcess dan melempar ``SystemError: [WinError 87]``. Karena itu
+    Windows memakai OpenProcess lewat ctypes, dan pengecekannya tidak pernah
+    melempar exception ke pemanggil.
+    """
+    pid = int(pid or 0)
+    if pid <= 0:
+        return False
+    if sys.platform == "win32":
+        try:
+            import ctypes
+
+            process_query_limited_information = 0x1000
+            still_active = 259
+            kernel32 = ctypes.windll.kernel32
+            handle = kernel32.OpenProcess(process_query_limited_information, False, pid)
+            if not handle:
+                return False
+            try:
+                code = ctypes.c_ulong()
+                if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+                    return False
+                return code.value == still_active
+            finally:
+                kernel32.CloseHandle(handle)
+        except Exception:  # noqa: BLE001 - jangan pernah menjatuhkan dashboard
+            return False
+    try:
         os.kill(pid, 0)
-    except (OSError, PermissionError, ValueError):
+    except (OSError, PermissionError, ValueError, SystemError):
+        return False
+    except Exception:  # noqa: BLE001
         return False
     return True
+
+
+def _terminate_pid(pid: int) -> tuple[bool, str]:
+    """Minta proses berhenti. Kembalikan (berhasil, keterangan)."""
+    pid = int(pid or 0)
+    if pid <= 0:
+        return False, "PID tidak valid"
+    if sys.platform == "win32":
+        try:
+            import ctypes
+
+            process_terminate = 0x0001
+            kernel32 = ctypes.windll.kernel32
+            handle = kernel32.OpenProcess(process_terminate, False, pid)
+            if not handle:
+                return False, f"tidak bisa membuka proses {pid} (sudah berhenti?)"
+            try:
+                if kernel32.TerminateProcess(handle, 1):
+                    return True, "dihentikan"
+                return False, "TerminateProcess ditolak Windows"
+            finally:
+                kernel32.CloseHandle(handle)
+        except Exception as exc:  # noqa: BLE001
+            return False, f"gagal menghentikan proses: {exc}"
+    try:
+        os.kill(pid, 15)
+        return True, "dihentikan"
+    except Exception as exc:  # noqa: BLE001
+        return False, f"gagal menghentikan proses: {exc}"
 
 
 def _pid_command_line(pid: int) -> str:
@@ -201,10 +256,8 @@ def force_stop(db: Database, job_id: int, proc: subprocess.Popen | None) -> str:
         job = db.get_job(job_id) or {}
         pid = int(job.get("pid") or 0)
         if _pid_alive(pid) and _pid_is_our_worker(pid):
-            try:
-                import os
-
-                os.kill(pid, 15)  # SIGTERM; di Windows Playwright menutup browser rapi
+            ok, note = _terminate_pid(pid)
+            if ok:
                 db.update_job(
                     job_id,
                     status=JobStatus.STOPPED.value,
@@ -213,8 +266,7 @@ def force_stop(db: Database, job_id: int, proc: subprocess.Popen | None) -> str:
                 )
                 db.log_event(job_id, "warning", f"Worker PID {pid} dihentikan paksa.")
                 return f"Worker PID {pid} dihentikan paksa."
-            except Exception as exc:  # noqa: BLE001
-                return f"Gagal menghentikan PID {pid}: {exc}"
+            return f"Gagal menghentikan PID {pid}: {note}"
         if _pid_alive(pid) and not _pid_is_our_worker(pid):
             # Jangan membunuh proses yang tidak bisa dipastikan milik kita.
             db.log_event(

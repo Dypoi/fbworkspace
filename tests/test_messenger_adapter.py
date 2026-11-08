@@ -688,15 +688,19 @@ class TestDiagnoseIncludesConversation:
                     diagnostics={"url": "x"},
                 )
 
-            def read_thread(self, url, known_out=None):
+            def read_thread(self, url, known_out=None, thread_name=""):
                 from fbworkspace.browser.messenger import ChatMessage, ThreadRead
 
-                return ThreadRead([ChatMessage("m", "in", "Iphone 11 ready?")], "ok", "1 pesan")
+                return ThreadRead(
+                    [ChatMessage("m", "in", "Iphone 11 ready?", unread=True)], "ok", "1 pesan"
+                )
 
         monkeypatch.setattr(mod, "MessengerAdapter", FakeAdapter)
         payload = mod.diagnose("/tmp/x")
         assert payload["status"] == "ok"
         assert payload["percakapan_pertama"]["pesan"][0]["teks"] == "Iphone 11 ready?"
+        assert payload["percakapan_pertama"]["pesan"][0]["belum_dibaca"] is True
+        assert payload["percakapan_pertama"]["nama"] == "Pak Bagus"
 
 
 class TestRealPageReport:

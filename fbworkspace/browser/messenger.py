@@ -827,6 +827,10 @@ def filter_text_nodes(
 
     messages.sort(key=lambda m: m["y"])
     meta["used"] = len(messages)
+    meta["lines"] = [
+        f"{msg['direction']}{'(belum dibaca)' if msg.get('unread') else ''}: {msg['text'][:40]}"
+        for msg in messages[-8:]
+    ]
     meta["media"] = media_count
     meta["found_container"] = bool(payload.get("found_container"))
     return messages, dropped, meta
@@ -1405,6 +1409,8 @@ class MessengerAdapter:
                 "used": len(messages),
                 "dropped": dropped[:15],
                 "composer": meta.get("composer", False),
+                "lines": meta.get("lines", []),
+                "our_side": meta.get("our_side", ""),
             }
             if not messages:
                 self.last_diagnostics = dict(
@@ -1530,16 +1536,35 @@ def diagnose(profile_dir: str | Path, *, headless: bool = False) -> dict:
         {"key": item.key, "name": item.name, "unread": item.unread, "preview": item.preview}
         for item in result.threads
     ]
-    if result.threads:
-        first = result.threads[0]
-        read = adapter.read_thread(first.url)
-        payload["percakapan_pertama"] = {
-            "nama": first.name,
-            "status": read.status,
-            "catatan": read.note,
-            "pesan": [{"arah": m.direction, "teks": m.text[:120]} for m in read.messages[:8]],
-            "debug": adapter.last_debug,
-        }
+    conversations = []
+    for thread in result.threads[:5]:
+        try:
+            read = adapter.read_thread(thread.url, thread_name=thread.name)
+        except Exception as exc:  # noqa: BLE001
+            conversations.append(
+                {"nama": thread.name, "status": "kesalahan", "catatan": str(exc)[:200]}
+            )
+            continue
+        conversations.append(
+            {
+                "nama": thread.name,
+                "status": read.status,
+                "catatan": read.note,
+                "jumlah_pesan": len(read.messages),
+                "pesan": [
+                    {
+                        "arah": m.direction,
+                        "teks": m.text[:120],
+                        "belum_dibaca": bool(getattr(m, "unread", False)),
+                    }
+                    for m in read.messages[-10:]
+                ],
+                "debug": adapter.last_debug,
+            }
+        )
+    if conversations:
+        payload["percakapan"] = conversations
+        payload["percakapan_pertama"] = conversations[0]
     return payload
 
 

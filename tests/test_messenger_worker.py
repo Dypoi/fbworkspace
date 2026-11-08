@@ -740,3 +740,33 @@ def test_answered_but_never_replied_message_is_reopened(tmp_path):
     assert sender.sent, "pemilik harus diberi tahu soal 'berapa ya'"
     events = [e["message"] for e in db.get_events(job_id)]
     assert any("dibuka kembali" in m for m in events)
+
+
+def test_log_shows_what_was_read_not_only_count(tmp_path):
+    """Log 'tidak ada pesan masuk' harus disertai isi terbaca agar bisa diperiksa."""
+    db = Database(tmp_path / "chat.db")
+    adapter = FakeMessenger(
+        [Thread(THREAD_KEY, "Pak Bagus Sunaryo", THREAD_URL)],
+        {
+            THREAD_URL: [
+                _incoming("Iphone 11 ready?"),
+                ChatMessage("o1", "out", "Ready kak"),
+            ]
+        },
+    )
+    adapter.last_debug = {
+        "used": 2,
+        "lines": ["in: Iphone 11 ready?", "out: Ready kak"],
+        "our_side": "kiri",
+    }
+    # pesan sudah terjawab sebelumnya -> tidak ada kandidat, jalur log "tidak ada"
+    db.upsert_chat(THREAD_KEY, name="Pak Bagus Sunaryo", url=THREAD_URL)
+    db.record_message(THREAD_KEY, "m1", direction="in", text="Iphone 11 ready?")
+    db.record_message(THREAD_KEY, "o1", direction="out", text="Ready kak")
+    db.mark_answered_many(THREAD_KEY, ["m1"], "Ready kak")
+    job_id = _job(db, dry_run=False)
+    run(job_id, adapter=adapter, sender=MemorySender(), database=db,
+        settings=_settings(tmp_path), sleep=lambda s: None)
+
+    events = [e["message"] for e in db.get_events(job_id)]
+    assert any("isi terbaca" in m and "Ready kak" in m for m in events)

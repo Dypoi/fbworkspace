@@ -273,3 +273,47 @@ def test_cancel_stop_clears_request(tmp_path):
 
     db.clear_stop_request(job_id)
     assert db.is_stop_requested(job_id) is False
+
+
+def test_pid_alive_never_raises(monkeypatch):
+    import sys
+    """Windows: os.kill(pid, 0) melempar SystemError [WinError 87] — jangan crash."""
+    from fbworkspace import jobs
+
+    def boom(pid, sig):
+        raise SystemError("<built-in function kill> returned a result with an exception")
+
+    monkeypatch.setattr("os.kill", boom, raising=False)
+    monkeypatch.setattr(jobs.sys, "platform", "linux")
+    assert jobs._pid_alive(1234) is False
+
+    monkeypatch.setattr(jobs.sys, "platform", "win32")
+
+    class FakeKernel32:
+        def OpenProcess(self, *a):
+            raise OSError("[WinError 87] The parameter is incorrect")
+
+    class FakeCtypes:
+        windll = type("W", (), {"kernel32": FakeKernel32()})()
+
+    monkeypatch.setitem(sys.modules, "ctypes", FakeCtypes)
+    assert jobs._pid_alive(1234) is False
+
+
+def test_force_stop_reports_failure_without_raising(tmp_path, monkeypatch):
+    from fbworkspace import jobs
+    from fbworkspace.db import Database
+
+    db = Database(tmp_path / "fs.db")
+    job_id = db.create_job(kind="messenger", group_urls=[], config={})
+    db.update_job(job_id, status="berjalan", pid=4242)
+
+    monkeypatch.setattr(jobs, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(jobs, "_pid_is_our_worker", lambda pid: True)
+    monkeypatch.setattr(jobs, "_terminate_pid", lambda pid: (False, "ditolak Windows"))
+
+    note = jobs.force_stop(db, job_id, None)
+    assert "Gagal menghentikan" in note
+
+    monkeypatch.setattr(jobs, "_terminate_pid", lambda pid: (True, "dihentikan"))
+    assert "dihentikan paksa" in jobs.force_stop(db, job_id, None).lower()
