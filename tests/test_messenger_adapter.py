@@ -1265,3 +1265,19 @@ class TestScreenOrder:
         ]
         assert len(storage_lines) == 2
         assert len(messages) == 10
+
+
+def test_pick_target_prefers_unread_question_over_older():
+    """Tangkapan layar 20:44: 'Berapa' (belum dibaca) harus menang atas yang lama."""
+    from fbworkspace.browser.messenger import pick_answer_target
+
+    messages = [
+        {"text": "2.600.000 kak", "direction": "out"},
+        {"text": "Iphone 8 ready?", "direction": "in", "unread": True},
+        {"text": "Ready kak", "direction": "out"},
+        {"text": "Berapa ya?", "direction": "in"},
+        {"text": "Ready kak", "direction": "out"},
+        {"text": "Berapa", "direction": "in", "unread": True},
+    ]
+    picked = pick_answer_target(messages)
+    assert picked["text"] == "Berapa"

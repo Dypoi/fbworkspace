@@ -132,9 +132,11 @@ class Settings:
     messenger_gap_seconds: int = field(
         default_factory=lambda: _env_int("FBW_MESSENGER_GAP_SECONDS", 45)
     )
-    # Jangan balas chat yang sama lebih sering dari ini.
+    # Jeda minimal sebelum membalas chat yang sama lagi. Cukup untuk mencegah
+    # kiriman beruntun, tidak sampai membiarkan pembeli menunggu lama: pembeli
+    # sering menyusul pertanyaan beberapa menit setelah balasan kita.
     messenger_cooldown_seconds: int = field(
-        default_factory=lambda: _env_int("FBW_MESSENGER_COOLDOWN_SECONDS", 600)
+        default_factory=lambda: _env_int("FBW_MESSENGER_COOLDOWN_SECONDS", 120)
     )
     # Bawaannya uji kering: tidak ada pesan yang benar-benar dikirim.
     messenger_dry_run: bool = field(

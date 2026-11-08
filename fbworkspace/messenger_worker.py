@@ -537,7 +537,11 @@ def _handle_thread(
         # (Jangan memilih "pesan terakhir" begitu saja: urutan "berapa ya" lalu
         # "iyaa" membuat pertanyaannya hilang.)
         pass
-    keys = [row["msg_key"] for row in pending]
+    # Hanya pesan yang benar-benar dijawab yang ditandai selesai. Menandai semua
+    # pesan menunggu membuat pertanyaan lain (mis. "Iphone 8 ready?") hilang
+    # padahal balasan kita hanya menjawab "Berapa". Sapaan seperti "ok makasih"
+    # tidak perlu ditanyai lagi, jadi ikut ditutup tanpa balasan.
+    keys = [latest["msg_key"]] + [row["msg_key"] for row in pending if row is not latest and _small_talk(row)]
     sender_desc = "kirim" if plan.should_send else "diam"
     log(
         "info",
@@ -554,6 +558,10 @@ def _handle_thread(
         elif styled.reason:
             log("info", f"[{thread.name}] variasi AI dilewati: {styled.reason}")
 
+    # Bila beberapa pertanyaan belum dijawab, jawab SATU per putaran: kiriman
+    # beruntun dalam hitungan detik terasa seperti robot. Pesan lain tetap
+    # menunggu dan dijawab pada putaran berikutnya (dengan jeda antar balasan).
+    others_pending = len(pending) - 1
     deferred = False
     if plan.should_send and cooldown:
         chat = db.get_chat(thread.key)
@@ -643,9 +651,24 @@ def _handle_thread(
         )
         return new_messages
 
+    if plan.should_send and others_pending > 0 and not dry_run:
+        log(
+            "info",
+            f"[{thread.name}] {new_messages} pesan masuk; menjawab satu per putaran supaya "
+            f"tidak beruntun. {others_pending} pertanyaan lain menunggu putaran berikutnya.",
+        )
+
     note = "dibalas" if sent_text else ("diam" if not plan.should_send else "gagal_kirim")
     db.mark_answered_many(thread.key, keys, sent_text, note=note)
     return new_messages
+
+
+def _small_talk(row: dict) -> bool:
+    try:
+        from .browser.messenger import is_small_talk
+    except Exception:  # noqa: BLE001
+        return False
+    return is_small_talk(str(row.get("text") or ""))
 
 
 _QUESTION_HINTS = (

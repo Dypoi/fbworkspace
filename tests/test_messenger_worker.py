@@ -1155,3 +1155,40 @@ def test_summary_mentions_deferred_chat(tmp_path):
         settings=_settings(tmp_path), sleep=lambda s: None)
 
     assert "ditunda karena jeda minimal" in db.get_job(second)["message"]
+
+
+def test_two_questions_answered_across_cycles(tmp_path):
+    """Dua pertanyaan menumpuk: dijawab satu per putaran, keduanya tidak ada yang hilang.
+
+    Tangkapan layar 8 Nov 20:44: setelah "Ready kak" untuk "Iphone 8 ready?",
+    muncul "Berapa ya?" lalu "Berapa" — keduanya belum dijawab.
+    """
+    db = Database(tmp_path / "chat.db")
+    adapter = FakeMessenger(
+        [Thread(THREAD_KEY, "Pak Bagus", THREAD_URL)],
+        {
+            THREAD_URL: [
+                ChatMessage("o1", "out", "2.600.000 kak"),
+                _UnreadMsg("m1", "in", "Iphone 8 ready?", unread=True),
+                _UnreadMsg("m2", "in", "Berapa", unread=True),
+            ]
+        },
+    )
+
+    first = _job(db, dry_run=False, cooldown_seconds=0)
+    run(first, adapter=adapter, sender=MemorySender(), database=db,
+        settings=_settings(tmp_path), sleep=lambda s: None)
+    assert len(adapter.sent) == 1
+    assert "Storage-nya" in adapter.sent[0][1]
+
+    # putaran berikutnya: pertanyaan yang belum terjawab tetap menunggu
+    assert [row["text"] for row in db.unanswered_incoming(THREAD_KEY)] == ["Iphone 8 ready?"]
+
+    second = _job(db, dry_run=False, cooldown_seconds=0)
+    run(second, adapter=adapter, sender=MemorySender(), database=db,
+        settings=_settings(tmp_path), sleep=lambda s: None)
+    assert [body for _, body in adapter.sent] == [
+        adapter.sent[0][1],
+        "Ready kak",
+    ]
+    assert db.unanswered_incoming(THREAD_KEY) == []

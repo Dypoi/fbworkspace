@@ -172,7 +172,7 @@ fbworkspace/
 │   └── check_extraction_dom.cjs # uji logika ekstraksi DOM (Node + jsdom, opsional)
 ├── data/demo_posts_DEMO.json   # data sintetis berlabel DEMO
 ├── docs/                       # instalasi, POC, batasan, Git, testing
-├── tests/                      # 703 tes otomatis
+├── tests/                      # 705 tes otomatis
 ├── requirements.txt
 ├── .env.example
 └── .gitignore
@@ -352,6 +352,10 @@ tetap terbaca. Penanda "belum dibaca" tetap yang paling diutamakan.
 (`${...}`) yang dikirim Facebook, bukan menurut koordinat layar — sehingga pesan
 terbaru (yang kadang belum punya ukuran/posisi) tetap dianggap terbaru.
 
+**Semua pertanyaan akhirnya dijawab.** Bila beberapa pertanyaan menumpuk, worker
+menjawab **satu per putaran** (dengan jeda antar balasan) agar tidak terasa
+robot, dan pertanyaan lain tetap menunggu — bukan ditandai selesai.
+
 **Satu balasan menanggapi satu pesan.** Balasan dianggap menanggapi pesan masuk
 yang **tepat mendahuluinya**, bukan semua pesan sebelumnya — sehingga pertanyaan
 lain ("Iphone 8 ready?") tidak ikut dianggap selesai. Bila urutan pesan tidak
@@ -383,10 +387,10 @@ utama: pesan tersebut dijawab walau catatan lama sempat salah menandainya
 "terjawab", dan bila tidak bisa dijawab aman, Anda dikirimi WA.
 
 Pengaman bawaan: maksimum 8 chat dibaca & 10 balasan per putaran, jeda 45 detik
-antar balasan, dan jeda minimal 10 menit per chat. **Jeda per chat tidak
+antar balasan, dan jeda minimal 2 menit per chat. **Jeda per chat tidak
 membisukan chat**: pesan baru tetap tersimpan, dicatat di log ("ditunda N detik"),
 dan dijawab pada putaran berikutnya setelah jeda lewat. Ubah dengan
-`FBW_MESSENGER_COOLDOWN_SECONDS` (mis. `60`) bila Anda ingin lebih responsif. Chat yang dibaca akan tampak "sudah dibaca" di sisi pembeli — itu tidak
+`FBW_MESSENGER_COOLDOWN_SECONDS` (mis. `30`) bila Anda ingin lebih responsif. Chat yang dibaca akan tampak "sudah dibaca" di sisi pembeli — itu tidak
 bisa dihindari.
 
 ---
@@ -489,7 +493,7 @@ Penghapusan data tersedia di tab **Pengaturan → 💾 Data** (postingan, log, p
 .\.venv\Scripts\python.exe -m pytest
 ```
 
-Hasil terakhir di lingkungan pengembangan: **703 tes lulus** (termasuk smoke test
+Hasil terakhir di lingkungan pengembangan: **705 tes lulus** (termasuk smoke test
 dashboard Streamlit untuk 4 tab, segmentasi hasil, filter ulang, daftar harga,
 penyusun balasan, worker balas DM dengan adapter palsu, format notifikasi
 WhatsApp, dan variasi AI yang menolak perubahan fakta), `ruff check` bersih. Detail: **[docs/TESTING.md](docs/TESTING.md)**.
