@@ -42,7 +42,7 @@ class FakeMessenger:
             diagnostics=self.diagnostics,
         )
 
-    def read_thread(self, url: str, *, known_out=None):
+    def read_thread(self, url: str, *, known_out=None, thread_name=""):
         return ThreadRead(messages=self.messages.get(url, []), status="ok")
 
     def send_message(self, url: str, text: str):
@@ -363,7 +363,7 @@ def test_old_adapter_without_detailed_still_works(tmp_path):
         def list_threads(self, limit=8):
             return [Thread(THREAD_KEY, "Rian", THREAD_URL)], "ok"
 
-        def read_thread(self, url, *, known_out=None):
+        def read_thread(self, url, *, known_out=None, thread_name=""):
             return ThreadRead(messages=[_incoming("iphone 11 ready?")], status="ok")
 
         def send_message(self, url, text):
@@ -380,7 +380,7 @@ def test_broken_thread_does_not_stop_job(tmp_path):
     job_id = _job(db, dry_run=False)
 
     class Exploding(FakeMessenger):
-        def read_thread(self, url, *, known_out=None):
+        def read_thread(self, url, *, known_out=None, thread_name=""):
             raise RuntimeError("halaman crash")
 
     adapter = Exploding([Thread(THREAD_KEY, "Rian", THREAD_URL)], {})
@@ -395,7 +395,7 @@ def test_read_failure_note_is_logged(tmp_path):
     job_id = _job(db, dry_run=False)
 
     class Unreadable(FakeMessenger):
-        def read_thread(self, url, *, known_out=None):
+        def read_thread(self, url, *, known_out=None, thread_name=""):
             return ThreadRead(messages=[], status="kesalahan", note="TimeoutError: 20000ms")
 
     adapter = Unreadable([Thread(THREAD_KEY, "Rian", THREAD_URL)], {})

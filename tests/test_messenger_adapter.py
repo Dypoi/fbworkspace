@@ -695,3 +695,81 @@ class TestDiagnoseIncludesConversation:
         payload = mod.diagnose("/tmp/x")
         assert payload["status"] == "ok"
         assert payload["percakapan_pertama"]["pesan"][0]["teks"] == "Iphone 11 ready?"
+
+
+class TestRealPageReport:
+    """Data nyata dari akun pengguna (8 Nov 17:51) — dijadikan regresi tetap."""
+
+    PAYLOAD = {
+        "composer": {"x": 420, "y": 690, "w": 620, "h": 40},
+        "container": {"x": 360, "y": 110, "w": 640, "h": 570},
+        "found_container": True,
+        "vw": 1280,
+        "nodes": [
+            {"text": "Pak Bagus Sunaryo", "x": 430, "y": 140, "w": 200, "h": 24},
+            {
+                "text": "Messages and calls are secured with end-to-end encryption. Only people "
+                        "in this chat can read, listen to or share them. Learn more",
+                "x": 430,
+                "y": 200,
+                "w": 400,
+                "h": 60,
+            },
+            {"text": "16:50", "x": 620, "y": 270, "w": 40, "h": 18},
+            {"text": "coba", "x": 950, "y": 320, "w": 80, "h": 30},
+            {"text": "Iphone 11 ready?", "x": 430, "y": 380, "w": 250, "h": 36},
+            {"text": "Enter, Conversation details", "x": 1040, "y": 120, "w": 180, "h": 20},
+        ],
+    }
+
+    def test_only_real_message_survives(self):
+        from fbworkspace.browser.messenger import filter_text_nodes
+
+        messages, dropped, meta = filter_text_nodes(
+            self.PAYLOAD, chat_name="Pak Bagus Sunaryo"
+        )
+        assert [m["text"] for m in messages] == ["coba", "Iphone 11 ready?"]
+        assert [m["direction"] for m in messages] == ["out", "in"]
+        reasons = " ".join(dropped)
+        assert "(judul chat)" in reasons
+        assert "end-to-end encryption" in reasons or "(label UI)" in reasons
+        assert "16:50" in reasons
+
+    def test_time_and_date_noise(self):
+        from fbworkspace.browser.messenger import _is_ui_noise
+
+        for noise in ("16:50", "8/11/2026 16.50", "Enter, Conversation details",
+                      "Message sent 16:50 by You: coba", "kemarin 21.04", "· 1h"):
+            assert _is_ui_noise(noise) is True, noise
+
+    def test_real_messages_are_not_noise(self):
+        from fbworkspace.browser.messenger import _is_ui_noise
+
+        for text in ("Iphone 11 ready?", "Kenapa bg", "coba", "2.600.000 kak",
+                     "Kutabumi, Tangerang", "up"):
+            assert _is_ui_noise(text) is False, text
+
+    def test_media_placeholder_counted_not_answered(self):
+        from fbworkspace.browser.messenger import filter_text_nodes
+
+        payload = dict(self.PAYLOAD)
+        payload["nodes"] = list(self.PAYLOAD["nodes"]) + [
+            {"text": "You sent a photo", "x": 700, "y": 420, "w": 150, "h": 30, "kind": "media"}
+        ]
+        messages, _dropped, meta = filter_text_nodes(payload, chat_name="Pak Bagus Sunaryo")
+        assert [m["text"] for m in messages] == ["coba", "Iphone 11 ready?"]
+        assert meta["media"] == 1
+
+    def test_worker_would_answer(self):
+        from fbworkspace.browser.messenger import filter_text_nodes
+        from fbworkspace.pricelist import default_entries
+        from fbworkspace.replies import compose_reply
+
+        messages, _dropped, _meta = filter_text_nodes(
+            self.PAYLOAD, chat_name="Pak Bagus Sunaryo"
+        )
+        incoming = [m["text"] for m in messages if m["direction"] == "in"]
+        assert incoming[-1] == "Iphone 11 ready?"
+        plan = compose_reply(incoming[-1], default_entries())
+        assert plan.should_send
+        assert plan.body == "Ready kak"

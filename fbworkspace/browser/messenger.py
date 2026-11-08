@@ -26,6 +26,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -184,10 +185,19 @@ EXTRACT_JS = """
   }
 
   const scope = container || document.body;
-  const nodes = Array.from(scope.querySelectorAll(SEL))
+  let nodes = Array.from(scope.querySelectorAll(SEL))
     .filter((el) => !(composer && (composer.contains(el) || el.contains(composer))))
     .filter((el) => visible(el) && textOf(el) && leaf(el))
-    .map((el) => Object.assign({text: textOf(el)}, box(el)));
+    .map((el) => Object.assign({text: textOf(el), kind: 'text'}, box(el)));
+
+  // Placeholder media ("You sent a photo") kadang hanya ada di aria-label.
+  const media = Array.from(scope.querySelectorAll('[aria-label*="sent a photo" i], [aria-label*="mengirim foto" i], [aria-label*="sent an attachment" i]'))
+    .filter((el) => visible(el))
+    .map((el) => Object.assign(
+      {text: (el.getAttribute('aria-label') || '').trim(), kind: 'media'},
+      box(el)
+    ));
+  nodes = nodes.concat(media);
 
   return {
     nodes: nodes,
@@ -283,16 +293,33 @@ def _safe_body_text(page, limit: int = 400) -> str:
     return " ".join(str(raw).split())[:limit]
 
 
+# Pola teks yang BUKAN isi pesan (data nyata dari akun pengguna, 8 Nov).
+_NOISE_PATTERNS = (
+    re.compile(r"^\d{1,2}[.:]\d{2}$"),                        # "16:50"
+    re.compile(r"^(senin|selasa|rabu|kamis|jumat|jum'at|sabtu|minggu)\b.{0,12}\d{1,2}[.:]\d{2}$"),
+    re.compile(r"^(yesterday|kemarin|today|hari ini)\b.{0,12}\d{1,2}[.:]\d{2}$"),
+    re.compile(r"^\d{1,2}/\d{1,2}/\d{2,4}\b.{0,10}\d{1,2}[.:]\d{2}$"),  # "8/11/2026 16.50"
+    re.compile(r"^(enter|masuk|tekan enter)[,\s].*$"),          # "Enter, Conversation details"
+    re.compile(r"^message sent\b.*$"),
+    re.compile(r"^pesan terkirim\b.*$"),
+    re.compile(r"\bend-to-end encryption\b"),
+    re.compile(r"\bterenkripsi\b.*\bpanggilan\b"),
+    re.compile(r"\bonly people in this chat can read\b"),
+    re.compile(r"^·?\s*\d+[hmd]\b$"),                        # "· 1h"
+)
+
+
 def _is_ui_noise(text: str) -> bool:
-    """True bila teks hanyalah label antarmuka (bukan isi pesan)."""
+    """True bila teks hanyalah label antarmuka / metadata (bukan isi pesan)."""
     cleaned = " ".join((text or "").lower().split())
-    cleaned = cleaned.strip(" .:·—–-\n\t")
-    if not cleaned:
+    stripped = cleaned.strip(" .:·—–-\n\t")
+    if not stripped:
         return True
-    if cleaned in UI_NOISE_LABELS:
+    if stripped in UI_NOISE_LABELS:
         return True
-    # "Chat Info" + nama, dsb.
-    return any(cleaned == label or cleaned.startswith(label + " ") for label in UI_NOISE_LABELS)
+    if any(cleaned == label or cleaned.startswith(label + " ") for label in UI_NOISE_LABELS):
+        return True
+    return any(pattern.search(cleaned) for pattern in _NOISE_PATTERNS)
 
 
 def _clean_message_text(text: str) -> str:
@@ -576,6 +603,7 @@ def filter_text_nodes(
     payload: dict,
     *,
     known_out: list[str] | None = None,
+    chat_name: str = "",
 ) -> tuple[list[dict], list[str], dict]:
     """Ubah blok teks mentah dari halaman menjadi daftar pesan kandidat.
 
@@ -612,6 +640,8 @@ def filter_text_nodes(
         area = {"left": middle - 320, "right": middle + 320, "center": middle, "bottom": 10**6}
         dropped.append("(kotak tulis tidak ditemukan -> kolom ditebak)")
 
+    title = " ".join((chat_name or "").lower().split())
+    media_count = 0
     messages: list[dict] = []
     for node in nodes:
         text_raw = " ".join(str(node.get("text") or "").split())
@@ -634,23 +664,42 @@ def filter_text_nodes(
         if node.get("w", 0) > viewport * 0.75 or node.get("h", 0) > 400:
             dropped.append(f"(kontainer) {text_raw[:40]}")
             continue
+        # Judul percakapan (nama pembeli) muncul di dalam wadah: bukan pesan.
+        if title and " ".join(text_raw.lower().split()) == title:
+            dropped.append(f"(judul chat) {text_raw[:40]}")
+            continue
         text = _clean_message_text(str(node.get("text") or ""))
         if not text:
             dropped.append(f"(label UI) {text_raw[:40]}")
             continue
+        # Placeholder media: tidak ada teks untuk dibaca -> hitung, jangan diproses.
+        if node.get("kind") == "media" or "sent a photo" in text.lower() or (
+            "mengirim foto" in text.lower()
+        ):
+            media_count += 1
+            dropped.append(f"(media) {text_raw[:40]}")
+            continue
         if len(text) > 1200:
             dropped.append(f"(kepanjangan) {text_raw[:40]}")
             continue
-        direction = "out" if center > area["center"] + 24 else "in"
-        if abs(center - area["center"]) <= 24:
+        # Pesan kita menempel ke sisi kanan kolom, pesan pembeli ke sisi kiri.
+        # Memakai jarak tepi (bukan titik tengah) supaya gelembung pendek
+        # seperti "coba" atau "up" tetap terbaca sebagai pesan kita.
+        right_gap = area["right"] - (node["x"] + node.get("w", 0))
+        left_gap = node["x"] - area["left"]
+        if abs(right_gap - left_gap) <= 12:
+            direction = "in"
             for sent in known_out or []:
                 if sent and text_raw[:60].lower() == " ".join(sent.lower().split())[:60]:
                     direction = "out"
                     break
+        else:
+            direction = "out" if right_gap < left_gap else "in"
         messages.append({"text": text, "direction": direction, "y": node.get("y", 0)})
 
     messages.sort(key=lambda m: m["y"])
     meta["used"] = len(messages)
+    meta["media"] = media_count
     meta["found_container"] = bool(payload.get("found_container"))
     return messages, dropped, meta
 
@@ -1087,7 +1136,13 @@ class MessengerAdapter:
         return result.threads, result.status
 
     # ------------------------------------------------------------- baca isi chat
-    def read_thread(self, url: str, *, known_out: list[str] | None = None) -> ThreadRead:
+    def read_thread(
+        self,
+        url: str,
+        *,
+        known_out: list[str] | None = None,
+        thread_name: str = "",
+    ) -> ThreadRead:
         thread_key = _thread_key(url)
         playwright = None
         context = None
@@ -1125,7 +1180,9 @@ class MessengerAdapter:
                     diagnostics, status="kesalahan", error=self._friendly_error(exc)
                 )
                 return ThreadRead(status="kesalahan", note="gagal membaca blok teks halaman")
-            texts, dropped, meta = filter_text_nodes(payload, known_out=known_out)
+            texts, dropped, meta = filter_text_nodes(
+                payload, known_out=known_out, chat_name=thread_name
+            )
             messages = [
                 ChatMessage(
                     key=_msg_key(thread_key, index, item["text"]),
@@ -1153,8 +1210,10 @@ class MessengerAdapter:
                 return ThreadRead(
                     status="tidak_ada_pesan",
                     note=(
-                        f"{total} blok teks di halaman, tidak ada yang lolos sebagai pesan "
-                        f"(kotak tulis {'ada' if meta.get('composer') else 'tidak ditemukan'})"
+                        f"{total} blok teks, 0 pesan lolos "
+                        f"(kotak tulis {'ada' if meta.get('composer') else 'tidak ditemukan'}, "
+                        f"wadah {'ada' if meta.get('container') else 'tidak ditemukan'}, "
+                        f"media {meta.get('media', 0)})"
                     ),
                 )
 

@@ -322,7 +322,7 @@ def _handle_thread(
     """Baca & tanggapi satu percakapan. Kembalikan jumlah pesan masuk baru."""
     known_out = db.outgoing_texts(thread.key)
     try:
-        read = adapter.read_thread(thread.url, known_out=known_out)
+        read = adapter.read_thread(thread.url, known_out=known_out, thread_name=thread.name)
     except Exception as exc:  # noqa: BLE001 - satu chat rusak tidak boleh menghentikan job
         counters["errors"] += 1
         log("error", f"[{thread.name}] gagal membuka chat: {exc.__class__.__name__}: {exc}"[:300])
