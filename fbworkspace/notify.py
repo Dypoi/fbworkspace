@@ -525,13 +525,49 @@ def main(argv: list[str] | None = None) -> int:
     ok, note = sender.send(args.text, blocking=True)
     print(json.dumps({"ok": ok, "keterangan": note}, ensure_ascii=False, indent=2))
     if not ok:
-        print(
-            "\nPerbaikan yang paling sering berhasil:\n"
-            "  1. .\\.venv\\Scripts\\python.exe scripts\\wa_login.py --show  (scan QR)\n"
-            "  2. pastikan tidak ada jendela WhatsApp Web lain yang terbuka\n"
-            "  3. ulangi perintah ini"
-        )
+        print("\n" + remedy_for(note))
     return 0 if ok else 1
+
+
+def remedy_for(note: str) -> str:
+    """Saran perbaikan yang sesuai dengan sebab kegagalan (bukan daftar umum).
+
+    Sebelumnya semua kegagalan disarankan "scan QR", padahal TargetClosedError
+    berarti jendela/halaman tertutup — menyarankan scan QR hanya membingungkan.
+    """
+    text = str(note or "").lower()
+    if "targetclosed" in text or "closed" in text or "tertutup" in text:
+        return (
+            "Sebab: jendela/halaman WhatsApp Web tertutup sebelum pesan terkirim.\n"
+            "Perbaikan:\n"
+            "  1. ulangi perintah ini (jendela akan dibuka lagi otomatis)\n"
+            "  2. jangan menutup jendela Chromium yang muncul selama ±10-20 detik\n"
+            "  3. tutup WhatsApp Web yang terbuka di browser biasa Anda "
+            "(dua tab WA bisa saling menendang sesi)"
+        )
+    if "chrome" in text and ("versi" in text or "100+" in text):
+        return (
+            "Sebab: mode tanpa jendela (headless) ditolak WhatsApp Web di laptop ini.\n"
+            "Perbaikan:\n"
+            "  1. gunakan jendela terlihat: tambahkan --show, atau\n"
+            "  2. tambahkan baris berikut ke file .env lalu restart dashboard:\n"
+            "     FBW_WA_HEADLESS=false\n"
+            "  3. bila masih gagal: .\\.venv\\Scripts\\python.exe -m fbworkspace.notify --compare"
+        )
+    if "qr" in text or "login" in text or "scan" in text:
+        return (
+            "Sebab: sesi WhatsApp Web belum aktif.\n"
+            "Perbaikan:\n"
+            "  1. .\\.venv\\Scripts\\python.exe scripts\\wa_login.py --show  (scan QR)\n"
+            "  2. ulangi perintah ini"
+        )
+    return (
+        "Perbaikan yang paling sering berhasil:\n"
+        "  1. ulangi perintah ini sekali lagi\n"
+        "  2. pastikan tidak ada jendela WhatsApp Web lain yang terbuka\n"
+        "  3. .\\.venv\\Scripts\\python.exe -m fbworkspace.notify --compare "
+        "(membandingkan mode jendela vs tanpa jendela)"
+    )
 
 
 def windows_toast(title: str, message: str) -> tuple[bool, str]:

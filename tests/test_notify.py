@@ -397,3 +397,24 @@ class TestHeadlessMemory:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("{bukan json", encoding="utf-8")
         assert sender.headless_works() is True
+
+
+class TestRemedyFor:
+    def test_closed_page_suggests_retry_not_qr(self):
+        from fbworkspace.notify import remedy_for
+
+        text = remedy_for("TargetClosedError: Target page has been closed")
+        assert "tertutup" in text
+        assert "scan QR" not in text
+
+    def test_headless_rejection_names_headless(self):
+        from fbworkspace.notify import remedy_for
+
+        text = remedy_for("WhatsApp Web menolak versi Chrome bawaan Playwright")
+        assert "headless" in text
+        assert "FBW_WA_HEADLESS=false" in text
+
+    def test_login_problem_suggests_qr(self):
+        from fbworkspace.notify import remedy_for
+
+        assert "scan QR" in remedy_for("perlu scan QR")

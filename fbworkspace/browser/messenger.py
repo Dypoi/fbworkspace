@@ -1244,9 +1244,17 @@ def pick_answer_target(messages: list[dict], *, answered_texts: set[str] | None 
     return None
 
 
-def _msg_key(thread_key: str, index: int, text: str) -> str:
+def _msg_key(thread_key: str, direction: str, text: str, occurrence: int = 1) -> str:
+    """Kunci pesan yang **tidak bergeser** saat pesan baru muncul.
+
+    Dulu kunci memakai nomor urut di halaman. Begitu pembeli mengirim pesan baru,
+    nomor pesan lama bergeser -> pesan lama dianggap baru -> dijawab dua kali
+    (kejadian nyata 8 Nov 21:1x: "Storage-nya 64GB atau 256GB kak?" terkirim dua
+    kali). Sekarang kunci hanya diturunkan dari isi dan arah pesan; ``occurrence``
+    membedakan pesan kembar yang sah.
+    """
     digest = hashlib.sha1(text.encode("utf-8", "ignore")).hexdigest()[:10]
-    return f"{thread_key}:{index}:{digest}"
+    return f"{thread_key}:{direction}:{occurrence}:{digest}"
 
 
 def _thread_key(url: str) -> str:
@@ -1767,16 +1775,20 @@ class MessengerAdapter:
             texts, dropped, meta = filter_text_nodes(
                 payload, known_out=known_out, chat_name=thread_name
             )
-            messages = [
-                ChatMessage(
-                    key=_msg_key(thread_key, index, item["text"]),
-                    direction=item["direction"],
-                    text=item["text"][:2000],
-                    unread=bool(item.get("unread")),
-                    side=str(item.get("side") or ""),
+            seen: dict[tuple[str, str], int] = {}
+            messages = []
+            for item in texts:
+                base = (str(item["direction"]), str(item["text"]))
+                seen[base] = seen.get(base, 0) + 1
+                messages.append(
+                    ChatMessage(
+                        key=_msg_key(thread_key, base[0], base[1], seen[base]),
+                        direction=item["direction"],
+                        text=item["text"][:2000],
+                        unread=bool(item.get("unread")),
+                        side=str(item.get("side") or ""),
+                    )
                 )
-                for index, item in enumerate(texts)
-            ]
             selector = "dir=auto"
             self.last_debug = {
                 "raw_nodes": meta.get("raw_nodes", 0),

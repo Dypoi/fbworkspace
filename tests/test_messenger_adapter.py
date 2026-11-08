@@ -143,8 +143,11 @@ class TestHelpers:
         assert _thread_key("https://www.facebook.com/messages/") == "https://www.facebook.com/messages/"
 
     def test_msg_key_stable(self):
-        assert _msg_key("123", 4, "halo") == _msg_key("123", 4, "halo")
-        assert _msg_key("123", 4, "halo") != _msg_key("123", 5, "halo")
+        """Kunci tidak boleh bergeser saat ada pesan baru di atasnya."""
+        assert _msg_key("123", "in", "halo") == _msg_key("123", "in", "halo")
+        assert _msg_key("123", "in", "halo") != _msg_key("123", "out", "halo")
+        # pesan kembar yang sah dibedakan lewat occurrence, bukan nomor urut
+        assert _msg_key("123", "out", "hi", 1) != _msg_key("123", "out", "hi", 2)
 
     def test_direction_from_aria_label(self):
         row = FakeSkill(aria_label="Anda kirim: halo")

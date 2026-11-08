@@ -172,7 +172,7 @@ fbworkspace/
 │   └── check_extraction_dom.cjs # uji logika ekstraksi DOM (Node + jsdom, opsional)
 ├── data/demo_posts_DEMO.json   # data sintetis berlabel DEMO
 ├── docs/                       # instalasi, POC, batasan, Git, testing
-├── tests/                      # 707 tes otomatis
+├── tests/                      # 711 tes otomatis
 ├── requirements.txt
 ├── .env.example
 └── .gitignore
@@ -352,6 +352,10 @@ tetap terbaca. Penanda "belum dibaca" tetap yang paling diutamakan.
 (`${...}`) yang dikirim Facebook, bukan menurut koordinat layar — sehingga pesan
 terbaru (yang kadang belum punya ukuran/posisi) tetap dianggap terbaru.
 
+**Balasan tidak terkirim dua kali.** Identitas pesan diturunkan dari isi dan
+arahnya, bukan dari nomor urutnya di halaman — sehingga munculnya pesan baru
+tidak membuat balasan lama dianggap pesan baru.
+
 **Notifikasi WhatsApp yang gagal diantrekan, bukan dibuang.** Bila WA gagal
 terkirim, chat tetap tercatat di panel **Perlu Anda** dan worker **mencoba lagi
 pada putaran berikutnya** (kolom *percobaan* dan *catatan* menunjukkan sebabnya).
@@ -498,7 +502,7 @@ Penghapusan data tersedia di tab **Pengaturan → 💾 Data** (postingan, log, p
 .\.venv\Scripts\python.exe -m pytest
 ```
 
-Hasil terakhir di lingkungan pengembangan: **707 tes lulus** (termasuk smoke test
+Hasil terakhir di lingkungan pengembangan: **711 tes lulus** (termasuk smoke test
 dashboard Streamlit untuk 4 tab, segmentasi hasil, filter ulang, daftar harga,
 penyusun balasan, worker balas DM dengan adapter palsu, format notifikasi
 WhatsApp, dan variasi AI yang menolak perubahan fakta), `ruff check` bersih. Detail: **[docs/TESTING.md](docs/TESTING.md)**.

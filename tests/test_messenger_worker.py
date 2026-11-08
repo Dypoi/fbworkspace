@@ -1254,3 +1254,51 @@ def test_successful_escalation_is_not_repeated(tmp_path):
     run(second, adapter=adapter, sender=sender, database=db,
         settings=_settings(tmp_path), sleep=lambda s: None)
     assert len(sender.sent) == 1, "notifikasi yang sudah terkirim tidak diulang"
+
+
+class _GrowingMessenger(FakeMessenger):
+    """Adapter yang menambah pesan pembeli di antara putaran (seperti chat nyata)."""
+
+    def read_thread(self, url, *, known_out=None, thread_name=""):
+        from fbworkspace.browser.messenger import ThreadRead
+
+        return ThreadRead(
+            messages=list(self.messages.get(url, [])),
+            status="ok",
+            meta={"our_side": "kanan", "urutan": "dom"},
+        )
+
+
+def test_reply_not_duplicated_when_new_message_arrives(tmp_path):
+    """Bukti 21:1x: 'Storage-nya …' terkirim dua kali setelah 'Ada apa aja emang?'.
+
+    Penyebab: kunci pesan memakai nomor urut di halaman, sehingga pesan lama
+    bergeser dan dianggap baru ketika pesan pembeli bertambah.
+    """
+    db = Database(tmp_path / "chat.db")
+    adapter = _GrowingMessenger(
+        [Thread(THREAD_KEY, "Pak Bagus", THREAD_URL)],
+        {THREAD_URL: [_UnreadMsg("x", "in", "iphone 8 64gb berapa", unread=True)]},
+    )
+
+    first = _job(db, dry_run=False, cooldown_seconds=0)
+    run(first, adapter=adapter, sender=MemorySender(), database=db,
+        settings=_settings(tmp_path), sleep=lambda s: None)
+    assert len(adapter.sent) == 1
+
+    # pembeli mengirim pesan baru: balasan kita + pesan itu kini ada di halaman
+    adapter.messages[THREAD_URL] = [
+        ChatMessage("m1", "in", "iphone 8 64gb berapa"),
+        ChatMessage("o1", "out", adapter.sent[0][1]),
+        ChatMessage("m2", "in", "Ada apa aja emang?"),
+    ]
+    second = _job(db, dry_run=False, cooldown_seconds=0)
+    run(second, adapter=adapter, sender=MemorySender(), database=db,
+        settings=_settings(tmp_path), sleep=lambda s: None)
+
+    assert len(adapter.sent) == 1, "balasan yang sama tidak boleh dikirim ulang"
+    events = [e["message"] for e in db.get_events(second)]
+    # Pesan lama tidak diklaim "sudah ditanggapi" dua kali...
+    assert sum("sudah ditanggapi balasan kita" in m for m in events) == 1
+    # ...dan pertanyaan di luar template dilaporkan lewat WA, bukan diabaikan.
+    assert [row["message"] for row in db.list_escalations()] == ["Ada apa aja emang?"]
