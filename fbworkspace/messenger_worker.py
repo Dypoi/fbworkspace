@@ -145,11 +145,24 @@ def run(
         return 1
 
     if sender is None and notify_enabled:
+        headless_wa = bool(getattr(settings, "wa_headless", True))
         sender = WhatsAppWebSender(
             profile_dir=settings.wa_profile_dir,
             phone=settings.wa_phone,
-            headless=bool(getattr(settings, "wa_headless", True)),
+            headless=headless_wa,
         )
+        if headless_wa:
+            try:
+                if not sender.headless_works():
+                    sender.headless = False
+                    db.log_event(
+                        job_id,
+                        "warning",
+                        "Notifikasi WhatsApp memakai jendela terlihat: mode tanpa jendela "
+                        "sudah terbukti gagal di laptop ini (lihat data/wa_mode.json).",
+                    )
+            except Exception:  # noqa: BLE001
+                pass
 
     try:
         cycle = 0

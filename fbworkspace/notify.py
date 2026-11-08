@@ -13,10 +13,12 @@ Aturan:
 
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
 import sys
 import threading
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
@@ -271,6 +273,10 @@ class WhatsAppWebSender:
                     if version:
                         parts.append(f"browser={version}")
                     ok = composer is not None and not qr and not blocked
+                    if not qr:
+                        WhatsAppWebSender(
+                            profile_dir=self.profile_dir, phone=self.phone
+                        )._save_probe(headless_ok=ok, mode=f"periksa-{'headless' if headless else 'terlihat'}")
                     return ok, " | ".join(parts)
                 finally:
                     try:
@@ -288,6 +294,39 @@ class WhatsAppWebSender:
             return False
         return any(word in body for word in _WA_BROWSER_BLOCK_WORDS)
 
+    # --------------------------------------------------------------- memori mode
+    @property
+    def _probe_path(self) -> Path:
+        """Catatan hasil percobaan: apakah mode headless bisa dipakai di laptop ini."""
+        return Path(self.profile_dir).parent / "wa_mode.json"
+
+    def _load_probe(self) -> dict:
+        try:
+            return json.loads(self._probe_path.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001 - file belum ada / rusak: anggap belum tahu
+            return {}
+
+    def _save_probe(self, **values) -> None:
+        data = self._load_probe()
+        data.update(values)
+        data["checked_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+        try:
+            self._probe_path.parent.mkdir(parents=True, exist_ok=True)
+            self._probe_path.write_text(
+                json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+        except OSError:
+            pass
+
+    def headless_works(self) -> bool:
+        """Apakah WhatsApp Web bisa dibuka tanpa jendela di mesin ini.
+
+        Diambil dari hasil percobaan sebelumnya (``--compare``/``--diagnose``/
+        pengiriman yang gagal). Bila belum pernah dicoba, dianggap bisa supaya
+        worker tidak membuka jendela tanpa alasan.
+        """
+        return bool(self._load_probe().get("headless_ok", True))
+
     def send_reliable(self, text: str, *, tries: int = 3) -> tuple[bool, str]:
         """Kirim dengan beberapa percobaan; headless dulu, lalu jendela terlihat.
 
@@ -299,8 +338,11 @@ class WhatsAppWebSender:
         """
         notes: list[str] = []
         tries = max(1, int(tries))
+        # Sudah terbukti gagal headless di laptop ini (mis. "perbarui Chrome"):
+        # langsung pakai jendela terlihat supaya notifikasi tidak terlambat.
+        start_visible = not self.headless_works() or not self.headless
         for attempt in range(1, tries + 1):
-            visible = attempt >= 2
+            visible = start_visible or attempt >= 2
             sender = (
                 self
                 if visible == (not self.headless)
@@ -314,8 +356,12 @@ class WhatsAppWebSender:
             if ok:
                 if attempt > 1:
                     note = f"{note} (berhasil pada percobaan {attempt})"
+                if attempt >= 2 and not start_visible:
+                    self._save_probe(headless_ok=False, reason=notes[0][:180])
                 return True, note
             notes.append(f"coba {attempt}: {note}")
+            if not sender.headless and attempt >= 2 and "kotak tulis" in note.lower():
+                self._save_probe(headless_ok=False, reason=note[:180])
             if "belum login" in note.lower() or "scan qr" in note.lower():
                 break  # percobaan ulang tidak akan menolong
         return False, " | ".join(notes)[:600]
@@ -451,9 +497,17 @@ def main(argv: list[str] | None = None) -> int:
         siap = results["terlihat (--show)"]["ok"]
         headless_ok = results["worker (headless)"]["ok"]
         if siap and not headless_ok:
+            # Hindari "=false" di dalam teks print: sebagian konsol PowerShell
+            # memotongnya sehingga tampak seperti baris .env yang salah.
+            baris = "FBW_WA_HEADLESS" + chr(61) + "false"
+            print("\nKesimpulan: WhatsApp Web bisa dipakai, tetapi TIDAK bisa dari mode")
+            print("headless di laptop ini. Tambahkan baris berikut ke file .env:")
+            print()
+            print("    " + baris)
+            print()
             print(
-                "\nKesimpulan: WhatsApp Web bisa dipakai, tetapi TIDAK bisa dari mode "
-                "headless. Tambahkan di .env:\n    FBW_WA_HEADLESS=false"
+                "Worker juga mengingatnya sendiri (data/wa_mode.json), jadi pengaturan "
+                "ini hanya perlu bila Anda ingin mematangkannya."
             )
         elif not siap:
             print(

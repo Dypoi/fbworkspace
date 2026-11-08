@@ -262,8 +262,9 @@ class TestSendReliable:
     Worker kini mencoba beberapa kali dan berpindah ke jendela terlihat.
     """
 
-    def test_retries_and_reports_attempt(self, monkeypatch):
-        sender = WhatsAppWebSender(profile_dir="/tmp/wa", phone="081513839973")
+    def test_retries_and_reports_attempt(self, monkeypatch, tmp_path):
+        sender = WhatsAppWebSender(profile_dir=tmp_path / "wa", phone="081513839973")
+        assert sender.headless_works() is True  # belum ada catatan: mulai headless
         calls: list[tuple[bool, int]] = []
 
         def fake_send(self, text, *, blocking=True, attempt=1):
@@ -278,6 +279,8 @@ class TestSendReliable:
         # percobaan 1 headless, percobaan 2 memakai jendela terlihat
         assert calls[0] == (True, 1)
         assert calls[1] == (False, 2)
+        # hasilnya diingat: percobaan berikutnya langsung jendela terlihat
+        assert sender.headless_works() is False
 
     def test_gives_up_after_all_tries(self, monkeypatch):
         sender = WhatsAppWebSender(profile_dir="/tmp/wa", phone="081513839973")
@@ -344,3 +347,53 @@ class TestCompareMode:
         out = capsys.readouterr().out
         assert code == 1
         assert "wa_login.py" in out
+
+
+class TestHeadlessMemory:
+    """WhatsApp Web menolak mode headless di laptop pengguna (--compare membuktikan).
+
+    Worker harus mengingat itu dan langsung memakai jendela terlihat.
+    """
+
+    def _sender(self, tmp_path):
+        return WhatsAppWebSender(profile_dir=tmp_path / "wa_profile", phone="081513839973")
+
+    def test_default_assumes_headless_ok(self, tmp_path):
+        assert self._sender(tmp_path).headless_works() is True
+
+    def test_records_headless_failure(self, tmp_path, monkeypatch):
+        sender = self._sender(tmp_path)
+
+        def fake_send(self, text, *, blocking=True, attempt=1):
+            if self.headless:
+                return False, "kotak tulis WhatsApp tidak ditemukan (ditolak_versi_chrome=True)"
+            return True, "terkirim (kotak tulis kosong)"
+
+        monkeypatch.setattr(WhatsAppWebSender, "send", fake_send)
+
+        ok, note = sender.send_reliable("halo", tries=3)
+        assert ok is True
+        assert "percobaan 2" in note
+        assert sender.headless_works() is False
+        assert (tmp_path / "wa_mode.json").exists()
+
+    def test_next_send_skips_headless(self, tmp_path, monkeypatch):
+        sender = self._sender(tmp_path)
+        sender._save_probe(headless_ok=False, reason="ditolak_versi_chrome")
+
+        used: list[bool] = []
+
+        def fake_send(self, text, *, blocking=True, attempt=1):
+            used.append(self.headless)
+            return True, "terkirim"
+
+        monkeypatch.setattr(WhatsAppWebSender, "send", fake_send)
+        sender.send_reliable("halo")
+        assert used == [False], "percobaan pertama langsung memakai jendela terlihat"
+
+    def test_corrupt_probe_file_is_ignored(self, tmp_path):
+        sender = self._sender(tmp_path)
+        path = tmp_path / "wa_mode.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{bukan json", encoding="utf-8")
+        assert sender.headless_works() is True
