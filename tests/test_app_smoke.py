@@ -147,3 +147,13 @@ def test_messenger_panel_with_zero_chats_renders_without_duplicate_key(tmp_path,
     assert any("tautan chat" in str(e.value).lower() for e in at.error) or any(
         "13" in str(e.value) for e in at.error
     )
+
+
+def test_watch_mode_controls_exist_and_default_on(tmp_path, monkeypatch):
+    monkeypatch.setenv("FBW_DB_PATH", str(tmp_path / "watch.db"))
+    monkeypatch.setenv("FBW_OLLAMA_ENABLED", "false")
+    at = AppTest.from_file(APP, default_timeout=60).run()
+    assert not at.exception, [str(e) for e in at.exception]
+    watch = at.checkbox(key="fbw_msg_watch")
+    assert watch.value is True, "Mode pantau seharusnya aktif secara bawaan"
+    assert "Pantau terus" in watch.label

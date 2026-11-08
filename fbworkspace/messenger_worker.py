@@ -54,6 +54,7 @@ def default_counters() -> dict[str, int]:
         "skipped_cooldown": 0,
         "skipped_limit": 0,
         "errors": 0,
+        "cycles": 0,
     }
 
 
@@ -83,6 +84,13 @@ def run(
     cooldown = max(0, int(config.get("cooldown_seconds", settings.messenger_cooldown_seconds)))
     notify_enabled = bool(config.get("notify", True))
     ai_style = bool(config.get("ai_style", settings.messenger_ai_style))
+    # Mode pantau: ulangi putaran terus-menerus sampai pengguna menekan berhenti.
+    watch = bool(config.get("watch", settings.messenger_watch))
+    interval = max(
+        10,
+        int(config.get("interval_seconds") or settings.messenger_interval_seconds),
+    )
+    max_cycles = max(0, int(config.get("max_cycles") or 0))  # 0 = tanpa batas
     style_config = (
         OllamaConfig.from_settings(settings)
         if ai_style and getattr(settings, "ollama_enabled", False)
@@ -144,103 +152,72 @@ def run(
         )
 
     try:
-        threads, list_status, diagnostics = _list_threads(adapter, max_threads)
-        counters["threads"] = len(threads)
-        if list_status == "perlu_login":
-            esc = build_login_escalation()
-            _escalate(db, job_id, None, esc, counters, sender, dry_run, log)
-            status = JobStatus.BLOCKED.value
-            message = (
-                "Facebook meminta login. Jalankan scripts\\login_helper.py, login sendiri, "
-                "lalu jalankan ulang."
-            )
-            log("warning", message)
-            threads = []
-        elif list_status == "pemblokiran":
-            esc = build_login_escalation()
-            _escalate(db, job_id, None, esc, counters, sender, dry_run, log)
-            status = JobStatus.BLOCKED.value
-            detail = diagnostics.get("reason") or diagnostics.get("title") or "halaman pembatasan"
-            message = (
-                f"Facebook menampilkan halaman pembatasan ({detail}). "
-                "Buka Facebook sendiri, selesaikan di sana, lalu jalankan ulang."
-            )
-            log("warning", message)
-            threads = []
-        elif list_status == "perlu_pin":
-            esc = Escalation(
-                chat_name="",
-                message=pin_escalation_text(),
-                reason="Messenger meminta PIN pemulihan chat",
-                header=STOP_HEADER,
-            )
-            _escalate(db, job_id, None, esc, counters, sender, dry_run, log)
-            status = JobStatus.BLOCKED.value
-            message = (
-                "Messenger meminta PIN pemulihan chat dan worker tidak mengisinya. "
-                "Isi PIN sendiri di jendela browser, atau set FBW_CHAT_PIN di .env."
-            )
-            log("warning", message)
-            threads = []
-        elif list_status == "kesalahan":
-            status = JobStatus.FAILED.value
-            message = "Gagal membuka Messenger: " + str(diagnostics.get("error") or "tidak diketahui")
-            log("error", message)
-            threads = []
-        elif list_status != "ok":
-            detail = _diagnostics_line(diagnostics)
-            message = (
-                "Tidak ada chat yang terbaca di Messenger. Kemungkinan: belum login di jendela "
-                "browser yang dipakai worker, atau susunan halaman Facebook berubah."
-            )
-            log("warning", f"{message} Diagnostik: {detail}")
-            threads = []
-        if status == JobStatus.COMPLETED.value and list_status != "ok":
-            # Jujur: berhenti tanpa membaca chat bukan "sukses".
-            status = JobStatus.BLOCKED.value if list_status != "kesalahan" else status
-        db.update_job(job_id, diagnostics_json=json.dumps(diagnostics, ensure_ascii=False))
-        push()
-
-        for thread in threads:
+        cycle = 0
+        while True:
+            cycle += 1
             if db.is_stop_requested(job_id):
                 status = JobStatus.STOPPED.value
                 message = "Dihentikan oleh pengguna."
                 break
-            if counters["replies"] >= max_replies and max_replies > 0:
-                counters["skipped_limit"] += 1
-                continue
 
-            chat = db.get_chat(thread.key)
-            if chat and chat.get("last_reply_at") and cooldown:
-                if _seconds_since(chat["last_reply_at"]) < cooldown:
-                    counters["skipped_cooldown"] += 1
-                    continue
-
-            db.upsert_chat(thread.key, name=thread.name, url=thread.url)
-            incoming_count = _handle_thread(
+            outcome, detail = _watch_cycle(
                 db=db,
                 adapter=adapter,
                 sender=sender,
-                thread=thread,
                 job_id=job_id,
                 counters=counters,
+                entries=entries,
                 dry_run=dry_run,
-                gap=gap,
+                max_threads=max_threads,
                 max_replies=max_replies,
+                gap=gap,
+                cooldown=cooldown,
+                style_config=style_config,
                 log=log,
                 sleep=sleep,
-                entries=entries,
-                style_config=style_config,
+                push=push,
             )
-            counters["messages"] += incoming_count
+            if outcome in {"blocked", "failed"}:
+                status = (
+                    JobStatus.BLOCKED.value if outcome == "blocked" else JobStatus.FAILED.value
+                )
+                message = detail
+                break
+
+            counters["cycles"] = cycle
             push()
 
+            if not watch:
+                break
+            if max_cycles and cycle >= max_cycles:
+                message = f"Mode pantau selesai setelah {cycle} putaran (batas yang Anda set)."
+                break
+            log(
+                "info",
+                f"Putaran {cycle} selesai. Menunggu {interval} detik sebelum memeriksa lagi "
+                "(tekan ⛔ Hentikan untuk berhenti).",
+            )
+            waited = 0
+            while waited < interval:
+                if db.is_stop_requested(job_id):
+                    break
+                step = min(2, interval - waited)
+                sleep(step)
+                waited += step
+                db.update_job(job_id, heartbeat_at=_now())
+            if db.is_stop_requested(job_id):
+                status = JobStatus.STOPPED.value
+                message = "Dihentikan oleh pengguna."
+                break
+
         if status == JobStatus.COMPLETED.value:
-            message = (
+            summary = (
                 f"{counters['threads']} chat dibaca, {counters['replies']} balasan terkirim, "
                 f"{counters['escalations']} eskalasi, {counters['errors']} error."
                 + (" (uji kering: tidak ada yang dikirim)" if dry_run else "")
             )
+            # Mode pantau: pertahankan keterangan jumlah putaran, tambahkan ringkasan.
+            message = f"{message} {summary}".strip() if message else summary
         elif status == JobStatus.BLOCKED.value and not message:
             message = "Worker berhenti sebelum membaca chat; lihat log di bawah."
     except KeyboardInterrupt:
@@ -267,6 +244,117 @@ def run(
         print(f"[messenger] job {job_id}: {status} - {message}")
 
     return 0 if status == JobStatus.COMPLETED.value else 1
+
+
+def _watch_cycle(
+    *,
+    db: Database,
+    adapter,
+    sender,
+    job_id: int,
+    counters: dict,
+    entries,
+    dry_run: bool,
+    max_threads: int,
+    max_replies: int,
+    gap: int,
+    cooldown: int,
+    style_config,
+    log,
+    sleep,
+    push,
+) -> tuple[str, str]:
+    """Satu putaran pemantauan. Kembalikan (hasil, keterangan).
+
+    hasil: ``ok`` (lanjut), ``blocked`` (perlu tindakan Anda), ``failed`` (error).
+    """
+    threads, list_status, diagnostics = _list_threads(adapter, max_threads)
+    counters["threads"] = len(threads)
+    message = ""
+    if diagnostics:
+        db.update_job(job_id, diagnostics_json=json.dumps(diagnostics, ensure_ascii=False))
+
+    if list_status == "perlu_login":
+        esc = build_login_escalation()
+        _escalate(db, job_id, None, esc, counters, sender, dry_run, log)
+        message = (
+            "Facebook meminta login. Jalankan scripts\\login_helper.py, login sendiri, "
+            "lalu jalankan ulang."
+        )
+        log("warning", message)
+        return "blocked", message
+    if list_status == "pemblokiran":
+        esc = build_login_escalation()
+        _escalate(db, job_id, None, esc, counters, sender, dry_run, log)
+        detail = diagnostics.get("reason") or diagnostics.get("title") or "halaman pembatasan"
+        message = (
+            f"Facebook menampilkan halaman pembatasan ({detail}). "
+            "Buka Facebook sendiri, selesaikan di sana, lalu jalankan ulang."
+        )
+        log("warning", message)
+        return "blocked", message
+    if list_status == "perlu_pin":
+        esc = Escalation(
+            chat_name="",
+            message=pin_escalation_text(),
+            reason="Messenger meminta PIN pemulihan chat",
+            header=STOP_HEADER,
+        )
+        _escalate(db, job_id, None, esc, counters, sender, dry_run, log)
+        message = (
+            "Messenger meminta PIN pemulihan chat dan worker tidak mengisinya. "
+            "Isi PIN sendiri di jendela browser, atau set FBW_CHAT_PIN di .env."
+        )
+        log("warning", message)
+        return "blocked", message
+    if list_status == "kesalahan":
+        message = "Gagal membuka Messenger: " + str(diagnostics.get("error") or "tidak diketahui")
+        log("error", message)
+        return "failed", message
+    if list_status != "ok":
+        detail = _diagnostics_line(diagnostics)
+        message = (
+            "Tidak ada chat yang terbaca di Messenger. Kemungkinan: belum login di jendela "
+            "browser yang dipakai worker, atau susunan halaman Facebook berubah."
+        )
+        log("warning", f"{message} Diagnostik: {detail}")
+        return "blocked", message
+
+    db.update_job(job_id, diagnostics_json=json.dumps(diagnostics, ensure_ascii=False))
+    push()
+
+    for thread in threads:
+        if db.is_stop_requested(job_id):
+            return "ok", "stop"
+        if counters["replies"] >= max_replies and max_replies > 0:
+            counters["skipped_limit"] += 1
+            continue
+
+        chat = db.get_chat(thread.key)
+        if chat and chat.get("last_reply_at") and cooldown:
+            if _seconds_since(chat["last_reply_at"]) < cooldown:
+                counters["skipped_cooldown"] += 1
+                continue
+
+        db.upsert_chat(thread.key, name=thread.name, url=thread.url)
+        incoming_count = _handle_thread(
+            db=db,
+            adapter=adapter,
+            sender=sender,
+            thread=thread,
+            job_id=job_id,
+            counters=counters,
+            dry_run=dry_run,
+            gap=gap,
+            max_replies=max_replies,
+            log=log,
+            sleep=sleep,
+            entries=entries,
+            style_config=style_config,
+        )
+        counters["messages"] += incoming_count
+        push()
+    return "ok", ""
 
 
 def _list_threads(adapter, limit: int):

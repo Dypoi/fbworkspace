@@ -283,6 +283,14 @@ checkpoint/verifikasi identitas/kode 2FA ia berhenti dan memberi tahu Anda. Jang
 pernah menaruh PIN di kode, dokumen, atau berkas yang masuk Git — `.env` sudah
 diabaikan Git, tapi file itu berisi rahasia: jangan dibagikan.
 
+Mode pantau aktif secara bawaan: worker memeriksa DM baru setiap 30 detik dan
+berhenti hanya bila Anda menekan **⛔ Hentikan worker** di tab Balas. Ubah di `.env`:
+
+```
+FBW_MESSENGER_WATCH=true
+FBW_MESSENGER_INTERVAL_SECONDS=30
+```
+
 Ubah juga di `.env` bila perlu:
 
 ```

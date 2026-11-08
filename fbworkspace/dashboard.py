@@ -431,6 +431,11 @@ def _render_job_content(
                 "Status job **diblokir**: worker tidak membaca/mengirim apa pun sampai "
                 "penyebabnya beres."
             )
+        if counters.get("cycles", 0) > 1:
+            st.caption(
+                f"🔁 Mode pantau aktif · putaran ke-{counters['cycles']} · "
+                "tekan ⛔ Hentikan (di Pengaturan job) untuk berhenti."
+            )
         m = st.columns(5)
         m[0].metric("Chat dibaca", counters.get("threads", 0))
         m[1].metric("Pesan baru", counters.get("messages", 0))
@@ -472,7 +477,7 @@ def _render_job_content(
 
     if active:
         if st.button(
-            "🛑 Hentikan proses", type="primary", key=f"stop_{job_id}{key_suffix}"
+            "⛔ Hentikan worker", type="primary", key=f"stop_{job_id}{key_suffix}"
         ):
             db.request_stop(job_id)
             st.toast("Permintaan berhenti dikirim. Worker akan berhenti dengan rapi.")
@@ -1727,6 +1732,23 @@ def render_balas(settings: Settings, db: Database) -> None:
         value=True,
         key="fbw_msg_notify",
     )
+    watch = st.checkbox(
+        "Pantau terus (worker tidak berhenti sendiri)",
+        value=bool(getattr(settings, "messenger_watch", True)),
+        key="fbw_msg_watch",
+        help=(
+            "Worker memeriksa DM baru berulang kali sampai Anda menekan ⛔ Hentikan. "
+            "Matikan untuk satu putaran saja."
+        ),
+    )
+    interval = st.slider(
+        "Jeda antar pemeriksaan (detik)",
+        10,
+        180,
+        min(180, max(10, int(getattr(settings, "messenger_interval_seconds", 30)))),
+        step=5,
+        help="Jangan terlalu cepat: 30–60 detik sudah cukup dan lebih aman untuk akun Anda.",
+    )
     ai_style = st.checkbox(
         "Variasikan gaya bahasa dengan Ollama (fakta tidak diubah)",
         value=bool(settings.messenger_ai_style),
@@ -1766,6 +1788,8 @@ def render_balas(settings: Settings, db: Database) -> None:
             "cooldown_seconds": settings.messenger_cooldown_seconds,
             "notify": notify,
             "ai_style": ai_style,
+            "watch": watch,
+            "interval_seconds": interval,
         }
         job_id, proc = jobs.start_job(
             db, settings, group_urls=[], config=config, kind="messenger"

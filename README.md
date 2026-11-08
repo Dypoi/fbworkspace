@@ -320,6 +320,12 @@ Perintah `fbworkspace.browser.messenger` **tidak mengirim apa pun**; ia mencetak
 judul halaman, jumlah tautan chat, ada/tidaknya kotak tulis, dan cuplikan teks, lalu
 menyimpan laporan ke `data\diagnostics\`. Kirimkan file itu bila hasilnya masih kosong.
 
+**Mode pantau (bawaan aktif).** Worker tidak berhenti setelah satu putaran: ia
+memeriksa DM baru setiap 30 detik (bisa diubah 10–180 detik) dan mengirim WA untuk
+chat yang di luar template. Berhenti hanya bila Anda menekan **⛔ Hentikan worker**,
+atau bila ada masalah yang butuh tindakan Anda (login/checkpoint/PIN) — dalam hal
+itu worker berhenti dan mengirim WA.
+
 Pengaman bawaan: maksimum 8 chat dibaca & 10 balasan per putaran, jeda 45 detik
 antar balasan, cooldown 10 menit per chat, dan berhenti bila Facebook meminta
 login. Chat yang dibaca akan tampak "sudah dibaca" di sisi pembeli — itu tidak

@@ -147,6 +147,15 @@ class Settings:
         default_factory=lambda: _env_bool("FBW_CHAT_PIN_AUTO", True)
     )
 
+    # Mode pantau: jeda antar pemeriksaan DM (detik). 30-60 aman; jangan terlalu cepat.
+    messenger_interval_seconds: int = field(
+        default_factory=lambda: _env_int("FBW_MESSENGER_INTERVAL_SECONDS", 30)
+    )
+    # Bawaannya memantau terus sampai dihentikan pengguna.
+    messenger_watch: bool = field(
+        default_factory=lambda: _env_bool("FBW_MESSENGER_WATCH", True)
+    )
+
     # Variasi gaya bahasa balasan dengan Ollama (fakta tetap dari template).
     # Hanya jalan bila Ollama juga diaktifkan (FBW_OLLAMA_ENABLED=true).
     messenger_ai_style: bool = field(

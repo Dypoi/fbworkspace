@@ -63,6 +63,8 @@ def _settings(tmp_path: Path) -> Settings:
         messenger_gap_seconds=0,
         messenger_cooldown_seconds=0,
         messenger_dry_run=True,
+        # Tes tidak boleh ikut memantau terus-menerus (loop tak berujung).
+        messenger_watch=False,
     )
 
 
@@ -75,6 +77,7 @@ def _job(db: Database, **config) -> int:
         "gap_seconds": 0,
         "cooldown_seconds": 0,
         "notify": True,
+        "watch": False,
     }
     base.update(config)
     return db.create_job(kind="messenger", group_urls=[], config=base)
@@ -258,6 +261,7 @@ def test_default_counters_complete():
     expected = {
         "threads", "messages", "replies", "silent", "dry_run", "escalations",
         "notify_sent", "notify_failed", "skipped_cooldown", "skipped_limit", "errors",
+        "cycles",
     }
     assert set(default_counters()) == expected
 
@@ -518,3 +522,94 @@ def test_dm_notes_distinguish_reply_and_silence(tmp_path):
 
     rows = db.unanswered_incoming(THREAD_KEY)
     assert rows == []
+
+
+class _StoppingMessenger(FakeMessenger):
+    """Adapter yang meminta job berhenti setelah N putaran."""
+
+    def __init__(self, *args, stop_after=2, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.calls = 0
+        self.stop_after = stop_after
+        self.db = None
+        self.job_id = None
+
+    def list_threads_detailed(self, limit=8):
+        self.calls += 1
+        if self.calls > self.stop_after and self.db is not None:
+            self.db.request_stop(self.job_id)
+        return super().list_threads_detailed(limit=limit)
+
+
+def test_watch_mode_runs_multiple_cycles_until_limit(tmp_path):
+    db = Database(tmp_path / "chat.db")
+    adapter = FakeMessenger(
+        [Thread(THREAD_KEY, "Rian", THREAD_URL)],
+        {THREAD_URL: [_incoming("iphone 11 ready?")]},
+    )
+    job_id = _job(db, dry_run=False, watch=True, interval_seconds=10, max_cycles=3)
+
+    sleeps: list[int] = []
+    code = run(
+        job_id,
+        adapter=adapter,
+        sender=MemorySender(),
+        database=db,
+        settings=_settings(tmp_path),
+        sleep=lambda s: sleeps.append(s),
+    )
+
+    assert code == 0
+    job = db.get_job(job_id)
+    assert job["counters"]["cycles"] == 3
+    assert "Mode pantau selesai setelah 3 putaran" in job["message"]
+    # tetap ada jeda antar putaran (bukan loop tanpa henti)
+    assert sum(sleeps) >= 20
+
+
+def test_watch_mode_stops_when_user_requests(tmp_path):
+    db = Database(tmp_path / "chat.db")
+    job_id = _job(db, dry_run=False, watch=True, interval_seconds=10)
+    adapter = _StoppingMessenger(
+        [Thread(THREAD_KEY, "Rian", THREAD_URL)],
+        {THREAD_URL: [_incoming("iphone 11 ready?")]},
+        stop_after=2,
+    )
+    adapter.db = db
+    adapter.job_id = job_id
+
+    code = run(job_id, adapter=adapter, sender=MemorySender(), database=db,
+               settings=_settings(tmp_path), sleep=lambda s: None)
+
+    job = db.get_job(job_id)
+    assert code == 1
+    assert job["status"] == "dihentikan"
+    assert "Dihentikan oleh pengguna" in job["message"]
+
+
+def test_watch_mode_stops_on_blocking_problem(tmp_path):
+    db = Database(tmp_path / "chat.db")
+    job_id = _job(db, dry_run=False, watch=True, interval_seconds=10)
+    adapter = FakeMessenger([], {}, list_status="perlu_login")
+    sender = MemorySender()
+
+    code = run(job_id, adapter=adapter, sender=sender, database=db,
+               settings=_settings(tmp_path), sleep=lambda s: None)
+
+    job = db.get_job(job_id)
+    assert code == 1
+    assert job["status"] == "diblokir/tidak diizinkan"
+    # tidak berputar terus saat diblokir, dan pemilik diberi tahu sekali
+    assert len(sender.sent) == 1
+
+
+def test_single_cycle_is_default(tmp_path):
+    db = Database(tmp_path / "chat.db")
+    job_id = _job(db, dry_run=False)
+    adapter = FakeMessenger([Thread(THREAD_KEY, "Rian", THREAD_URL)], {THREAD_URL: []})
+
+    run(job_id, adapter=adapter, sender=MemorySender(), database=db,
+        settings=_settings(tmp_path), sleep=lambda s: None)
+
+    # satu putaran = 1 cycle; mode pantau tidak aktif
+    assert db.get_job(job_id)["counters"]["cycles"] == 1
