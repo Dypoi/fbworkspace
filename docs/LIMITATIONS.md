@@ -199,6 +199,27 @@ markup (bukan Excel), tetap berhati-hati.
 
 ---
 
+## 8b. Balas DM Messenger (opsional, bawaannya uji kering)
+
+Bagian ini **mengirim pesan** ke pembeli bila Anda mematikan uji kering. Karena itu
+batasnya harus jelas.
+
+| Hal | Kenyataan |
+|---|---|
+| Cakupan | Hanya **DM/Messenger** (daftar chat di `facebook.com/messages`). Bukan komentar grup, bukan Marketplace. |
+| Yang dijawab | Hanya pertanyaan yang ada di template: harga (dari daftar Anda), ready/stok, lokasi/cod, nomor WA. Sisanya **diam**. |
+| Harga | Selalu dari tabel **Balas → Daftar harga**. Model/storage yang tidak ada → tidak dijawab, dieskalasi. |
+| "Nego" | Kata `nego`, `kurang`, `diskon`, `tawar`, `tukar tambah` **selalu** memicu notifikasi WhatsApp ke Anda, meski harganya tetap dijawab. |
+| Notifikasi | WhatsApp Web dari laptop Anda (profil `data/wa_profile`, perlu `scripts/wa_login.py`). Bila WA logout, notifikasi tercatat `gagal` dan chat tetap ada di daftar **Eskalasi**. |
+| Siapa yang membaca chat | Worker membuka daftar chat Anda, jadi chat baru akan tampak **sudah dibaca** di sisi pembeli. Ini tidak bisa dihindari. |
+| Selector | `div[role="listitem"]`, tautan chat, dan kotak tulis Messenger **belum diuji di akun nyata**. Kegagalan menghasilkan status/log, bukan crash — tetapi bisa berarti 0 chat terbaca. |
+| Batas | 8 chat / 10 balasan per putaran, jeda 45 detik, cooldown 10 menit per chat, berhenti saat diminta login. Angka ini kecil sengaja. |
+| Pembatasan akun | Facebook dapat membatasi akun yang membalas cepat dalam jumlah banyak. Risiko ada di Anda; gunakan angka kecil dan pantau. |
+| Variasi bahasa AI | Bila Ollama aktif, gaya kalimat boleh divariasikan, tetapi hasilnya diperiksa: angka harus identik, lokasi & nomor WA harus tetap ada, klaim terlarang menggugurkan hasil, lalu jatuh ke teks template. AI **tidak pernah** menentukan harga. Model kecil tetap bisa menghasilkan kalimat aneh yang lolos pemeriksaan — periksa beberapa putaran uji kering. |
+| Anti-balas-ganda | Berbasis `msg_key` (hash pesan). Pesan yang diedit/dihapus Facebook bisa terbaca sebagai pesan baru. |
+
+---
+
 ## 9. Keamanan lokal
 
 - Dashboard default `127.0.0.1` — tidak dapat diakses perangkat lain.
@@ -206,6 +227,9 @@ markup (bukan Excel), tetap berhati-hati.
 - Ollama dipanggil lewat `127.0.0.1`; endpoint non-local **ditolak** oleh klien.
 - Profil browser berisi cookie/sesi Facebook: diperlakukan sebagai rahasia,
   ada di `.gitignore`, dan bisa dihapus dari dashboard.
+- Profil WhatsApp Web (`data/wa_profile`) berisi sesi tertaut ke WhatsApp Anda:
+  juga diabaikan Git. Siapa pun yang menyalin folder itu bisa memakai sesi tersebut
+  sampai Anda logout dari ponsel (**Perangkat tertaut**).
 - Database SQLite tidak terenkripsi. Jika laptop dipakai bersama, gunakan akun
   Windows terpisah atau BitLocker.
 - Tidak ada telemetri. Streamlit diatur `gatherUsageStats = false`.
@@ -214,7 +238,7 @@ markup (bukan Excel), tetap berhati-hati.
 
 ## 10. Hal yang sengaja TIDAK dibuat
 
-- Auto-comment, auto-post, auto-chat, auto-DM.
+- Auto-comment dan auto-post (komentar tetap Anda kirim sendiri).
 - Menyamar sebagai pengguna lain atau memalsukan perangkat.
 - Mengumpulkan daftar anggota grup.
 - Menyimpan kata sandi/cookie ke Git atau mengunggahnya.

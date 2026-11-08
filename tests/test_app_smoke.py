@@ -1,7 +1,7 @@
 """Smoke test dashboard Streamlit (alur 3 langkah) memakai AppTest, tanpa browser.
 
-Tujuan: memastikan app.py bisa dirender tanpa exception, hanya punya tiga tab,
-dan segmentasi hasil (Semua/Lolos/Tersembunyi) benar-benar ada.
+Tujuan: memastikan app.py bisa dirender tanpa exception, punya empat tab
+(Mulai/Hasil/Balas/Pengaturan), dan segmentasi hasil benar-benar ada.
 """
 
 from __future__ import annotations
@@ -39,14 +39,23 @@ def test_app_shows_demo_prompt_on_empty_db(tmp_path, monkeypatch):
     assert _by_key(at.button, "onboarding_demo"), "Tombol muat DEMO pada onboarding hilang"
 
 
-def test_app_has_only_three_tabs(tmp_path, monkeypatch):
+def test_app_has_four_tabs(tmp_path, monkeypatch):
     at = _fresh_app(tmp_path, monkeypatch).run()
     labels = [tab.label for tab in at.tabs]
-    assert len(labels) == 3, labels
-    for expected in ("Mulai", "Hasil", "Pengaturan"):
+    assert len(labels) == 4, labels
+    for expected in ("Mulai", "Hasil", "Balas", "Pengaturan"):
         assert any(expected in label for label in labels), expected
     for removed in ("Input Manual", "Analisis Ollama", "Bantuan", "Jalankan"):
         assert not any(removed in label for label in labels), removed
+
+
+def test_balas_tab_runs_dry_by_default(tmp_path, monkeypatch):
+    at = _fresh_app(tmp_path, monkeypatch).run()
+    dry = _by_key(at.checkbox, "fbw_msg_dry")
+    assert dry and dry[0].value is True, "Uji kering harus aktif secara bawaan"
+    start = _by_key(at.button, "fbw_start_messenger")
+    assert start, "Tombol jalankan balas DM tidak ada"
+    assert start[0].disabled is True, "Tombol harus mati sampai pernyataan dicentang"
 
 
 def test_results_tab_has_segmented_control(tmp_path, monkeypatch):

@@ -50,6 +50,11 @@ def run_job(job_id: int) -> int:
         print(f"Job {job_id} tidak ditemukan.", file=sys.stderr)
         return 2
 
+    if job.get("kind") == "messenger":
+        from .messenger_worker import run as run_messenger
+
+        return run_messenger(job_id, database=db, settings=settings)
+
     config = job.get("config") or {}
     group_urls = [u for u in (job.get("group_urls") or []) if u]
     filter_config = config_from_json(config.get("filter") or {})

@@ -25,8 +25,9 @@ from .models import (
     utcnow_iso,
 )
 from .normalize import derive_dedupe_key, normalize_text
+from .pricelist import PriceEntry, default_entries
 
-SCHEMA_VERSION = "1"
+SCHEMA_VERSION = "2"
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -100,6 +101,59 @@ CREATE TABLE IF NOT EXISTS events (
     message TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_events_job ON events(job_id, id);
+
+CREATE TABLE IF NOT EXISTS price_list (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    model_key  TEXT NOT NULL,
+    label      TEXT NOT NULL,
+    storage    INTEGER,
+    price      INTEGER NOT NULL,
+    ready      INTEGER NOT NULL DEFAULT 1,
+    updated_at TEXT NOT NULL,
+    UNIQUE(model_key, storage)
+);
+
+CREATE TABLE IF NOT EXISTS chats (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    thread_key      TEXT NOT NULL UNIQUE,
+    name            TEXT NOT NULL DEFAULT '',
+    url             TEXT NOT NULL DEFAULT '',
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL,
+    last_checked_at TEXT,
+    last_reply_at   TEXT,
+    last_reply_text TEXT NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS chat_messages (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    thread_key TEXT NOT NULL,
+    msg_key    TEXT NOT NULL,
+    direction  TEXT NOT NULL DEFAULT 'in',
+    author     TEXT NOT NULL DEFAULT '',
+    text       TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    answered   INTEGER NOT NULL DEFAULT 0,
+    reply_text TEXT NOT NULL DEFAULT '',
+    replied_at TEXT,
+    UNIQUE(thread_key, msg_key)
+);
+CREATE INDEX IF NOT EXISTS idx_chat_messages_thread ON chat_messages(thread_key, id);
+
+CREATE TABLE IF NOT EXISTS escalations (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL,
+    chat_name  TEXT NOT NULL DEFAULT '',
+    chat_url   TEXT NOT NULL DEFAULT '',
+    message    TEXT NOT NULL DEFAULT '',
+    reason     TEXT NOT NULL DEFAULT '',
+    status     TEXT NOT NULL DEFAULT 'antre',
+    attempts   INTEGER NOT NULL DEFAULT 0,
+    channel    TEXT NOT NULL DEFAULT '',
+    error      TEXT NOT NULL DEFAULT '',
+    sent_at    TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_escalations_status ON escalations(status, id);
 """
 
 
@@ -136,6 +190,7 @@ class Database:
                 "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                 (SCHEMA_VERSION,),
             )
+        self.seed_prices_if_empty()
 
     # ---------------------------------------------------------------- postingan
     def insert_post(
@@ -494,6 +549,249 @@ class Database:
                 "SELECT * FROM events ORDER BY id DESC LIMIT ?", (max(1, min(limit, 1000)),)
             ).fetchall()
         return [dict(r) for r in reversed(rows)]
+
+
+    # ------------------------------------------------------------- daftar harga
+    def list_prices(self) -> list[PriceEntry]:
+        with self.conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM price_list ORDER BY model_key, storage"
+            ).fetchall()
+        return [
+            PriceEntry(
+                model_key=row["model_key"],
+                label=row["label"],
+                storage=row["storage"],
+                price=int(row["price"]),
+                ready=bool(row["ready"]),
+            )
+            for row in rows
+        ]
+
+    def price_rows(self) -> list[dict[str, Any]]:
+        with self.conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM price_list ORDER BY model_key, storage"
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def seed_prices_if_empty(self) -> int:
+        with self.conn() as conn:
+            total = conn.execute("SELECT COUNT(*) c FROM price_list").fetchone()["c"]
+        if total:
+            return 0
+        entries = default_entries()
+        self.replace_prices(entries)
+        return len(entries)
+
+    def replace_prices(self, entries: list[PriceEntry]) -> None:
+        now = utcnow_iso()
+        with self.conn() as conn:
+            conn.execute("DELETE FROM price_list")
+            conn.executemany(
+                "INSERT INTO price_list(model_key, label, storage, price, ready, updated_at) "
+                "VALUES(?, ?, ?, ?, ?, ?)",
+                [
+                    (e.model_key, e.label, e.storage, e.price, int(e.ready), now)
+                    for e in entries
+                ],
+            )
+
+    def upsert_price(self, entry: PriceEntry) -> None:
+        with self.conn() as conn:
+            conn.execute(
+                "INSERT INTO price_list(model_key, label, storage, price, ready, updated_at) "
+                "VALUES(?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(model_key, storage) DO UPDATE SET "
+                "label=excluded.label, price=excluded.price, ready=excluded.ready, "
+                "updated_at=excluded.updated_at",
+                (entry.model_key, entry.label, entry.storage, entry.price, int(entry.ready), utcnow_iso()),
+            )
+
+    def set_price_ready(self, price_id: int, ready: bool) -> None:
+        with self.conn() as conn:
+            conn.execute(
+                "UPDATE price_list SET ready=?, updated_at=? WHERE id=?",
+                (int(ready), utcnow_iso(), int(price_id)),
+            )
+
+    def delete_price(self, price_id: int) -> None:
+        with self.conn() as conn:
+            conn.execute("DELETE FROM price_list WHERE id=?", (int(price_id),))
+
+    # ------------------------------------------------------------------- chat
+    def upsert_chat(self, thread_key: str, name: str = "", url: str = "") -> None:
+        now = utcnow_iso()
+        with self.conn() as conn:
+            conn.execute(
+                "INSERT INTO chats(thread_key, name, url, created_at, updated_at, last_checked_at) "
+                "VALUES(?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(thread_key) DO UPDATE SET "
+                "name=CASE WHEN excluded.name != '' THEN excluded.name ELSE chats.name END, "
+                "url=CASE WHEN excluded.url != '' THEN excluded.url ELSE chats.url END, "
+                "updated_at=excluded.updated_at, last_checked_at=excluded.last_checked_at",
+                (thread_key, name, url, now, now, now),
+            )
+
+    def get_chat(self, thread_key: str) -> dict[str, Any] | None:
+        with self.conn() as conn:
+            row = conn.execute("SELECT * FROM chats WHERE thread_key=?", (thread_key,)).fetchone()
+        return dict(row) if row else None
+
+    def record_message(
+        self,
+        thread_key: str,
+        msg_key: str,
+        *,
+        direction: str,
+        text: str,
+        author: str = "",
+    ) -> bool:
+        """Simpan pesan; True bila pesan ini baru."""
+        with self.conn() as conn:
+            cursor = conn.execute(
+                "INSERT OR IGNORE INTO chat_messages(thread_key, msg_key, direction, author, text, created_at) "
+                "VALUES(?, ?, ?, ?, ?, ?)",
+                (thread_key, msg_key, direction, author, text, utcnow_iso()),
+            )
+        return cursor.rowcount > 0
+
+    def mark_answered(self, thread_key: str, msg_key: str, reply_text: str) -> None:
+        now = utcnow_iso()
+        with self.conn() as conn:
+            conn.execute(
+                "UPDATE chat_messages SET answered=1, reply_text=?, replied_at=? "
+                "WHERE thread_key=? AND msg_key=?",
+                (reply_text, now, thread_key, msg_key),
+            )
+            conn.execute(
+                "UPDATE chats SET last_reply_at=?, last_reply_text=?, updated_at=? WHERE thread_key=?",
+                (now, reply_text, now, thread_key),
+            )
+
+    def mark_answered_many(self, thread_key: str, msg_keys: list[str], reply_text: str) -> None:
+        if not msg_keys:
+            return
+        now = utcnow_iso()
+        placeholders = ",".join("?" for _ in msg_keys)
+        with self.conn() as conn:
+            conn.execute(
+                f"UPDATE chat_messages SET answered=1, reply_text=?, replied_at=? "
+                f"WHERE thread_key=? AND msg_key IN ({placeholders})",
+                [reply_text, now, thread_key, *msg_keys],
+            )
+            if reply_text:
+                conn.execute(
+                    "UPDATE chats SET last_reply_at=?, last_reply_text=?, updated_at=? "
+                    "WHERE thread_key=?",
+                    (now, reply_text, now, thread_key),
+                )
+
+    def escalation_exists(self, chat_url: str, message: str) -> bool:
+        with self.conn() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM escalations WHERE chat_url=? AND message=? LIMIT 1",
+                (chat_url, message[:500]),
+            ).fetchone()
+        return row is not None
+
+    def unanswered_incoming(self, thread_key: str) -> list[dict[str, Any]]:
+        with self.conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM chat_messages WHERE thread_key=? AND direction='in' "
+                "AND answered=0 ORDER BY id",
+                (thread_key,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def outgoing_texts(self, thread_key: str, limit: int = 20) -> list[str]:
+        with self.conn() as conn:
+            rows = conn.execute(
+                "SELECT text FROM chat_messages WHERE thread_key=? AND direction='out' "
+                "ORDER BY id DESC LIMIT ?",
+                (thread_key, max(1, min(limit, 100))),
+            ).fetchall()
+        return [row["text"] for row in rows]
+
+    def last_outgoing(self, thread_key: str) -> dict[str, Any] | None:
+        with self.conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM chat_messages WHERE thread_key=? AND direction='out' "
+                "ORDER BY id DESC LIMIT 1",
+                (thread_key,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    # -------------------------------------------------------------- eskalasi
+    def add_escalation(
+        self,
+        *,
+        chat_name: str,
+        message: str,
+        reason: str,
+        chat_url: str = "",
+        channel: str = "whatsapp-web",
+    ) -> int:
+        with self.conn() as conn:
+            cursor = conn.execute(
+                "INSERT INTO escalations(created_at, chat_name, chat_url, message, reason, channel) "
+                "VALUES(?, ?, ?, ?, ?, ?)",
+                (utcnow_iso(), chat_name, chat_url, message[:500], reason, channel),
+            )
+            return int(cursor.lastrowid)
+
+    def mark_escalation(
+        self, escalation_id: int, status: str, *, error: str = "", channel: str = ""
+    ) -> None:
+        sent_at = utcnow_iso() if status == "terkirim" else None
+        with self.conn() as conn:
+            conn.execute(
+                "UPDATE escalations SET status=?, error=?, attempts=attempts+1, "
+                "channel=CASE WHEN ? != '' THEN ? ELSE channel END, "
+                "sent_at=COALESCE(?, sent_at) WHERE id=?",
+                (status, error, channel, channel, sent_at, int(escalation_id)),
+            )
+
+    def list_escalations(self, status: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
+        query = "SELECT * FROM escalations"
+        params: list[Any] = []
+        if status:
+            query += " WHERE status=?"
+            params.append(status)
+        query += " ORDER BY id DESC LIMIT ?"
+        params.append(max(1, min(limit, 500)))
+        with self.conn() as conn:
+            rows = conn.execute(query, params).fetchall()
+        return [dict(row) for row in rows]
+
+    def count_pending_escalations(self) -> int:
+        with self.conn() as conn:
+            return int(
+                conn.execute("SELECT COUNT(*) c FROM escalations WHERE status='antre'").fetchone()["c"]
+            )
+
+    def chat_stats(self) -> dict[str, int]:
+        with self.conn() as conn:
+            chats = conn.execute("SELECT COUNT(*) c FROM chats").fetchone()["c"]
+            messages = conn.execute("SELECT COUNT(*) c FROM chat_messages").fetchone()["c"]
+            outgoing = conn.execute(
+                "SELECT COUNT(*) c FROM chat_messages WHERE direction='out'"
+            ).fetchone()["c"]
+            pending = conn.execute(
+                "SELECT COUNT(*) c FROM escalations WHERE status='antre'"
+            ).fetchone()["c"]
+        return {
+            "chats": int(chats),
+            "messages": int(messages),
+            "outgoing": int(outgoing),
+            "pending_escalations": int(pending),
+        }
+
+    def delete_chat_data(self) -> None:
+        with self.conn() as conn:
+            conn.execute("DELETE FROM chat_messages")
+            conn.execute("DELETE FROM chats")
+            conn.execute("DELETE FROM escalations")
 
     # ------------------------------------------------------------------ stats
     def stats(self) -> dict[str, Any]:

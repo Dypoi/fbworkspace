@@ -21,6 +21,8 @@ data/manual/
 # Sesi browser / cookie / profil Playwright  <-- JANGAN pernah di-commit
 data/browser_profile/
 data/browser-profile/
+data/wa_profile/
+data/wa-profile/
 **/user-data-dir/
 *.har
 storage_state*.json

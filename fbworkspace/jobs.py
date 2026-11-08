@@ -27,9 +27,10 @@ def start_job(
     *,
     group_urls: list[str],
     config: dict,
+    kind: str = "browser",
 ) -> tuple[int, subprocess.Popen]:
     """Buat job di database lalu jalankan worker sebagai proses terpisah."""
-    job_id = db.create_job(kind="browser", group_urls=group_urls, config=config)
+    job_id = db.create_job(kind=kind, group_urls=group_urls, config=config)
     settings.ensure_dirs()
     path = log_path(job_id, settings)
 
@@ -39,6 +40,8 @@ def start_job(
     # Pastikan worker memakai settings yang sama
     env["FBW_DB_PATH"] = str(settings.db_path)
     env["FBW_BROWSER_PROFILE_DIR"] = str(settings.browser_profile_dir)
+    env["FBW_WA_PROFILE_DIR"] = str(settings.wa_profile_dir)
+    env["FBW_WA_PHONE"] = settings.wa_phone
 
     creationflags = 0
     if os.name == "nt":
@@ -86,6 +89,8 @@ def start_login_session(settings: Settings) -> tuple[Path, subprocess.Popen]:
     env["PYTHONUNBUFFERED"] = "1"
     env["PYTHONIOENCODING"] = "utf-8"
     env["FBW_BROWSER_PROFILE_DIR"] = str(settings.browser_profile_dir)
+    env["FBW_WA_PROFILE_DIR"] = str(settings.wa_profile_dir)
+    env["FBW_WA_PHONE"] = settings.wa_phone
 
     path = settings.log_dir / "login_helper.log"
     handle = open(path, "a", encoding="utf-8")  # noqa: SIM115 - hidup selama proses

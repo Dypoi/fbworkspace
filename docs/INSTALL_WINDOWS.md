@@ -234,6 +234,57 @@ Tanpa GPU, satu postingan bisa puluhan detik. Aplikasi tetap berfungsi tanpa AI.
 
 ---
 
+## 10b. Balas DM Messenger (opsional, mulai dari uji kering)
+
+Tanpa langkah ini semua fitur lain tetap berjalan. Bagian ini hanya perlu bila
+Anda ingin worker menjawab DM Messenger dan mengirim notifikasi WhatsApp.
+
+1. Pastikan Chromium Playwright sudah terpasang (sudah dilakukan `setup_windows.ps1`).
+   Bila belum:
+
+```powershell
+.\.venv\Scripts\python.exe -m playwright install chromium
+```
+
+2. Login WhatsApp Web **sekali** untuk notifikasi (jendela browser terbuka,
+   scan QR dari ponsel: WhatsApp → **Perangkat tertaut → Tautkan perangkat**):
+
+```powershell
+.\.venv\Scripts\python.exe scripts\wa_login.py
+```
+
+   Sesi tersimpan di `data\wa_profile` (diabaikan Git). Kalau WhatsApp logout,
+   jalankan ulang skrip ini.
+
+3. Buka dashboard → tab **💬 Balas**:
+   - periksa **Daftar harga** (bawaannya sudah berisi pricelist Anda) →
+     **Simpan daftar harga** bila ada perubahan,
+   - klik **Kirim tes WhatsApp** → harus masuk ke `081513839973`,
+   - biarkan **Uji kering** tercentang → **Jalankan balas DM** → periksa log.
+
+4. Hanya setelah beberapa putaran uji kering terasa benar: hilangkan centang
+   **Uji kering**, centang pernyataan, lalu jalankan lagi.
+
+Yang dikirim worker: jawaban harga dari daftar Anda, status ready, `Kutabumi,
+Tangerang`, dan `081513839973`. Pertanyaan di luar itu **tidak dijawab**; Anda
+menerima WhatsApp berawalan `cek facebook ada chat yang bukan ranah saya`.
+Kata **"nego"** selalu memicu WhatsApp itu.
+
+Ubah juga di `.env` bila perlu:
+
+```
+FBW_WA_PHONE=081513839973
+FBW_MESSENGER_DRY_RUN=true
+FBW_MESSENGER_MAX_REPLIES=10
+FBW_MESSENGER_GAP_SECONDS=45
+```
+
+> Peringatan jujur: selector Messenger **belum diuji di akun nyata**. Putaran
+> pertama bisa menghasilkan 0 chat terbaca (status/log akan menjelaskan). Baca
+> [LIMITATIONS.md](LIMITATIONS.md) §8b sebelum mematikan uji kering.
+
+---
+
 ## 11. Menjalankan tes
 
 ```powershell
