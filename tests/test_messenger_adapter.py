@@ -6,6 +6,8 @@ login/checkpoint, diagnostik, dan arah pesan. Bukan halaman Facebook asli.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from fbworkspace.browser.messenger import (
     MessengerAdapter,
     _direction,
@@ -111,8 +113,18 @@ def adapter_with_page(page, monkeypatch):
         def close(self):
             return None
 
+    exe = Path("/tmp/fake-chromium")
+    exe.write_text("x", encoding="utf-8") if not exe.exists() else None
+
     class FakePlaywright:
-        chromium = type("C", (), {"launch_persistent_context": staticmethod(lambda *a, **k: FakeContext())})
+        chromium = type(
+            "C",
+            (),
+            {
+                "executable_path": str(exe),
+                "launch_persistent_context": staticmethod(lambda *a, **k: FakeContext()),
+            },
+        )
 
         def stop(self):
             return None
@@ -493,3 +505,71 @@ class TestContainerScoping:
         # "Find friends" tidak bisa dibedakan tanpa wadah -> ini keterbatasan yang
         # dicatat: wadah percakapan yang membuat penyaringan tepat.
         assert meta["found_container"] is False
+
+
+class TestProfileLock:
+    """Regresi 8 Nov 17:40: browser mati 16 detik setelah mulai (profil dipakai lagi)."""
+
+    def test_lock_written_and_released(self, tmp_path):
+        from fbworkspace.browser.messenger import (
+            acquire_profile_lock,
+            release_profile_lock,
+        )
+
+        note = acquire_profile_lock(tmp_path)
+        assert note == ""
+        assert (tmp_path / ".fbworkspace.lock").exists()
+        release_profile_lock(tmp_path)
+        assert not (tmp_path / ".fbworkspace.lock").exists()
+
+    def test_live_lock_reports_pid(self, tmp_path, monkeypatch):
+        import os as _os
+
+        from fbworkspace.browser.messenger import LOCK_NAME, acquire_profile_lock
+
+        monkeypatch.setattr(_os, "getpid", lambda: 424242)
+        (tmp_path / LOCK_NAME).write_text(str(_os.getppid()), encoding="utf-8")
+        note = acquire_profile_lock(tmp_path)
+        assert "masih dipakai" in note
+
+    def test_stale_lock_is_replaced(self, tmp_path):
+        from fbworkspace.browser.messenger import LOCK_NAME, acquire_profile_lock
+
+        (tmp_path / LOCK_NAME).write_text("999999", encoding="utf-8")
+        assert acquire_profile_lock(tmp_path) == ""
+
+    def test_browser_closed_message_has_action(self):
+        note = MessengerAdapter._friendly_error(
+            RuntimeError("Target page, context or browser has been closed")
+        )
+        assert "Tutup semua jendela Chromium" in note
+
+    def test_process_singleton_message(self):
+        note = MessengerAdapter._friendly_error(RuntimeError("ProcessSingleton lock"))
+        assert "ProcessSingleton" in note
+
+    def test_missing_chromium_detected_before_launch(self, monkeypatch):
+        adapter = MessengerAdapter(profile_dir="/tmp/x")
+
+        class FakeChromium:
+            executable_path = "/tidak/ada/chromium"
+
+        class FakePW:
+            chromium = FakeChromium()
+
+        ok, why = adapter._chromium_executable(FakePW())
+        assert ok is False
+        assert "playwright install chromium" in why
+
+    def test_chromium_present(self, tmp_path):
+        adapter = MessengerAdapter(profile_dir="/tmp/x")
+        exe = tmp_path / "chrome"
+        exe.write_text("x", encoding="utf-8")
+
+        class FakeChromium:
+            executable_path = str(exe)
+
+        class FakePW:
+            chromium = FakeChromium()
+
+        assert adapter._chromium_executable(FakePW()) == (True, "")

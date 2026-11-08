@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import sys
 import time
 from dataclasses import dataclass, field
@@ -321,6 +322,66 @@ def _row_text(row) -> str:
     return " ".join((text or "").split())
 
 
+LOCK_NAME = ".fbworkspace.lock"
+
+
+def _pid_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        import os
+
+        if os.name == "nt":
+            import subprocess
+
+            out = subprocess.run(
+                ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            ).stdout
+            return str(pid) in out
+        os.kill(pid, 0)
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def acquire_profile_lock(profile_dir: Path) -> str:
+    """Catat proses yang memakai profil browser. Kembalikan peringatan (bila ada).
+
+    Chromium menolak dua proses memakai folder profil yang sama. Daripada gagal
+    dengan pesan membingungkan, kita deteksi lebih awal dan beri tahu langkahnya.
+    """
+    lock = Path(profile_dir) / LOCK_NAME
+    try:
+        if lock.exists():
+            try:
+                pid = int(lock.read_text(encoding="utf-8").strip() or 0)
+            except (OSError, ValueError):
+                pid = 0
+            if pid and pid != os.getpid() and _pid_alive(pid):
+                return (
+                    f"Profil browser kemungkinan masih dipakai proses PID {pid} "
+                    "(worker lain atau jendela Chromium yang belum tertutup). "
+                    "Tutup jendela itu atau hentikan job yang berjalan, lalu ulangi."
+                )
+        lock.write_text(str(os.getpid()), encoding="utf-8")
+    except OSError:
+        pass
+    return ""
+
+
+def release_profile_lock(profile_dir: Path) -> None:
+    lock = Path(profile_dir) / LOCK_NAME
+    try:
+        if lock.exists() and lock.read_text(encoding="utf-8").strip() == str(os.getpid()):
+            lock.unlink()
+    except OSError:
+        pass
+
+
 def _box(element) -> dict | None:
     """Kotak elemen di layar (None bila tidak terlihat)."""
     try:
@@ -555,6 +616,8 @@ class MessengerAdapter:
         self.pin_auto = pin_auto
         self.pin_attempts = 0
         self.pin_status = "tidak diminta"
+        # Peringatan bila profil tampaknya masih dipakai proses lain.
+        self.lock_warning = ""
         # Cuplikan kandidat pesan yang dibuang/terpakai — untuk diagnosa.
         self.last_debug: dict = {}
         self.last_diagnostics: dict = {}
@@ -571,6 +634,7 @@ class MessengerAdapter:
         from playwright.sync_api import sync_playwright
 
         self.profile_dir.mkdir(parents=True, exist_ok=True)
+        self.lock_warning = acquire_profile_lock(self.profile_dir)
         try:
             return sync_playwright().start()
         except Exception as exc:  # noqa: BLE001
@@ -591,11 +655,20 @@ class MessengerAdapter:
                 "playwright install chromium"
             )
         if "target page, context or browser has been closed" in lowered:
-            return "Jendela browser tertutup di tengah proses."
-        if "profile" in lowered and "in use" in lowered:
+            return (
+                "Jendela Chromium tertutup sebelum selesai (sering karena jendela yang "
+                "sama ditutup, atau profil sedang dipakai proses Chromium lain). "
+                "Tutup semua jendela Chromium milik aplikasi ini lalu ulangi."
+            )
+        if "profile" in lowered and ("in use" in lowered or "lock" in lowered):
             return (
                 "Profil browser sedang dipakai proses lain. Tutup jendela Chromium "
                 "lain milik aplikasi ini, lalu coba lagi."
+            )
+        if "singleton" in lowered or "processsingleton" in lowered:
+            return (
+                "Profil browser dipakai jendela Chromium lain (ProcessSingleton). "
+                "Tutup semua jendela Chromium milik aplikasi ini, lalu ulangi."
             )
         if "timeout" in lowered:
             return f"Halaman tidak selesai dimuat dalam batas waktu ({raw[:160]})"
@@ -614,6 +687,19 @@ class MessengerAdapter:
                 playwright.stop()
             except Exception:  # noqa: BLE001
                 pass
+
+    def _chromium_executable(self, playwright) -> tuple[bool, str]:
+        """Pastikan browser Chromium Playwright benar-benar ada sebelum dipakai."""
+        try:
+            path = playwright.chromium.executable_path
+        except Exception as exc:  # noqa: BLE001
+            return False, self._friendly_error(exc)
+        if path and Path(path).exists():
+            return True, ""
+        return False, (
+            "Chromium Playwright belum terpasang. Jalankan sekali di PowerShell: "
+            ".\\.venv\\Scripts\\python.exe -m playwright install chromium"
+        )
 
     def _context(self, playwright):
         return playwright.chromium.launch_persistent_context(
@@ -749,6 +835,12 @@ class MessengerAdapter:
         context = None
         try:
             playwright = self._launch()
+            ready, why = self._chromium_executable(playwright)
+            if not ready:
+                diagnostics = {"status": "kesalahan", "stage": "chromium", "error": why}
+                self.last_diagnostics = diagnostics
+                self._close(playwright, None)
+                return ThreadList(status="kesalahan", diagnostics=diagnostics)
             context = self._context(playwright)
             page = context.pages[0] if context.pages else context.new_page()
             try:
@@ -785,6 +877,8 @@ class MessengerAdapter:
                 selector, anchors = _first_match_all(page, THREAD_SELECTORS)
 
             diagnostics = self._inspect(page)
+            if self.lock_warning:
+                diagnostics["peringatan"] = self.lock_warning
             diagnostics["thread_selector"] = selector or ""
             diagnostics["attempts"] = attempts
             diagnostics["pin"] = self.pin_status
@@ -845,6 +939,7 @@ class MessengerAdapter:
             return ThreadList(status="kesalahan", diagnostics=diagnostics)
         finally:
             self._close(playwright, context)
+            release_profile_lock(self.profile_dir)
 
     def list_threads(self, limit: int = 8) -> tuple[list[Thread], str]:
         result = self.list_threads_detailed(limit=limit)
@@ -936,6 +1031,7 @@ class MessengerAdapter:
             return ThreadRead(status="kesalahan", note=self._friendly_error(exc))
         finally:
             self._close(playwright, context)
+            release_profile_lock(self.profile_dir)
 
     # ------------------------------------------------------------------ kirim
     @staticmethod
@@ -1003,6 +1099,7 @@ class MessengerAdapter:
             return False, self._friendly_error(exc)
         finally:
             self._close(playwright, context)
+            release_profile_lock(self.profile_dir)
 
 
 def diagnose(profile_dir: str | Path, *, headless: bool = False) -> dict:
@@ -1014,6 +1111,8 @@ def diagnose(profile_dir: str | Path, *, headless: bool = False) -> dict:
     result = adapter.list_threads_detailed(limit=10)
     payload = dict(result.diagnostics)
     payload["status"] = result.status
+    if getattr(adapter, "lock_warning", ""):
+        payload.setdefault("peringatan", adapter.lock_warning)
     payload["threads"] = [
         {"key": item.key, "name": item.name, "unread": item.unread} for item in result.threads
     ]
@@ -1061,7 +1160,13 @@ def main(argv: list[str] | None = None) -> int:
     profile = args.profile or str(settings.browser_profile_dir)
 
     started = time.time()
+    lock_note = acquire_profile_lock(Path(profile))
+    if lock_note:
+        print(f"⚠️  {lock_note}\n")
     payload = diagnose(profile, headless=not args.show)
+    release_profile_lock(Path(profile))
+    if lock_note:
+        payload["peringatan"] = lock_note
     payload["profile"] = str(profile)
     payload["detik"] = round(time.time() - started, 1)
     report = _save_report(payload, settings)

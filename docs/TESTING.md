@@ -33,7 +33,7 @@ Lint (opsional, butuh `ruff`):
 pytest 8.x. Windows belum dijalankan dari lingkungan ini.
 
 ```
-553 passed in ~4s
+560 passed in ~4s
 ruff check . --select E,F,W,I  ->  All checks passed!
 ```
 
@@ -59,7 +59,7 @@ ruff check . --select E,F,W,I  ->  All checks passed!
 | `tests/test_notify.py` | 19 | baris pertama pesan WA, isi Chat/Isi/Alasan/Link, pemotongan 900 karakter, normalisasi nomor `08…`/`+62…` → `62…`, URL `web.whatsapp.com/send`, status QR/kotak tulis tidak ditemukan, mode latar belakang, pesan error Playwright diterjemahkan |
 | `tests/test_reply_style.py` | 22 | prompt variasi, gaya diterima, **angka berubah/lokasi hilang/nomor WA hilang/klaim terlarang → ditolak**, Ollama mati tetap memakai teks template |
 | `tests/test_chat_pin.py` | 30 | PIN hanya diisi di layar permintaan PIN, **ditolak di checkpoint/verifikasi/2FA/password**, PIN tidak bocor ke diagnostik/log/pesan WA, batas 2 percobaan |
-| `tests/test_messenger_adapter.py` | 33 | adapter Messenger dengan halaman tiruan: selector berlapis, deteksi login/checkpoint, diagnostik saat 0 chat, arah pesan, gagal tanpa Chromium jadi status (bukan exception), **bentuk akun nyata: 1 tautan `/messages/t/` + 13 tautan `/t/` → 14 chat terbaca** (versi lama: 0), pembacaan berbasis blok teks `dir="auto"` + posisi kotak tulis: sidebar & panel detail dibuang, urutan pesan berdasarkan Y, arah dari kiri/kanan, kontainer raksasa diabaikan, ditambah **wadah percakapan** dari kotak tulis (membuang bilah atas "Find friends", sidebar, panel detail) |
+| `tests/test_messenger_adapter.py` | 40 | adapter Messenger dengan halaman tiruan: selector berlapis, deteksi login/checkpoint, diagnostik saat 0 chat, arah pesan, gagal tanpa Chromium jadi status (bukan exception), **bentuk akun nyata: 1 tautan `/messages/t/` + 13 tautan `/t/` → 14 chat terbaca** (versi lama: 0), pembacaan berbasis blok teks `dir="auto"` + posisi kotak tulis: sidebar & panel detail dibuang, urutan pesan berdasarkan Y, arah dari kiri/kanan, kontainer raksasa diabaikan, ditambah **wadah percakapan** dari kotak tulis (membuang bilah atas "Find friends", sidebar, panel detail) |
 | `tests/test_messenger_worker.py` | 19 | uji kering tidak mengirim, balasan nyata memakai harga, **"nego" memicu notifikasi WA**, dedup eskalasi, cooldown per chat, batas balasan, `perlu_login` → job diblokir, gagal kirim dihitung, variasi AI hanya saat Ollama aktif, **0 chat = status diblokir (bukan selesai)**, diagnostik tersimpan di job, checkpoint → diblokir, satu chat error tidak menghentikan job |
 
 ### Pengujian non-unit yang juga dijalankan
