@@ -619,3 +619,79 @@ class TestCloseProfileBrowsers:
         # perintah penyaring harus memuat folder profil, bukan nama proses saja
         assert str(tmp_path) in seen["cmd"]
         assert "chrome.exe" in seen["cmd"]
+
+
+class TestInspectBrowsers:
+    """Chromium Playwright juga bernama chrome.exe -> pembeda harus dari profil."""
+
+    def test_profile_hint(self):
+        from fbworkspace.browser.messenger import _profile_hint
+
+        assert "aplikasi" in _profile_hint(
+            '"C:\\chrome.exe" --user-data-dir=C:\\Users\\ASUS\\Downloads\\fbworkspace\\data\\browser_profile'
+        )
+        assert "otomasi" in _profile_hint("chrome.exe --enable-automation --remote-debugging-pipe")
+        assert _profile_hint('"C:\\Program Files\\Google\\Chrome\\chrome.exe"') == "chrome pribadi"
+
+    def test_ours_flag_uses_profile_path(self, tmp_path, monkeypatch):
+        from fbworkspace.browser import messenger as mod
+
+        payload = [
+            {"ProcessId": 111, "Name": "chrome.exe", "CreationDate": "20261106", "CommandLine": '"chrome.exe"'},
+            {
+                "ProcessId": 222,
+                "Name": "chrome.exe",
+                "CreationDate": "20261108",
+                "CommandLine": f'"chrome.exe" --user-data-dir={tmp_path}',
+            },
+        ]
+
+        class FakeRun:
+            stdout = __import__("json").dumps(payload)
+
+        monkeypatch.setattr(mod.os, "name", "nt")
+        monkeypatch.setattr(mod, "_powershell", lambda: "powershell")
+        monkeypatch.setattr(mod.subprocess, "run", lambda *a, **k: FakeRun())
+        rows = mod.inspect_browsers(tmp_path)
+        assert [r["ours"] for r in rows] == [True, False]  # milik aplikasi di atas
+        assert rows[0]["pid"] == 222
+
+    def test_no_powershell_returns_empty(self, tmp_path, monkeypatch):
+        from fbworkspace.browser import messenger as mod
+
+        monkeypatch.setattr(mod.os, "name", "nt")
+        monkeypatch.setattr(mod, "_powershell", lambda: "")
+        assert mod.inspect_browsers(tmp_path) == []
+
+
+class TestDiagnoseIncludesConversation:
+    def test_diagnose_reports_first_conversation(self, monkeypatch):
+        from fbworkspace.browser import messenger as mod
+
+        class FakeAdapter:
+            def __init__(self, *a, **k):
+                self.last_debug = {"used": 1, "dropped": []}
+                self.last_diagnostics = {}
+                self.lock_warning = ""
+
+            def is_available(self):
+                return True, ""
+
+            def list_threads_detailed(self, limit=10):
+                from fbworkspace.browser.messenger import Thread, ThreadList
+
+                return ThreadList(
+                    threads=[Thread("1", "Pak Bagus", "https://x/messages/t/1/")],
+                    status="ok",
+                    diagnostics={"url": "x"},
+                )
+
+            def read_thread(self, url, known_out=None):
+                from fbworkspace.browser.messenger import ChatMessage, ThreadRead
+
+                return ThreadRead([ChatMessage("m", "in", "Iphone 11 ready?")], "ok", "1 pesan")
+
+        monkeypatch.setattr(mod, "MessengerAdapter", FakeAdapter)
+        payload = mod.diagnose("/tmp/x")
+        assert payload["status"] == "ok"
+        assert payload["percakapan_pertama"]["pesan"][0]["teks"] == "Iphone 11 ready?"

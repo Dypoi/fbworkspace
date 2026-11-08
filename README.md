@@ -292,6 +292,10 @@ tombol **Periksa inbox Messenger**. Bisa juga dari PowerShell:
 .\.venv\Scripts\python.exe -m fbworkspace.browser.messenger --show
 ```
 
+Untuk memeriksa apa yang **benar-benar terbaca** pada percakapan pertama (pesan,
+arah, dan baris yang dilewati), jalankan dengan `--show` — hasilnya juga disimpan di
+`data\diagnostics\`.
+
 Untuk **notifikasi WhatsApp**, tesnya tidak lewat dashboard (dashboard bisa membeku
 1 menit). Jalankan:
 

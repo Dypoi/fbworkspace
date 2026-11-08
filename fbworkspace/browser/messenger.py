@@ -420,6 +420,67 @@ def list_profile_browsers(profile_dir: Path) -> list[dict]:
     return found
 
 
+def inspect_browsers(profile_dir: Path) -> list[dict]:
+    """Daftar proses chrome/chromium/msedge + penanda apakah milik aplikasi ini.
+
+    Penting: Chromium Playwright juga bernama ``chrome.exe``, sama seperti Chrome
+    pribadi pengguna. Karena itu pencocokan memakai baris perintah (folder profil),
+    bukan nama proses.
+    """
+    marker = str(profile_dir)
+    rows: list[dict] = []
+    if os.name != "nt":
+        return [
+            {"pid": p.get("ProcessId"), "ours": True, "cmd": p.get("CommandLine", "")}
+            for p in list_profile_browsers(profile_dir)
+        ]
+
+    powershell = _powershell()
+    if not powershell:
+        return rows
+    script = (
+        "Get-CimInstance Win32_Process -Filter \"Name='chrome.exe' OR Name='chromium.exe' "
+        "OR Name='msedge.exe'\" | Select-Object ProcessId, Name, CreationDate, CommandLine "
+        "| ConvertTo-Json -Compress"
+    )
+    try:
+        out = subprocess.run(
+            [powershell, "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output=True,
+            text=True,
+            timeout=40,
+            check=False,
+        ).stdout.strip()
+        data = json.loads(out) if out else []
+    except Exception:  # noqa: BLE001
+        return rows
+    for item in data if isinstance(data, list) else [data]:
+        cmd = str(item.get("CommandLine") or "")
+        rows.append(
+            {
+                "pid": item.get("ProcessId"),
+                "name": item.get("Name"),
+                "started": str(item.get("CreationDate") or "")[:19],
+                "ours": marker.lower() in cmd.lower(),
+                "profile_hint": _profile_hint(cmd),
+            }
+        )
+    rows.sort(key=lambda r: (not r["ours"], str(r.get("started") or "")))
+    return rows
+
+
+def _profile_hint(cmd: str) -> str:
+    """Ambil penanda profil dari baris perintah (tanpa menampilkan path lengkap)."""
+    lowered = cmd.lower()
+    if "fbworkspace" in lowered:
+        return "profil aplikasi"
+    if "--remote-debugging-pipe" in lowered or "--enable-automation" in lowered:
+        return "otomasi (Playwright/lainnya)"
+    if "user-data-dir" in lowered:
+        return "user-data-dir khusus"
+    return "chrome pribadi"
+
+
 def close_profile_browsers(profile_dir: Path, *, dry_run: bool = False) -> tuple[list[int], str]:
     """Tutup paksa Chromium yang memakai profil aplikasi ini (bukan Chrome pribadi).
 
@@ -1183,7 +1244,12 @@ class MessengerAdapter:
 
 
 def diagnose(profile_dir: str | Path, *, headless: bool = False) -> dict:
-    """Buka inbox, laporkan apa yang terlihat. Tidak mengirim apa pun."""
+    """Buka inbox & percakapan PERTAMA, laporkan apa yang terlihat.
+
+    Tidak mengirim apa pun. Selain keadaan halaman, fungsi ini melaporkan pesan
+    yang benar-benar terbaca pada percakapan pertama, sehingga penyetelan selector
+    bisa diverifikasi tanpa menjalankan worker.
+    """
     adapter = MessengerAdapter(profile_dir=profile_dir, headless=headless)
     ok, why = adapter.is_available()
     if not ok:
@@ -1196,6 +1262,16 @@ def diagnose(profile_dir: str | Path, *, headless: bool = False) -> dict:
     payload["threads"] = [
         {"key": item.key, "name": item.name, "unread": item.unread} for item in result.threads
     ]
+    if result.threads:
+        first = result.threads[0]
+        read = adapter.read_thread(first.url)
+        payload["percakapan_pertama"] = {
+            "nama": first.name,
+            "status": read.status,
+            "catatan": read.note,
+            "pesan": [{"arah": m.direction, "teks": m.text[:120]} for m in read.messages[:8]],
+            "debug": adapter.last_debug,
+        }
     return payload
 
 
@@ -1229,6 +1305,11 @@ def main(argv: list[str] | None = None) -> int:
         "--show", action="store_true", help="Tampilkan jendela browser (bisa Anda lihat)"
     )
     parser.add_argument(
+        "--list-browsers",
+        action="store_true",
+        help="Tampilkan proses chrome/msedge + mana yang milik aplikasi ini",
+    )
+    parser.add_argument(
         "--close-browsers",
         action="store_true",
         help="Tutup paksa jendela Chromium milik aplikasi ini (Chrome pribadi tidak disentuh)",
@@ -1246,6 +1327,27 @@ def main(argv: list[str] | None = None) -> int:
 
     settings = get_settings()
     profile = args.profile or str(settings.browser_profile_dir)
+
+    if args.list_browsers:
+        rows = inspect_browsers(Path(profile))
+        if not rows:
+            print("Tidak ada proses chrome/chromium/msedge yang terdeteksi.")
+            return 0
+        print(f"{'PID':>7}  {'milik aplikasi':<15} {'mulai':<19} keterangan")
+        print("-" * 76)
+        for row in rows:
+            print(
+                f"{str(row.get('pid')):>7}  "
+                f"{('YA' if row.get('ours') else 'bukan'):<15} "
+                f"{str(row.get('started'))[:19]:<19} {row.get('profile_hint', '')}"
+            )
+        ours = [r for r in rows if r.get("ours")]
+        print()
+        print(
+            f"{len(ours)} proses milik aplikasi ini. Chrome pribadi TIDAK akan disentuh "
+            "oleh --close-browsers."
+        )
+        return 0
 
     if args.close_browsers:
         pids, note = close_profile_browsers(Path(profile), dry_run=args.dry_run)
