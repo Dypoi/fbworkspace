@@ -442,3 +442,54 @@ class TestRealAccountShape:
         assert len(result.threads) == 3
 
 
+
+
+class TestContainerScoping:
+    """Regresi 8 Nov 17:33: 'Find friends' (bilah atas Facebook) terbaca sebagai pesan."""
+
+    def _payload(self, nodes, container, composer=None, found=True):
+        return {
+            "nodes": nodes,
+            "composer": composer if composer is not None else {"x": 420, "y": 700, "w": 600, "h": 40},
+            "container": container,
+            "found_container": found,
+            "vw": 1280,
+        }
+
+    def _node(self, text, x=380, y=400, w=250, h=36):
+        return {"text": text, "x": x, "y": y, "w": w, "h": h}
+
+    def test_node_outside_container_is_dropped(self):
+        from fbworkspace.browser.messenger import filter_text_nodes
+
+        payload = self._payload(
+            [
+                self._node("Find friends", x=500, y=20),          # bilah atas
+                self._node("Customise chat", x=500, y=400),       # panel detail
+                self._node("Iphone 11 ready?", x=380, y=400),
+            ],
+            container={"x": 360, "y": 120, "w": 600, "h": 560},
+        )
+        messages, dropped, meta = filter_text_nodes(payload)
+        assert [m["text"] for m in messages] == ["Iphone 11 ready?"]
+        assert meta["container"] is True
+        assert any("wadah percakapan" in d for d in dropped)
+
+    def test_without_container_column_rules_apply(self):
+        # Tanpa wadah: aturan lama (kolom kotak tulis + di atas kotak tulis) dipakai.
+        from fbworkspace.browser.messenger import filter_text_nodes
+
+        payload = self._payload(
+            [
+                self._node("Find friends", x=500, y=20),          # di atas kolom percakapan
+                self._node("Iphone 11 ready?", x=380, y=400),
+            ],
+            container=None,
+            found=False,
+        )
+        messages, _dropped, meta = filter_text_nodes(payload)
+        assert "Iphone 11 ready?" in [m["text"] for m in messages]
+        assert meta["container"] is False
+        # "Find friends" tidak bisa dibedakan tanpa wadah -> ini keterbatasan yang
+        # dicatat: wadah percakapan yang membuat penyaringan tepat.
+        assert meta["found_container"] is False

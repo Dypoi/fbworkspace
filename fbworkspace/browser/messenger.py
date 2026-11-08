@@ -150,24 +150,52 @@ UI_NOISE_LABELS = (
 # elemen dir="auto", sedangkan role=row dipakai untuk sidebar/panel detail.
 EXTRACT_JS = """
 () => {
-  const out = [];
-  const nodes = document.querySelectorAll('div[dir="auto"], span[dir="auto"], div[role="none"] > span[dir="auto"]');
-  for (const n of nodes) {
-    const t = (n.innerText || n.textContent || '').trim();
-    if (!t) continue;
-    const r = n.getBoundingClientRect();
-    if (!r || r.width === 0 || r.height === 0) continue;
-    out.push({text: t, x: r.x, y: r.y, w: r.width, h: r.height});
-  }
+  const SEL = 'div[dir="auto"], span[dir="auto"]';
   const composer = document.querySelector(
     'div[contenteditable="true"][role="textbox"], div[role="textbox"][contenteditable="true"], div[contenteditable="true"]'
   );
-  let cbox = null;
+  const box = (el) => {
+    const r = el.getBoundingClientRect();
+    return {x: r.x, y: r.y, w: r.width, h: r.height};
+  };
+  const visible = (el) => {
+    const r = el.getBoundingClientRect();
+    return r.width > 0 && r.height > 0;
+  };
+  const textOf = (el) => (el.innerText || el.textContent || '').trim();
+  const leaf = (el) => !el.querySelector(SEL);
+
+  // Cari wadah percakapan: leluhur terdekat dari kotak tulis yang memuat
+  // beberapa blok teks lain. Ini membuang bilah atas ("Find friends"), sidebar,
+  // dan panel detail tanpa menebak label satu per satu.
+  let container = null;
   if (composer) {
-    const cr = composer.getBoundingClientRect();
-    cbox = {x: cr.x, y: cr.y, w: cr.width, h: cr.height};
+    let node = composer.parentElement;
+    for (let i = 0; i < 15 && node; i++) {
+      const inside = Array.from(node.querySelectorAll(SEL)).filter(
+        (el) => !composer.contains(el) && visible(el) && textOf(el) && leaf(el)
+      );
+      const r = node.getBoundingClientRect();
+      if (inside.length >= 2 && r.height > 200) { container = node; break; }
+      node = node.parentElement;
+    }
   }
-  return {nodes: out, composer: cbox, url: location.href, title: document.title, vw: window.innerWidth};
+
+  const scope = container || document.body;
+  const nodes = Array.from(scope.querySelectorAll(SEL))
+    .filter((el) => !(composer && (composer.contains(el) || el.contains(composer))))
+    .filter((el) => visible(el) && textOf(el) && leaf(el))
+    .map((el) => Object.assign({text: textOf(el)}, box(el)));
+
+  return {
+    nodes: nodes,
+    composer: composer ? box(composer) : null,
+    container: container ? box(container) : null,
+    found_container: !!container,
+    url: location.href,
+    title: document.title,
+    vw: window.innerWidth,
+  };
 }
 """
 
@@ -359,9 +387,14 @@ def filter_text_nodes(
     """
     nodes = payload.get("nodes") or []
     composer = payload.get("composer") or None
+    container = payload.get("container") or None
     viewport = float(payload.get("vw") or 1280)
     dropped: list[str] = []
-    meta: dict = {"raw_nodes": len(nodes), "composer": bool(composer)}
+    meta: dict = {
+        "raw_nodes": len(nodes),
+        "composer": bool(composer),
+        "container": bool(container),
+    }
 
     if composer:
         area = {
@@ -382,6 +415,13 @@ def filter_text_nodes(
         text_raw = " ".join(str(node.get("text") or "").split())
         if not text_raw:
             continue
+        if container:
+            top = container["y"] - 4
+            bottom_of_container = container["y"] + container.get("h", 0) + 4
+            node_center_y = node.get("y", 0) + node.get("h", 0) / 2
+            if not (top <= node_center_y <= bottom_of_container):
+                dropped.append(f"(di luar wadah percakapan) {text_raw[:40]}")
+                continue
         center = node["x"] + node.get("w", 0) / 2
         if not (area["left"] <= center <= area["right"]):
             dropped.append(f"(di luar kolom) {text_raw[:40]}")
@@ -409,6 +449,7 @@ def filter_text_nodes(
 
     messages.sort(key=lambda m: m["y"])
     meta["used"] = len(messages)
+    meta["found_container"] = bool(payload.get("found_container"))
     return messages, dropped, meta
 
 
