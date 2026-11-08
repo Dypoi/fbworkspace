@@ -477,7 +477,7 @@ def _handle_thread(
 
     target = _pick_target(read, pending)
     latest = pending[-1] if target is None else target
-    plan = compose_reply(latest["text"], entries)
+    plan = compose_reply(latest["text"], entries, context=_context_before(read, latest["text"]))
     if target is None and not plan.should_send and not plan.escalate:
         # Semua pesan hanya sapaan/ucapan terima kasih -> diam tanpa eskalasi.
         # (Jangan memilih "pesan terakhir" begitu saja: urutan "berapa ya" lalu
@@ -584,6 +584,21 @@ def _heal_unanswered(db, job_id, thread, read, counters, sender, dry_run, log) -
             f"[{thread.name}] {healed} pesan dibuka kembali untuk dijawab "
             "(ditandai belum dibaca di Facebook, tetapi tercatat sudah dijawab)",
         )
+
+
+def _context_before(read, text: str, limit: int = 6) -> list[str]:
+    """Pesan-pesan sebelum pesan target, untuk memahami rujukan ("Berapa ya?")."""
+    messages = list(getattr(read, "messages", []) or [])
+    wanted = " ".join(str(text or "").lower().split())
+    index = None
+    for position, msg in enumerate(messages):
+        if " ".join(str(msg.text or "").lower().split()) == wanted:
+            index = position
+            break
+    if index is None:
+        index = len(messages)
+    before = messages[:index]
+    return [msg.text for msg in before if getattr(msg, "direction", "") == "in"][-limit:]
 
 
 def _pick_target(read, pending: list[dict]):

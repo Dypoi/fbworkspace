@@ -62,7 +62,10 @@ _INTENT_PATTERNS: dict[str, re.Pattern[str]] = {
     ),
     "ready": re.compile(r"\b(ready|redy|stok|stock|masih\s+ada|masih)\b", re.I),
     "lokasi": re.compile(
-        r"\b(cod|lokasi|alamat|dimana|di\s*mana|ketemuan|tempat|tmpt|wilayah|daerah)\b", re.I
+        r"\b(cod|lokasi|alamat|dimana|di\s*mana|ketemuan|tempat|tmpt|wilayah|daerah|"
+        # Singkatan yang benar-benar dipakai pembeli (data nyata 8 Nov: "lok mna")
+        r"lok|lm|alamat\s*nya|lokasi\s*nya|kota|kabupaten|wil)\b",
+        re.I,
     ),
     "wa": re.compile(
         r"\b(wa|whatsapp|nomor|nomer|no\s*hp|tlp|telp|telepon|kontak|hubungi)\b", re.I
@@ -193,8 +196,19 @@ def _storage_question(options: list[int]) -> str:
     return "Storage-nya " + ", ".join(labels[:-1]) + f", atau {labels[-1]} kak?"
 
 
-def compose_reply(message: str, entries: list[PriceEntry]) -> ReplyPlan:
-    """Ubah satu pesan masuk menjadi rencana balasan (tanpa mengirim)."""
+def compose_reply(
+    message: str,
+    entries: list[PriceEntry],
+    *,
+    context: list[str] | None = None,
+) -> ReplyPlan:
+    """Ubah satu pesan masuk menjadi rencana balasan (tanpa mengirim).
+
+    ``context`` berisi pesan-pesan sebelumnya dalam percakapan yang sama. Dipakai
+    **hanya** untuk memahami rujukan seperti "Berapa ya?" setelah
+    "Iphone 11 ready?" — fakta harga tetap diambil dari daftar harga, bukan dari
+    tebakan.
+    """
     text = _clean(message)
     if not text:
         return ReplyPlan(reason="pesan kosong")
@@ -202,6 +216,17 @@ def compose_reply(message: str, entries: list[PriceEntry]) -> ReplyPlan:
     intents = detect_intents(text)
     model = detect_model(text)
     storage = detect_storage(text)
+    # "Berapa ya?" tanpa model: cari model dari beberapa pesan sebelumnya.
+    # Hanya dipakai bila pertanyaannya memang soal harga (bukan pertanyaan lain).
+    if model.model_key is None and "harga" in intents:
+        inherited, inherited_storage = _model_from_context(context, entries, storage)
+        if inherited.model_key:
+            # Jangan hilangkan info "ada model disebut tapi tak ada di daftar"
+            # (mis. "iphone 14 pro") hanya karena konteks tidak menyebut model.
+            model = inherited
+            intents = tuple(sorted(set(intents) | {"harga"}))
+            if storage is None and inherited_storage is not None:
+                storage = inherited_storage
     wants_ready = "ready" in intents or bool(
         model.model_key and len(text) <= 30 and _BARE_ADA_RE.search(text)
     )
@@ -349,6 +374,28 @@ def compose_reply(message: str, entries: list[PriceEntry]) -> ReplyPlan:
         model_key=model.model_key,
         storage=storage,
     )
+
+
+def _model_from_context(
+    context: list[str] | None,
+    entries: list[PriceEntry],
+    storage: int | None,
+):
+    """Cari model (dan storage) yang baru disebut di percakapan.
+
+    Contoh nyata: pembeli menulis "Iphone 11 ready?", kita jawab, lalu ia bertanya
+    "Berapa ya" tanpa menyebut model lagi. Model diambil dari pesan sebelumnya —
+    Storage hanya diwarisi bila pesan itu juga menyebut model yang sama.
+    """
+    if not context:
+        return MatchResult(model_key=None, mention=""), storage
+    for earlier in reversed(list(context)[-6:]):
+        found = detect_model(str(earlier))
+        if not found.model_key:
+            continue
+        inherited = detect_storage(str(earlier))
+        return found, (storage if storage is not None else inherited)
+    return MatchResult(model_key=None, mention=""), storage
 
 
 def summarize_entries(entries: list[PriceEntry]) -> str:

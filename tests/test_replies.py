@@ -225,3 +225,39 @@ class TestGreetings:
         plan = compose_reply(text, default_entries())
         assert plan.action == "diam"
         assert plan.escalate is True
+
+
+class TestContextFollowUp:
+    """Pertanyaan lanjutan tanpa model: ambil konteks percakapan, fakta dari daftar."""
+
+    def test_berapa_ya_uses_previous_model(self):
+        plan = compose_reply("Berapa ya", default_entries(), context=["Iphone 11 ready?"])
+        assert plan.action == ACTION_SEND
+        assert "64GB" in plan.body and "256GB" in plan.body
+
+    def test_berapa_ya_inherits_storage_from_context(self):
+        plan = compose_reply("Berapa ya", default_entries(), context=["iphone 11 128gb ready?"])
+        assert plan.action == ACTION_SEND
+        assert "2.600.000" in plan.body
+
+    def test_berapa_ya_without_context_escalates(self):
+        plan = compose_reply("Berapa ya", default_entries(), context=[])
+        assert plan.action == ACTION_SILENT
+        assert plan.escalate is True
+
+    def test_context_does_not_override_other_model_in_message(self):
+        plan = compose_reply("iphone 8 berapa", default_entries(), context=["iphone 11 ready?"])
+        assert plan.action == ACTION_SEND
+        assert "1.100.000" in plan.body or "64GB" in plan.body
+
+    def test_unknown_model_context_still_escalates(self):
+        plan = compose_reply("Berapa ya", default_entries(), context=["iphone 14 pro ready?"])
+        assert plan.escalate is True
+
+
+class TestLocationShorthand:
+    @pytest.mark.parametrize("text", ["lok mna", "lm dmn", "cod dmn", "alamatnya dmn"])
+    def test_location_shorthand(self, text):
+        plan = compose_reply(text, default_entries())
+        assert plan.action == ACTION_SEND
+        assert plan.body == LOCATION_TEXT

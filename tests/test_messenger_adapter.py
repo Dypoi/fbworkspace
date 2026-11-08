@@ -924,3 +924,53 @@ class TestUnreadAndTargetSelection:
         assert looks_like_request("cod dmn?") is True
         assert looks_like_request("iyaa") is False
         assert looks_like_request("ok makasih") is False
+
+
+class TestBugBerapaYa:
+    """Regresi dari laporan nyata 8 Nov 19:17.
+
+    "Berapa ya" terbaca browser tetapi dibuang filter karena posisinya
+    ("(di luar kolom)", "(di luar wadah percakapan)").
+    """
+
+    PAYLOAD = {
+        "composer": {"x": 420, "y": 690, "w": 620, "h": 40},
+        "container": {"x": 360, "y": 110, "w": 640, "h": 570},
+        "found_container": True,
+        "vw": 1280,
+        "nodes": [
+            {"text": "Pak Bagus Sunaryo", "x": 420, "y": 150, "w": 200, "h": 20},
+            {"text": "coba", "x": 880, "y": 300, "w": 60, "h": 30},
+            {"text": "Iphone 11 ready?", "x": 380, "y": 360, "w": 140, "h": 30},
+            {"text": "Ready kak", "x": 860, "y": 420, "w": 100, "h": 30},
+            # node tanpa ukuran: inilah yang dulu hilang
+            {"text": "Berapa ya", "x": 0, "y": 0, "w": 0, "h": 0, "hidden": True},
+        ],
+    }
+
+    def read(self):
+        from fbworkspace.browser.messenger import filter_text_nodes
+
+        return filter_text_nodes(
+            self.PAYLOAD, chat_name="Pak Bagus Sunaryo", known_out=["Ready kak"]
+        )
+
+    def test_berapaya_is_read(self):
+        messages, _, meta = self.read()
+        texts = [m["text"] for m in messages]
+        assert "Berapa ya" in texts
+        assert meta["tanpa_ukuran"] == 1
+
+    def test_berapaya_kept_at_the_end(self):
+        messages, _, _ = self.read()
+        assert messages[-1]["text"] == "Berapa ya"
+
+    def test_berapaya_direction_is_in(self):
+        messages, _, _ = self.read()
+        last = messages[-1]
+        assert last["direction"] == "in"
+        assert last["side"] == ""
+
+    def test_no_false_drops_left(self):
+        _, dropped, _ = self.read()
+        assert not any("Berapa ya" in d for d in dropped)

@@ -172,7 +172,7 @@ fbworkspace/
 │   └── check_extraction_dom.cjs # uji logika ekstraksi DOM (Node + jsdom, opsional)
 ├── data/demo_posts_DEMO.json   # data sintetis berlabel DEMO
 ├── docs/                       # instalasi, POC, batasan, Git, testing
-├── tests/                      # 636 tes otomatis
+├── tests/                      # 650 tes otomatis
 ├── requirements.txt
 ├── .env.example
 └── .gitignore
@@ -342,6 +342,11 @@ Log worker kini menampilkan **isi** yang benar-benar terbaca per chat
 periksa sendiri, bukan dipercaya begitu saja. Perintah `--show` juga membaca
 **lima** percakapan pertama, bukan hanya yang pertama.
 
+**Pertanyaan lanjutan memakai konteks.** "Berapa ya?" setelah "Iphone 11 ready?"
+dijawab dengan menanyakan storage (atau harga pasti bila storage sudah disebut) —
+model diambil dari pesan sebelumnya, sedangkan **harga tetap dari daftar harga Anda**.
+Bila konteks tidak menyebut model sama sekali, worker tidak mengarang: Anda dikirimi WA.
+
 **Pesan yang terlewat tidak lagi hilang.** Facebook menandai pesan yang belum
 dibaca (`aria-label` "Pesan belum dibaca"). Worker memakai penanda itu sebagai bukti
 utama: pesan tersebut dijawab walau catatan lama sempat salah menandainya
@@ -452,7 +457,7 @@ Penghapusan data tersedia di tab **Pengaturan → 💾 Data** (postingan, log, p
 .\.venv\Scripts\python.exe -m pytest
 ```
 
-Hasil terakhir di lingkungan pengembangan: **636 tes lulus** (termasuk smoke test
+Hasil terakhir di lingkungan pengembangan: **650 tes lulus** (termasuk smoke test
 dashboard Streamlit untuk 4 tab, segmentasi hasil, filter ulang, daftar harga,
 penyusun balasan, worker balas DM dengan adapter palsu, format notifikasi
 WhatsApp, dan variasi AI yang menolak perubahan fakta), `ruff check` bersih. Detail: **[docs/TESTING.md](docs/TESTING.md)**.

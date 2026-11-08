@@ -205,9 +205,14 @@ EXTRACT_JS = """
 
   let nodes = Array.from(scope.querySelectorAll(SEL))
     .filter((el) => !(composer && (composer.contains(el) || el.contains(composer))))
-    .filter((el) => visible(el) && textOf(el) && leaf(el))
+    .filter((el) => textOf(el) && leaf(el))
     .map((el) => Object.assign(
-      {text: textOf(el), kind: 'text', unread: unreadFlag(el)},
+      {
+        text: textOf(el),
+        kind: 'text',
+        unread: unreadFlag(el),
+        hidden: !visible(el),
+      },
       box(el)
     ));
 
@@ -741,27 +746,38 @@ def filter_text_nodes(
 
     title = " ".join((chat_name or "").lower().split())
     known = {" ".join((t or "").lower().split())[:60] for t in (known_out or []) if t}
+    # Node tanpa ukuran (0x0) atau "hidden": posisinya tidak bisa dipercaya, jadi
+    # jangan dibuang karena posisi. Ini sumber hilangnya "Berapa ya" (8 Nov 19:17).
+    unknown_box = [
+        node
+        for node in nodes
+        if not node.get("w") or not node.get("h") or node.get("hidden")
+    ]
+    if unknown_box:
+        meta["tanpa_ukuran"] = len(unknown_box)
     media_count = 0
     messages: list[dict] = []
     for node in nodes:
         text_raw = " ".join(str(node.get("text") or "").split())
         if not text_raw:
             continue
-        if container:
+        if container and node.get("w") and node.get("h"):
             top = container["y"] - 4
             bottom_of_container = container["y"] + container.get("h", 0) + 4
             node_center_y = node.get("y", 0) + node.get("h", 0) / 2
             if not (top <= node_center_y <= bottom_of_container):
                 dropped.append(f"(di luar wadah percakapan) {text_raw[:40]}")
                 continue
+        has_box = bool(node.get("w")) and bool(node.get("h"))
         center = node["x"] + node.get("w", 0) / 2
-        if not (area["left"] <= center <= area["right"]):
+        if has_box and not (area["left"] <= center <= area["right"]):
+            # Simpan baris ini supaya bisa dipakai bila ternyata pesan sungguhan.
             dropped.append(f"(di luar kolom) {text_raw[:40]}")
             continue
-        if node.get("y", 0) + node.get("h", 0) > area["bottom"] + 10:
+        if has_box and node.get("y", 0) + node.get("h", 0) > area["bottom"] + 10:
             dropped.append(f"(di bawah kotak tulis) {text_raw[:40]}")
             continue
-        if node.get("w", 0) > viewport * 0.75 or node.get("h", 0) > 400:
+        if has_box and (node.get("w", 0) > viewport * 0.75 or node.get("h", 0) > 400):
             dropped.append(f"(kontainer) {text_raw[:40]}")
             continue
         # Judul percakapan (nama pembeli) muncul di dalam wadah: bukan pesan.
@@ -798,16 +814,28 @@ def filter_text_nodes(
         # Penanda "belum dibaca" dari Facebook menang atas dugaan dari posisi.
         if node.get("unread"):
             direction = "in"
+        has_box = bool(node.get("w")) and bool(node.get("h"))
         messages.append(
             {
                 "text": text,
                 "direction": direction,
-                "y": node.get("y", 0),
+                "y": node.get("y", 0) if has_box else None,
                 "unread": bool(node.get("unread")),
-                "side": _side_of(node, area),
+                "side": _side_of(node, area) if has_box else "",
                 "known": text[:60] in known,
+                "no_box": not has_box,
             }
         )
+
+    # Node tanpa ukuran tidak punya posisi yang bisa dipercaya. Pesan seperti itu
+    # biasanya pesan terbaru (belum sempat dilayout saat dibaca), jadi diletakkan
+    # di akhir sesuai urutan DOM — bukan di awal karena y=0.
+    known_y = [msg["y"] for msg in messages if msg["y"] is not None]
+    tail = (max(known_y) + 1) if known_y else 0
+    for msg in messages:
+        if msg["y"] is None:
+            tail += 1
+            msg["y"] = tail
 
     # Sisi kita = sisi yang memuat teks balasan yang kita catat pernah terkirim.
     # Ini jauh lebih andal daripada menebak dari lebar gelembung.
@@ -820,10 +848,11 @@ def filter_text_nodes(
         our_side = "kanan" if counts["kanan"] > counts["kiri"] else "kiri"
     meta["our_side"] = our_side
     for msg in messages:
-        if our_side:
+        if our_side and not msg.get("no_box"):
             msg["direction"] = "out" if msg["side"] == our_side else "in"
         if msg.get("unread"):
             msg["direction"] = "in"
+        msg.pop("no_box", None)
 
     messages.sort(key=lambda m: m["y"])
     meta["used"] = len(messages)

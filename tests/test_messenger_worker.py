@@ -681,8 +681,8 @@ class _UnreadMsg:
         return getattr(self._msg, item)
 
 
-def test_unread_question_is_answered_even_if_older_pending_answered(tmp_path):
-    """Skenario nyata: 'berapa ya' masuk, tercatat, tetapi tidak pernah dijawab."""
+def test_unread_question_uses_chat_context(tmp_path):
+    """Skenario nyata 8 Nov 19:17: 'Berapa ya?' setelah 'Iphone 11 ready?'."""
     db = Database(tmp_path / "chat.db")
     adapter = FakeMessenger(
         [Thread(THREAD_KEY, "Pak Bagus Sunaryo", THREAD_URL)],
@@ -690,7 +690,7 @@ def test_unread_question_is_answered_even_if_older_pending_answered(tmp_path):
             THREAD_URL: [
                 _UnreadMsg("m1", "in", "Iphone 11 ready?"),
                 _incoming("Ready kak", key="o1"),
-                _UnreadMsg("m2", "in", "berapa ya", unread=True),
+                _UnreadMsg("m2", "in", "Berapa ya", unread=True),
             ]
         },
     )
@@ -699,9 +699,25 @@ def test_unread_question_is_answered_even_if_older_pending_answered(tmp_path):
     run(job_id, adapter=adapter, sender=sender, database=db,
         settings=_settings(tmp_path), sleep=lambda s: None)
 
-    # harga tanpa model: tidak dikarang -> WA ke pemilik
+    # model diambil dari konteks: tanya storage, bukan mengarang harga
+    assert adapter.sent == [(THREAD_URL, "Storage-nya 64GB, 128GB, atau 256GB kak?")]
+    assert sender.sent == []
+
+
+def test_unread_question_without_context_escalates(tmp_path):
+    """Harga tanpa model dan tanpa konteks: tidak dikarang -> WA ke pemilik."""
+    db = Database(tmp_path / "chat.db")
+    adapter = FakeMessenger(
+        [Thread(THREAD_KEY, "Bagas", THREAD_URL)],
+        {THREAD_URL: [_UnreadMsg("m1", "in", "Berapa ya", unread=True)]},
+    )
+    job_id = _job(db, dry_run=False)
+    sender = MemorySender()
+    run(job_id, adapter=adapter, sender=sender, database=db,
+        settings=_settings(tmp_path), sleep=lambda s: None)
+
     assert adapter.sent == []
-    assert sender.sent and "berapa ya" in sender.sent[0]
+    assert sender.sent and "Berapa ya" in sender.sent[0]
 
 
 def test_unread_question_with_model_is_answered(tmp_path):
