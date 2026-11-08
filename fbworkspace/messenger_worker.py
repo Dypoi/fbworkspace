@@ -906,15 +906,35 @@ def _maybe_flag_lost_question(db, job_id, thread, counters, sender, dry_run, log
 
 
 def _escalate(db, job_id, thread, escalation: Escalation, counters, sender, dry_run, log) -> None:
-    if thread is not None and db.escalation_exists(thread.url, escalation.message):
-        return
-    esc_id = db.add_escalation(
-        chat_name=escalation.chat_name,
-        message=escalation.message,
-        reason=escalation.reason,
-        chat_url=escalation.url,
-        channel="uji-kering" if dry_run else "whatsapp-web",
-    )
+    """Kirim notifikasi WA, dengan antrean untuk yang gagal.
+
+    Notifikasi yang **gagal** tidak boleh dianggap "sudah pernah dikirim": dulu
+    kegagalan pertama membuat pertanyaan pembeli tidak pernah dilaporkan lagi
+    (kejadian nyata 8 Nov 21:06: "Ada apa aja emang?" di luar template, WA tidak
+    pernah masuk).
+    """
+    previous = None
+    if thread is not None:
+        previous = db.find_escalation(thread.url, escalation.message)
+        if previous is not None and previous.get("status") != "gagal":
+            return
+
+    if previous is not None:
+        # Sudah pernah gagal: pakai baris yang sama, kirim ulang.
+        esc_id = int(previous["id"])
+        db.reset_escalation(
+            esc_id, channel="uji-kering" if dry_run else "whatsapp-web"
+        )
+        attempts = int(previous.get("attempts") or 0) + 1
+    else:
+        esc_id = db.add_escalation(
+            chat_name=escalation.chat_name,
+            message=escalation.message,
+            reason=escalation.reason,
+            chat_url=escalation.url,
+            channel="uji-kering" if dry_run else "whatsapp-web",
+        )
+        attempts = 1
     counters["escalations"] += 1
 
     if dry_run:
@@ -938,7 +958,12 @@ def _escalate(db, job_id, thread, escalation: Escalation, counters, sender, dry_
     else:
         db.mark_escalation(esc_id, "gagal", error=note)
         counters["notify_failed"] += 1
-        log("warning", f"Notifikasi WhatsApp gagal: {note}")
+        log(
+            "warning",
+            f"Notifikasi WhatsApp gagal (percobaan ke-{attempts}): {note} "
+            "· dicoba lagi pada putaran berikutnya · chat tetap muncul di panel "
+            "\"Perlu Anda\" dashboard",
+        )
 
 
 def _seconds_since(iso: str) -> float:

@@ -1192,3 +1192,65 @@ def test_two_questions_answered_across_cycles(tmp_path):
         "Ready kak",
     ]
     assert db.unanswered_incoming(THREAD_KEY) == []
+
+
+class _FailingSender:
+    """Pengirim WA yang selalu gagal (meniru headless ditolak di mesin pengguna)."""
+
+    def __init__(self):
+        self.calls = 0
+
+    def send_reliable(self, text):
+        self.calls += 1
+        return False, "WhatsApp Web menolak versi Chrome bawaan Playwright"
+
+    def send(self, text):  # pragma: no cover - pengaman bila dipanggil
+        return False, "gagal"
+
+
+def test_escalation_failure_is_retried_on_next_cycle(tmp_path):
+    """Laporan 21:06: 'Ada apa aja emang?' di luar template, WA tidak pernah masuk."""
+    db = Database(tmp_path / "chat.db")
+    adapter = FakeMessenger(
+        [Thread(THREAD_KEY, "Pak Bagus", THREAD_URL)],
+        {THREAD_URL: [_UnreadMsg("m1", "in", "Ada apa aja emang?", unread=True)]},
+    )
+    sender = _FailingSender()
+
+    first = _job(db, dry_run=False)
+    run(first, adapter=adapter, sender=sender, database=db,
+        settings=_settings(tmp_path), sleep=lambda s: None)
+    assert adapter.sent == [], "di luar template: worker harus diam"
+    assert sender.calls == 1
+    rows = db.list_escalations()
+    assert len(rows) == 1
+    assert rows[0]["status"] == "gagal"
+
+    # putaran berikutnya: HARUS dicoba lagi (dulu ditelan dedup selamanya)
+    second = _job(db, dry_run=False)
+    run(second, adapter=adapter, sender=sender, database=db,
+        settings=_settings(tmp_path), sleep=lambda s: None)
+    assert sender.calls == 2
+    rows = db.list_escalations()
+    assert len(rows) == 1, "jangan membuat baris baru, kirim ulang yang sama"
+    assert rows[0]["status"] == "gagal"
+    assert rows[0]["attempts"] >= 2
+
+
+def test_successful_escalation_is_not_repeated(tmp_path):
+    db = Database(tmp_path / "chat.db")
+    adapter = FakeMessenger(
+        [Thread(THREAD_KEY, "Pak Bagus", THREAD_URL)],
+        {THREAD_URL: [_UnreadMsg("m1", "in", "Ada apa aja emang?", unread=True)]},
+    )
+    sender = MemorySender()
+
+    first = _job(db, dry_run=False)
+    run(first, adapter=adapter, sender=sender, database=db,
+        settings=_settings(tmp_path), sleep=lambda s: None)
+    assert len(sender.sent) == 1
+
+    second = _job(db, dry_run=False)
+    run(second, adapter=adapter, sender=sender, database=db,
+        settings=_settings(tmp_path), sleep=lambda s: None)
+    assert len(sender.sent) == 1, "notifikasi yang sudah terkirim tidak diulang"

@@ -1906,6 +1906,8 @@ def render_balas(settings: Settings, db: Database) -> None:
                 "pesan": (row["message"] or "")[:120],
                 "alasan": row["reason"],
                 "status": row["status"],
+                "percobaan": row.get("attempts", 0),
+                "catatan": (row.get("error") or "")[:80],
             }
             for row in rows
         ]
@@ -1914,8 +1916,25 @@ def render_balas(settings: Settings, db: Database) -> None:
     labels = {
         f"#{row['id']} · {row['chat_name'] or 'chat'} · {row['status']}": row["id"] for row in rows
     }
+    failed = [row for row in rows if row["status"] == "gagal"]
+    if failed:
+        st.warning(
+            f"{len(failed)} notifikasi WhatsApp gagal terkirim. Chat-nya tetap "
+            "tercatat di bawah, dan worker mencoba mengirim ulang pada putaran "
+            "berikutnya. Periksa pesan galatnya di kolom catatan."
+        )
+
     pick = st.selectbox("Pilih eskalasi", list(labels), key="fbw_escalation_pick")
-    if st.button("✅ Tandai sudah dicek", key="fbw_escalation_done"):
+    col_a, col_b, col_c = st.columns(3)
+    if col_a.button("✅ Tandai sudah dicek", key="fbw_escalation_done"):
         db.mark_escalation(labels[pick], "ditinjau")
         st.success("Ditandai sudah dicek.")
+        st.rerun()
+    if col_b.button("🔁 Coba kirim WA lagi", key="fbw_escalation_retry"):
+        db.reset_escalation(labels[pick])
+        st.success("Diantrekan. Worker akan mengirimnya pada putaran berikutnya.")
+        st.rerun()
+    if col_c.button("🗑️ Hapus", key="fbw_escalation_delete"):
+        db.delete_escalation(labels[pick])
+        st.success("Dihapus.")
         st.rerun()

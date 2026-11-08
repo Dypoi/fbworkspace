@@ -814,13 +814,31 @@ class Database:
             )
             return int(cursor.rowcount or 0)
 
-    def escalation_exists(self, chat_url: str, message: str) -> bool:
+    def escalation_exists(
+        self, chat_url: str, message: str, *, only_failed: bool = False
+    ) -> bool:
+        """Sudah pernah dieskalasi?
+
+        ``only_failed`` membatasi ke eskalasi yang **gagal terkirim**: notifikasi
+        yang tidak pernah sampai ke WhatsApp harus dicoba lagi, bukan dianggap
+        "sudah pernah" lalu didiamkan selamanya.
+        """
+        query = "SELECT 1 FROM escalations WHERE chat_url=? AND message=?"
+        params: list[Any] = [chat_url, message[:500]]
+        if only_failed:
+            query += " AND status='gagal'"
+        with self.conn() as conn:
+            row = conn.execute(query + " LIMIT 1", params).fetchone()
+        return row is not None
+
+    def find_escalation(self, chat_url: str, message: str) -> dict[str, Any] | None:
         with self.conn() as conn:
             row = conn.execute(
-                "SELECT 1 FROM escalations WHERE chat_url=? AND message=? LIMIT 1",
+                "SELECT * FROM escalations WHERE chat_url=? AND message=? "
+                "ORDER BY id DESC LIMIT 1",
                 (chat_url, message[:500]),
             ).fetchone()
-        return row is not None
+        return dict(row) if row else None
 
     def unanswered_incoming(self, thread_key: str) -> list[dict[str, Any]]:
         with self.conn() as conn:
@@ -878,6 +896,19 @@ class Database:
                 "sent_at=COALESCE(?, sent_at) WHERE id=?",
                 (status, error, channel, channel, sent_at, int(escalation_id)),
             )
+
+    def reset_escalation(self, escalation_id: int, *, channel: str = "") -> None:
+        """Siapkan ulang eskalasi yang gagal untuk dicoba kirim lagi."""
+        with self.conn() as conn:
+            conn.execute(
+                "UPDATE escalations SET status='antre', error='', "
+                "channel=CASE WHEN ? != '' THEN ? ELSE channel END WHERE id=?",
+                (channel, channel, int(escalation_id)),
+            )
+
+    def delete_escalation(self, esc_id: int) -> None:
+        with self.conn() as conn:
+            conn.execute("DELETE FROM escalations WHERE id=?", (esc_id,))
 
     def list_escalations(self, status: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
         query = "SELECT * FROM escalations"
