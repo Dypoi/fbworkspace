@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -125,9 +126,102 @@ def request_stop(db: Database, job_id: int) -> None:
     db.request_stop(job_id)
 
 
+def _pid_alive(pid: int) -> bool:
+    """True bila proses dengan PID itu masih berjalan."""
+    if not pid:
+        return False
+    try:
+        import os
+
+        os.kill(pid, 0)
+    except (OSError, PermissionError, ValueError):
+        return False
+    return True
+
+
+def _pid_command_line(pid: int) -> str:
+    """Baris perintah proses; kosong bila tidak bisa dibaca."""
+    if not pid:
+        return ""
+    cmdline_path = f"/proc/{pid}/cmdline"
+    try:
+        with open(cmdline_path, "rb") as handle:
+            return handle.read().decode("utf-8", "replace").replace("\x00", " ")
+    except OSError:
+        pass
+    if sys.platform == "win32":
+        powershell = shutil.which("powershell") or shutil.which("pwsh")
+        if not powershell:
+            return ""
+        try:
+            result = subprocess.run(  # noqa: S603 - argumen tetap, tanpa shell
+                [
+                    powershell,
+                    "-NoProfile",
+                    "-Command",
+                    f'(Get-CimInstance Win32_Process -Filter "ProcessId={int(pid)}")'
+                    ".CommandLine",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=15,
+                check=False,
+            )
+        except Exception:  # noqa: BLE001
+            return ""
+        return (result.stdout or "").strip()
+    return ""
+
+
+def _pid_is_our_worker(pid: int) -> bool:
+    """Benar hanya bila PID itu benar-benar worker fbworkspace.
+
+    PID bisa dipakai ulang proses lain setelah worker mati; karena itu kita
+    membaca baris perintahnya dulu. Bila tidak bisa dipastikan, jangan dibunuh.
+    """
+    if not _pid_alive(pid):
+        return False
+    cmdline = _pid_command_line(pid).lower()
+    if not cmdline:
+        return False
+    return "fbworkspace" in cmdline and (
+        "dispatcher" in cmdline or "messenger_worker" in cmdline or "feed_worker" in cmdline
+    )
+
+
 def force_stop(db: Database, job_id: int, proc: subprocess.Popen | None) -> str:
-    """Hentikan paksa. Dipakai hanya jika 'minta berhenti' tidak bekerja."""
+    """Hentikan paksa. Dipakai hanya jika 'minta berhenti' tidak bekerja.
+
+    ``proc`` hanya ada di sesi dashboard yang menjalankan worker. Setelah dashboard
+    di-restart, worker tetap hidup sebagai proses terpisah, jadi PID dari database
+    dipakai sebagai cadangan agar tombol ini benar-benar menghentikannya.
+    """
     db.request_stop(job_id)
+    if proc is None:
+        job = db.get_job(job_id) or {}
+        pid = int(job.get("pid") or 0)
+        if _pid_alive(pid) and _pid_is_our_worker(pid):
+            try:
+                import os
+
+                os.kill(pid, 15)  # SIGTERM; di Windows Playwright menutup browser rapi
+                db.update_job(
+                    job_id,
+                    status=JobStatus.STOPPED.value,
+                    message=f"Dihentikan paksa (PID {pid}).",
+                    finished_at=_now(),
+                )
+                db.log_event(job_id, "warning", f"Worker PID {pid} dihentikan paksa.")
+                return f"Worker PID {pid} dihentikan paksa."
+            except Exception as exc:  # noqa: BLE001
+                return f"Gagal menghentikan PID {pid}: {exc}"
+        if _pid_alive(pid) and not _pid_is_our_worker(pid):
+            # Jangan membunuh proses yang tidak bisa dipastikan milik kita.
+            db.log_event(
+                job_id,
+                "warning",
+                f"PID {pid} hidup tetapi bukan worker fbworkspace; tidak dibunuh.",
+            )
     if proc is not None and proc.poll() is None:
         try:
             proc.terminate()

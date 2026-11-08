@@ -453,6 +453,7 @@ def _render_job_content(
                 "WhatsApp Web masih login di laptop ini."
             )
         _render_job_events(db, job_id, active)
+        _render_stop_controls(db, job_id, active, key_suffix)
         return
 
     m = st.columns(5)
@@ -475,13 +476,7 @@ def _render_job_content(
             f"{empty_cards} kartu feed kosong/placeholder dilewati (belum termuat saat dibaca)."
         )
 
-    if active:
-        if st.button(
-            "⛔ Hentikan worker", type="primary", key=f"stop_{job_id}{key_suffix}"
-        ):
-            db.request_stop(job_id)
-            st.toast("Permintaan berhenti dikirim. Worker akan berhenti dengan rapi.")
-        st.caption("Proses akan berhenti di batas aman. Tidak ada pengulangan otomatis.")
+    _render_stop_controls(db, job_id, active, key_suffix)
 
     _render_job_events(db, job_id, active)
     with st.expander("Diagnostik (hanya bila ada masalah)"):
@@ -563,6 +558,43 @@ def _run_messenger_probe(settings: Settings) -> dict:
         {"name": item.name, "unread": item.unread} for item in result.threads
     ]
     return payload
+
+
+def _render_stop_controls(db: Database, job_id: int, active: bool, key_suffix: str = "") -> None:
+    """Tombol berhenti yang selalu terlihat, termasuk saat worker macet."""
+    job = db.get_job(job_id) or {}
+    stop_pending = bool(job.get("stop_requested"))
+
+    if stop_pending:
+        st.warning(
+            "Permintaan berhenti sudah dikirim. Worker menghentikan putaran yang sedang "
+            "berjalan (paling lama beberapa detik sampai satu menit)."
+        )
+        cols = st.columns(2)
+        if cols[0].button(
+            "🔁 Batalkan berhenti", key=f"cancel_stop_{job_id}{key_suffix}"
+        ):
+            db.clear_stop_request(job_id)
+            st.rerun()
+        if cols[1].button(
+            "⛔ Hentikan paksa",
+            key=f"force_stop_pending_{job_id}{key_suffix}",
+            help="Hentikan paksa bila worker tampak tidak merespons.",
+        ):
+            st.toast(jobs.force_stop(db, job_id, st.session_state.get("worker_proc")))
+            st.rerun()
+        return
+
+    if active:
+        if st.button(
+            "⛔ Hentikan worker", type="primary", key=f"stop_{job_id}{key_suffix}"
+        ):
+            db.request_stop(job_id)
+            st.toast("Permintaan berhenti dikirim. Worker akan berhenti dengan rapi.")
+        st.caption(
+            "Mode pantau berhenti di batas aman (setelah putaran berjalan selesai). "
+            "Tombol ini ada di panel job, di bawah angka-angka."
+        )
 
 
 def _render_job_events(db: Database, job_id: int, active: bool) -> None:

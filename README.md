@@ -172,7 +172,7 @@ fbworkspace/
 │   └── check_extraction_dom.cjs # uji logika ekstraksi DOM (Node + jsdom, opsional)
 ├── data/demo_posts_DEMO.json   # data sintetis berlabel DEMO
 ├── docs/                       # instalasi, POC, batasan, Git, testing
-├── tests/                      # 617 tes otomatis
+├── tests/                      # 623 tes otomatis
 ├── requirements.txt
 ├── .env.example
 └── .gitignore
@@ -326,6 +326,13 @@ chat yang di luar template. Berhenti hanya bila Anda menekan **⛔ Hentikan work
 atau bila ada masalah yang butuh tindakan Anda (login/checkpoint/PIN) — dalam hal
 itu worker berhenti dan mengirim WA.
 
+**Di mana tombol berhenti?** Tab **Balas** (dan tab Mulai) → panel job → tepat di
+bawah angka *Chat dibaca / Pesan baru / Balasan terkirim / Eskalasi / Error*.
+Tombolnya bertuliskan **⛔ Hentikan worker**. Setelah ditekan, panel berubah menjadi
+**🔁 Batalkan berhenti** + **⛔ Hentikan paksa** (dipakai bila worker tampak macet).
+Tombol ini tetap muncul walau dashboard sudah di-restart, karena worker berjalan
+sebagai proses terpisah dan PID-nya disimpan di database.
+
 Chat yang ditandai **belum dibaca** tetapi isinya tidak terbaca oleh worker
 (misalnya pesan baru belum termuat) **tidak didiamkan**: Anda langsung dikirimi WA
 berisi nama chat + cuplikannya supaya bisa Anda periksa sendiri.
@@ -435,7 +442,7 @@ Penghapusan data tersedia di tab **Pengaturan → 💾 Data** (postingan, log, p
 .\.venv\Scripts\python.exe -m pytest
 ```
 
-Hasil terakhir di lingkungan pengembangan: **617 tes lulus** (termasuk smoke test
+Hasil terakhir di lingkungan pengembangan: **623 tes lulus** (termasuk smoke test
 dashboard Streamlit untuk 4 tab, segmentasi hasil, filter ulang, daftar harga,
 penyusun balasan, worker balas DM dengan adapter palsu, format notifikasi
 WhatsApp, dan variasi AI yang menolak perubahan fakta), `ruff check` bersih. Detail: **[docs/TESTING.md](docs/TESTING.md)**.

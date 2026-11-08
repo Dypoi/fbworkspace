@@ -157,3 +157,119 @@ def test_watch_mode_controls_exist_and_default_on(tmp_path, monkeypatch):
     watch = at.checkbox(key="fbw_msg_watch")
     assert watch.value is True, "Mode pantau seharusnya aktif secara bawaan"
     assert "Pantau terus" in watch.label
+
+
+def test_stop_button_visible_for_active_messenger_job(tmp_path, monkeypatch):
+    """Tombol berhenti harus ada di panel job (bukan hanya di tab feed)."""
+    import json
+    from datetime import datetime, timezone
+
+    from fbworkspace.db import Database
+
+    db_path = tmp_path / "stop.db"
+    db = Database(db_path)
+    job_id = db.create_job(
+        kind="messenger",
+        group_urls=[],
+        config={"dry_run": False, "watch": True, "max_cycles": 0},
+    )
+    db.update_job(
+        job_id,
+        status="berjalan",
+        heartbeat_at=datetime.now(timezone.utc).isoformat(),
+        counters_json=json.dumps({"threads": 1, "cycles": 2, "replies": 1}),
+    )
+
+    monkeypatch.setenv("FBW_DB_PATH", str(db_path))
+    monkeypatch.setenv("FBW_OLLAMA_ENABLED", "false")
+    monkeypatch.setattr("fbworkspace.jobs.tail_log", lambda *a, **k: "")
+
+    at = AppTest.from_file(APP, default_timeout=60).run()
+    assert not at.exception, [str(e) for e in at.exception]
+
+    # panel live ada di tab Mulai/Balas; tombol harus bisa diklik
+    buttons = [b for b in at.button if "Hentikan" in (b.label or "")]
+    assert buttons, "Tombol ⛔ Hentikan worker tidak ditemukan"
+
+
+def test_force_stop_uses_pid_after_dashboard_restart(tmp_path, monkeypatch):
+    """Setelah dashboard di-restart, worker tetap hidup: PID dari DB harus dipakai."""
+    import os
+
+    from fbworkspace import jobs
+    from fbworkspace.db import Database
+
+    db = Database(tmp_path / "force.db")
+    job_id = db.create_job(kind="messenger", group_urls=[], config={})
+    db.update_job(job_id, status="berjalan", pid=os.getpid())
+
+    killed: list[tuple[int, int]] = []
+    monkeypatch.setattr(jobs, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(jobs, "_pid_is_our_worker", lambda pid: True)
+    monkeypatch.setattr("os.kill", lambda pid, sig: killed.append((pid, sig)), raising=False)
+
+    note = jobs.force_stop(db, job_id, None)  # tidak ada Popen: sesi dashboard baru
+
+    assert "dihentikan paksa" in note.lower()
+    assert killed, "PID worker seharusnya dihentikan"
+    assert db.get_job(job_id)["status"] == "dihentikan"
+    assert db.is_stop_requested(job_id) is True
+
+
+def test_force_stop_never_kills_unknown_pid(tmp_path, monkeypatch):
+    """PID yang jelas bukan worker fbworkspace tidak boleh dibunuh."""
+    from fbworkspace import jobs
+    from fbworkspace.db import Database
+
+    db = Database(tmp_path / "force3.db")
+    job_id = db.create_job(kind="messenger", group_urls=[], config={})
+    db.update_job(job_id, status="berjalan", pid=999999)
+
+    killed: list[tuple[int, int]] = []
+    monkeypatch.setattr(jobs, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(jobs, "_pid_command_line", lambda pid: "notepad.exe")
+    monkeypatch.setattr("os.kill", lambda pid, sig: killed.append((pid, sig)), raising=False)
+
+    jobs.force_stop(db, job_id, None)
+
+    assert killed == [], "proses asing tidak boleh dibunuh"
+    assert db.get_job(job_id)["status"] == "dihentikan"
+
+
+def test_pid_is_our_worker_matches_app_process(monkeypatch):
+    from fbworkspace import jobs
+
+    monkeypatch.setattr(jobs, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(
+        jobs,
+        "_pid_command_line",
+        lambda pid: r'"C:\x\python.exe" -m fbworkspace.messenger_worker --job 3',
+    )
+    assert jobs._pid_is_our_worker(1234) is True
+
+    monkeypatch.setattr(jobs, "_pid_command_line", lambda pid: r"C:\Windows\notepad.exe")
+    assert jobs._pid_is_our_worker(1234) is False
+
+
+def test_force_stop_without_pid_marks_stopped(tmp_path):
+    from fbworkspace import jobs
+    from fbworkspace.db import Database
+
+    db = Database(tmp_path / "force2.db")
+    job_id = db.create_job(kind="messenger", group_urls=[], config={})
+    db.update_job(job_id, status="berjalan")
+
+    jobs.force_stop(db, job_id, None)
+    assert db.get_job(job_id)["status"] == "dihentikan"
+
+
+def test_cancel_stop_clears_request(tmp_path):
+    from fbworkspace.db import Database
+
+    db = Database(tmp_path / "cancel.db")
+    job_id = db.create_job(kind="messenger", group_urls=[], config={})
+    db.request_stop(job_id)
+    assert db.is_stop_requested(job_id) is True
+
+    db.clear_stop_request(job_id)
+    assert db.is_stop_requested(job_id) is False

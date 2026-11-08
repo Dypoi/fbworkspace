@@ -553,6 +553,15 @@ class Database:
             )
         self.log_event(job_id, "warning", "Pengguna menekan tombol berhenti.")
 
+    def clear_stop_request(self, job_id: int) -> None:
+        """Batalkan permintaan berhenti (dipakai bila worker dalam keadaan macet)."""
+        with self.conn() as conn:
+            conn.execute(
+                "UPDATE jobs SET stop_requested = 0, message = ? WHERE id = ?",
+                ("Permintaan berhenti dibatalkan. Worker melanjutkan pemantauan.", job_id),
+            )
+        self.log_event(job_id, "warning", "Pengguna membatalkan permintaan berhenti.")
+
     def is_stop_requested(self, job_id: int) -> bool:
         with self.conn() as conn:
             row = conn.execute("SELECT stop_requested FROM jobs WHERE id = ?", (job_id,)).fetchone()
