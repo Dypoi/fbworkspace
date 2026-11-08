@@ -33,7 +33,7 @@ Lint (opsional, butuh `ruff`):
 pytest 8.x. Windows belum dijalankan dari lingkungan ini.
 
 ```
-471 passed in ~4s
+500 passed in ~4s
 ruff check . --select E,F,W,I  ->  All checks passed!
 ```
 
@@ -58,7 +58,8 @@ ruff check . --select E,F,W,I  ->  All checks passed!
 | `tests/test_replies.py` | 43 | harga hanya dari daftar, tanya storage bila lebih dari satu varian, ready/lokasi/WA, "nego" → eskalasi, model tak dikenal & nomor pembeli → diam + eskalasi, sapaan → diam tanpa eskalasi, batas 400 karakter |
 | `tests/test_notify.py` | 12 | baris pertama pesan WA, isi Chat/Isi/Alasan/Link, pemotongan 900 karakter, normalisasi nomor `08…`/`+62…` → `62…`, URL `web.whatsapp.com/send` |
 | `tests/test_reply_style.py` | 22 | prompt variasi, gaya diterima, **angka berubah/lokasi hilang/nomor WA hilang/klaim terlarang → ditolak**, Ollama mati tetap memakai teks template |
-| `tests/test_messenger_worker.py` | 12 | uji kering tidak mengirim, balasan nyata memakai harga, **"nego" memicu notifikasi WA**, dedup eskalasi, cooldown per chat, batas balasan, `perlu_login` → job diblokir, gagal kirim dihitung, variasi AI hanya saat Ollama aktif |
+| `tests/test_messenger_adapter.py` | 20 | adapter Messenger dengan halaman tiruan: selector berlapis, deteksi login/checkpoint, diagnostik saat 0 chat, arah pesan, gagal tanpa Chromium jadi status (bukan exception) |
+| `tests/test_messenger_worker.py` | 19 | uji kering tidak mengirim, balasan nyata memakai harga, **"nego" memicu notifikasi WA**, dedup eskalasi, cooldown per chat, batas balasan, `perlu_login` → job diblokir, gagal kirim dihitung, variasi AI hanya saat Ollama aktif, **0 chat = status diblokir (bukan selesai)**, diagnostik tersimpan di job, checkpoint → diblokir, satu chat error tidak menghentikan job |
 
 ### Pengujian non-unit yang juga dijalankan
 
@@ -87,7 +88,7 @@ ruff check . --select E,F,W,I  ->  All checks passed!
 | Login manual di jendela Chromium | Butuh akun nyata | Jalankan `scripts/login_helper.py`; pastikan status `selesai`, lalu POC tidak lagi `perlu_login` |
 | Penantian login di halaman nyata | Butuh halaman login nyata | Jalankan pembacaan tanpa login; jendela harus tetap terbuka sampai `FBW_LOGIN_WAIT_SECONDS` |
 | Selector `div[role="article"]` pada akun Anda | Perlu halaman nyata | POC: periksa jumlah postingan & kualitas teks |
-| Selector Messenger (`div[role="listitem"]`, kotak tulis) | Butuh akun nyata | Tab Balas → uji kering → periksa log: chat terbaca & balasan yang AKAN dikirim |
+| Selector Messenger (`div[role="listitem"]`, kotak tulis) | Butuh akun nyata | `python -m fbworkspace.browser.messenger --show` (tidak mengirim apa pun) → kirim `data/diagnostics/*.json` bila `thread_links` = 0 |
 | Pengiriman WhatsApp Web nyata | Butuh scan QR di ponsel Anda | `scripts/wa_login.py`, lalu **Kirim tes WhatsApp** di tab Balas |
 | Deteksi checkpoint nyata | Butuh halaman challenge nyata | Hentikan jika muncul; laporkan teks penandanya bila tidak terdeteksi |
 | Kecepatan & kualitas Ollama | Model tidak diunduh di sandbox | Pengaturan → Ollama → Cek koneksi → analisis 1–2 postingan |
@@ -136,6 +137,7 @@ Jalankan berurutan. Beri tanda centang hanya jika benar-benar terlihat.
 - [ ] Tab **Balas** muncul dan bawaannya **Uji kering tercentang**; tombol nonsaktif sebelum pernyataan dicentang.
 - [ ] Daftar harga tampil 9 baris sesuai pricelist Anda; ubah 1 harga → **Simpan daftar harga** berhasil.
 - [ ] Jalankan uji kering → log menunjukkan chat terbaca dan balasan yang **akan** dikirim; tidak ada pesan terkirim ke pembeli.
+- [ ] Kalau **0 chat dibaca**: panel job menampilkan merah + diagnostik, dan tombol **Periksa inbox Messenger** menghasilkan JSON. Status job = diblokir, bukan "selesai".
 - [ ] Chat berisi "nego" → muncul baris eskalasi di daftar **Eskalasi** (alasan `nego`) dan status `antre` (uji kering tidak mengirim WA).
 - [ ] `scripts\wa_login.py` → scan QR → **Kirim tes WhatsApp** masuk ke nomor `081513839973`.
 - [ ] Matikan uji kering untuk 1 chat uji: balasan pembeli sesuai harga di daftar; chat "nego" mengirim WA ke Anda.

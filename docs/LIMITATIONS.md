@@ -212,7 +212,7 @@ batasnya harus jelas.
 | "Nego" | Kata `nego`, `kurang`, `diskon`, `tawar`, `tukar tambah` **selalu** memicu notifikasi WhatsApp ke Anda, meski harganya tetap dijawab. |
 | Notifikasi | WhatsApp Web dari laptop Anda (profil `data/wa_profile`, perlu `scripts/wa_login.py`). Bila WA logout, notifikasi tercatat `gagal` dan chat tetap ada di daftar **Eskalasi**. |
 | Siapa yang membaca chat | Worker membuka daftar chat Anda, jadi chat baru akan tampak **sudah dibaca** di sisi pembeli. Ini tidak bisa dihindari. |
-| Selector | `div[role="listitem"]`, tautan chat, dan kotak tulis Messenger **belum diuji di akun nyata**. Kegagalan menghasilkan status/log, bukan crash — tetapi bisa berarti 0 chat terbaca. |
+| Selector | Tautan chat, `div[role="listitem"]`, dan kotak tulis Messenger **belum diuji di akun nyata**. Ada beberapa selector berlapis + diagnostik, tetap saja bisa berarti 0 chat terbaca. Pada versi pertama, "0 chat" sempat dilaporkan sebagai selesai — sekarang statusnya **diblokir** disertai diagnostik. |
 | Batas | 8 chat / 10 balasan per putaran, jeda 45 detik, cooldown 10 menit per chat, berhenti saat diminta login. Angka ini kecil sengaja. |
 | Pembatasan akun | Facebook dapat membatasi akun yang membalas cepat dalam jumlah banyak. Risiko ada di Anda; gunakan angka kecil dan pantau. |
 | Variasi bahasa AI | Bila Ollama aktif, gaya kalimat boleh divariasikan, tetapi hasilnya diperiksa: angka harus identik, lokasi & nomor WA harus tetap ada, klaim terlarang menggugurkan hasil, lalu jatuh ke teks template. AI **tidak pernah** menentukan harga. Model kecil tetap bisa menghasilkan kalimat aneh yang lolos pemeriksaan — periksa beberapa putaran uji kering. |

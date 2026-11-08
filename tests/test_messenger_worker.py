@@ -19,11 +19,12 @@ THREAD_KEY = "1001"
 class FakeMessenger:
     name = "fake-messenger"
 
-    def __init__(self, threads, messages, *, send_ok=True, list_status="ok"):
+    def __init__(self, threads, messages, *, send_ok=True, list_status="ok", diagnostics=None):
         self.threads = threads
         self.messages = messages
         self.send_ok = send_ok
         self.list_status = list_status
+        self.diagnostics = diagnostics if diagnostics is not None else {"url": "https://www.facebook.com/messages/"}
         self.sent: list[tuple[str, str]] = []
 
     def is_available(self):
@@ -31,6 +32,15 @@ class FakeMessenger:
 
     def list_threads(self, limit: int = 8):
         return self.threads[:limit], self.list_status
+
+    def list_threads_detailed(self, limit: int = 8):
+        from fbworkspace.browser.messenger import ThreadList
+
+        return ThreadList(
+            threads=self.threads[:limit],
+            status=self.list_status,
+            diagnostics=self.diagnostics,
+        )
 
     def read_thread(self, url: str, *, known_out=None):
         return ThreadRead(messages=self.messages.get(url, []), status="ok")
@@ -264,3 +274,133 @@ def test_worker_without_adapter_reports_missing_playwright(tmp_path, monkeypatch
     code = run(job_id, adapter=Unavailable(), sender=MemorySender(), database=db, settings=_settings(tmp_path), sleep=lambda s: None)
     assert code == 1
     assert db.get_job(job_id)["status"] == "gagal"
+
+
+def test_no_chat_read_is_reported_as_blocked_not_success(tmp_path):
+    db = Database(tmp_path / "chat.db")
+    job_id = _job(db, dry_run=False)
+    adapter = FakeMessenger(
+        [],
+        {},
+        list_status="tidak_ada_chat",
+        diagnostics={
+            "url": "https://www.facebook.com/messages/",
+            "title": "Messenger",
+            "thread_links": 0,
+            "rows": 0,
+            "composer": "",
+            "login_form": False,
+            "text": "Tidak ada chat",
+        },
+    )
+
+    code = run(job_id, adapter=adapter, sender=MemorySender(), database=db, settings=_settings(tmp_path), sleep=lambda s: None)
+
+    job = db.get_job(job_id)
+    assert code == 1
+    assert job["status"] == "diblokir/tidak diizinkan"
+    assert "tidak ada chat yang terbaca" in job["message"].lower()
+
+    messages = [e["message"] for e in db.get_events(job_id)]
+    assert any("Diagnostik:" in m for m in messages)
+    assert any("tautan_chat=0" in m for m in messages)
+
+
+def test_diagnostics_saved_on_job(tmp_path):
+    db = Database(tmp_path / "chat.db")
+    job_id = _job(db, dry_run=False)
+    diagnostics = {"url": "x", "thread_links": 3, "composer": "div", "title": "Inbox"}
+    adapter = FakeMessenger([], {}, list_status="tidak_ada_chat", diagnostics=diagnostics)
+
+    run(job_id, adapter=adapter, sender=MemorySender(), database=db, settings=_settings(tmp_path), sleep=lambda s: None)
+
+    assert db.get_job(job_id)["diagnostics"]["thread_links"] == 3
+
+
+def test_checkpoint_page_blocks_job(tmp_path):
+    db = Database(tmp_path / "chat.db")
+    job_id = _job(db, dry_run=False)
+    adapter = FakeMessenger(
+        [],
+        {},
+        list_status="pemblokiran",
+        diagnostics={"url": "https://www.facebook.com/checkpoint/", "reason": "checkpoint", "title": "Security check"},
+    )
+    sender = MemorySender()
+
+    code = run(job_id, adapter=adapter, sender=sender, database=db, settings=_settings(tmp_path), sleep=lambda s: None)
+
+    job = db.get_job(job_id)
+    assert code == 1
+    assert job["status"] == "diblokir/tidak diizinkan"
+    assert "pembatasan" in job["message"]
+    assert sender.sent and sender.sent[0].startswith(STOP_HEADER)
+
+
+def test_launch_error_marks_job_failed(tmp_path):
+    db = Database(tmp_path / "chat.db")
+    job_id = _job(db, dry_run=False)
+    adapter = FakeMessenger([], {}, list_status="kesalahan", diagnostics={"error": "TimeoutError: 30000ms"})
+
+    code = run(job_id, adapter=adapter, sender=MemorySender(), database=db, settings=_settings(tmp_path), sleep=lambda s: None)
+
+    job = db.get_job(job_id)
+    assert code == 1
+    assert job["status"] == "gagal"
+    assert "TimeoutError" in job["message"]
+
+
+def test_old_adapter_without_detailed_still_works(tmp_path):
+    db = Database(tmp_path / "chat.db")
+    job_id = _job(db, dry_run=False)
+
+    class OldAdapter:
+        name = "lama"
+
+        def is_available(self):
+            return True, ""
+
+        def list_threads(self, limit=8):
+            return [Thread(THREAD_KEY, "Rian", THREAD_URL)], "ok"
+
+        def read_thread(self, url, *, known_out=None):
+            return ThreadRead(messages=[_incoming("iphone 11 ready?")], status="ok")
+
+        def send_message(self, url, text):
+            return True, "terkirim"
+
+    code = run(job_id, adapter=OldAdapter(), sender=MemorySender(), database=db, settings=_settings(tmp_path), sleep=lambda s: None)
+
+    assert code == 0
+    assert db.get_job(job_id)["counters"]["replies"] == 1
+
+
+def test_broken_thread_does_not_stop_job(tmp_path):
+    db = Database(tmp_path / "chat.db")
+    job_id = _job(db, dry_run=False)
+
+    class Exploding(FakeMessenger):
+        def read_thread(self, url, *, known_out=None):
+            raise RuntimeError("halaman crash")
+
+    adapter = Exploding([Thread(THREAD_KEY, "Rian", THREAD_URL)], {})
+    code = run(job_id, adapter=adapter, sender=MemorySender(), database=db, settings=_settings(tmp_path), sleep=lambda s: None)
+
+    assert code == 0
+    assert db.get_job(job_id)["counters"]["errors"] == 1
+
+
+def test_read_failure_note_is_logged(tmp_path):
+    db = Database(tmp_path / "chat.db")
+    job_id = _job(db, dry_run=False)
+
+    class Unreadable(FakeMessenger):
+        def read_thread(self, url, *, known_out=None):
+            return ThreadRead(messages=[], status="kesalahan", note="TimeoutError: 20000ms")
+
+    adapter = Unreadable([Thread(THREAD_KEY, "Rian", THREAD_URL)], {})
+    code = run(job_id, adapter=adapter, sender=MemorySender(), database=db, settings=_settings(tmp_path), sleep=lambda s: None)
+
+    assert code == 0
+    assert db.get_job(job_id)["counters"]["errors"] == 1
+    assert any("TimeoutError" in e["message"] for e in db.get_events(job_id))

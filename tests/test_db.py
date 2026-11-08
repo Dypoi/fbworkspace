@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from fbworkspace.db import Database
 from fbworkspace.models import UNKNOWN
 
 
@@ -182,3 +183,48 @@ class TestStats:
         assert stats["total"] == 1
         assert stats["by_source"]["demo"] == 1
         assert "db_path" in stats
+
+
+class TestSchemaMigration:
+    """Database lama (dibuat sebelum tab Balas) harus tetap bisa dibuka."""
+
+    def test_old_jobs_table_gets_new_columns(self, tmp_path):
+        import sqlite3
+
+        path = tmp_path / "lama.db"
+        conn = sqlite3.connect(path)
+        conn.executescript(
+            """
+            CREATE TABLE jobs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                status TEXT NOT NULL,
+                group_urls_json TEXT NOT NULL DEFAULT '[]',
+                config_json TEXT NOT NULL DEFAULT '{}',
+                message TEXT NOT NULL DEFAULT '',
+                counters_json TEXT NOT NULL DEFAULT '{}',
+                stop_requested INTEGER NOT NULL DEFAULT 0,
+                pid INTEGER,
+                created_at TEXT NOT NULL,
+                started_at TEXT, finished_at TEXT, heartbeat_at TEXT
+            );
+            INSERT INTO jobs(status, created_at) VALUES('selesai','2026-11-01T00:00:00+00:00');
+            """
+        )
+        conn.commit()
+        conn.close()
+
+        db = Database(path)
+        old = db.get_job(1)
+        assert old["status"] == "selesai"
+        assert old["kind"] == "browser"
+        assert old["diagnostics"] == {}
+
+        job_id = db.create_job(kind="messenger", group_urls=[], config={})
+        db.update_job(job_id, diagnostics_json='{"threads": 0}')
+        assert db.get_job(job_id)["diagnostics"] == {"threads": 0}
+
+    def test_init_is_idempotent(self, tmp_path):
+        path = tmp_path / "dua.db"
+        Database(path)
+        Database(path)  # tidak boleh error karena kolom sudah ada
+        assert Database(path).list_prices()

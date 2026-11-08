@@ -391,6 +391,38 @@ def _render_job_content(settings: Settings, db: Database, job_id: int, live: boo
         st.info(job["message"])
 
     if job.get("kind") == "messenger":
+        diagnostics = job.get("diagnostics") or {}
+        blocked = job.get("status") == JobStatus.BLOCKED.value
+        if not counters.get("threads") and diagnostics:
+            detail = _diagnostics_line(diagnostics)
+            st.error(
+                "Worker berhenti sebelum ada chat yang terbaca. Ini artinya pembacaan "
+                "gagal, bukan 'tidak ada chat dari pembeli'.\n\n"
+                f"**Yang terlihat di halaman:** {detail}"
+            )
+            st.info(
+                "Urutan pemeriksaan: (1) pastikan Anda sudah login Facebook di jendela "
+                "browser yang sama dengan profil worker (`scripts\\\\login_helper.py`), "
+                "(2) buka `facebook.com/messages` di jendela itu dan lihat apakah daftar "
+                "chat muncul, (3) jalankan pemeriksaan di bawah dan kirim hasilnya."
+            )
+            with st.expander("🩺 Periksa inbox Messenger (tidak mengirim apa pun)"):
+                st.caption(
+                    "Menjalankan pemeriksaan singkat dengan profil browser yang sama: "
+                    "URL, judul halaman, jumlah tautan chat, dan cuplikan teks."
+                )
+                if st.button("Periksa sekarang", key=f"msg_diag_{job_id}"):
+                    st.session_state["fbw_msg_diag"] = _run_messenger_probe(settings)
+                probe = st.session_state.get("fbw_msg_diag")
+                if probe:
+                    st.json(probe)
+                    if st.button("📋 Salin hasil pemeriksaan", key=f"msg_diag_copy_{job_id}"):
+                        st.code(json.dumps(probe, ensure_ascii=False, indent=2), language="json")
+        if blocked:
+            st.warning(
+                "Status job **diblokir**: worker tidak membaca/mengirim apa pun sampai "
+                "penyebabnya beres."
+            )
         m = st.columns(5)
         m[0].metric("Chat dibaca", counters.get("threads", 0))
         m[1].metric("Pesan baru", counters.get("messages", 0))
@@ -439,6 +471,51 @@ def _render_job_content(settings: Settings, db: Database, job_id: int, live: boo
     _render_job_events(db, job_id, active)
     with st.expander("Diagnostik (hanya bila ada masalah)"):
         _render_job_diagnostics(settings, db, job_id, live)
+
+
+def _diagnostics_line(diagnostics: dict) -> str:
+    """Ringkasan pendek apa yang terlihat di halaman Messenger."""
+    parts = []
+    url = str(diagnostics.get("url") or "")[:100]
+    if url:
+        parts.append(f"url `{url}`")
+    title = str(diagnostics.get("title") or "")[:60]
+    if title:
+        parts.append(f"judul “{title}”")
+    parts.append(f"tautan chat: {diagnostics.get('thread_links', 0)}")
+    parts.append(f"baris: {diagnostics.get('rows', 0)}")
+    parts.append("kotak tulis: " + ("ada" if diagnostics.get("composer") else "tidak ada"))
+    if diagnostics.get("login_form"):
+        parts.append("**form login terlihat**")
+    if diagnostics.get("error"):
+        parts.append(f"error: {diagnostics['error']}")
+    text = str(diagnostics.get("text") or "")[:120]
+    if text:
+        parts.append(f"teks halaman: “{text}”")
+    return " · ".join(parts)
+
+
+def _run_messenger_probe(settings: Settings) -> dict:
+    """Buka inbox sebentar dan laporkan apa yang terlihat (tanpa mengirim)."""
+    from .browser.messenger import MessengerAdapter
+
+    adapter = MessengerAdapter(
+        profile_dir=settings.browser_profile_dir,
+        headless=True,
+        slow_mo_ms=0,
+        timeout_ms=30_000,
+    )
+    ok, why = adapter.is_available()
+    if not ok:
+        return {"ok": False, "error": why}
+    result = adapter.list_threads_detailed(limit=5)
+    payload = dict(result.diagnostics)
+    payload["status"] = result.status
+    payload["profile"] = str(settings.browser_profile_dir)
+    payload["threads"] = [
+        {"name": item.name, "unread": item.unread} for item in result.threads
+    ]
+    return payload
 
 
 def _render_job_events(db: Database, job_id: int, active: bool) -> None:

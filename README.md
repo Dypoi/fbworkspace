@@ -172,7 +172,7 @@ fbworkspace/
 │   └── check_extraction_dom.cjs # uji logika ekstraksi DOM (Node + jsdom, opsional)
 ├── data/demo_posts_DEMO.json   # data sintetis berlabel DEMO
 ├── docs/                       # instalasi, POC, batasan, Git, testing
-├── tests/                      # 471 tes otomatis
+├── tests/                      # 500 tes otomatis
 ├── requirements.txt
 ├── .env.example
 └── .gitignore
@@ -279,6 +279,18 @@ diverifikasi ulang: semua angka harus sama, `Kutabumi, Tangerang` dan
 #    lalu jalankan lagi. Balasan nyata dikirim ke pembeli.
 ```
 
+**Kalau hasilnya "0 chat dibaca"**, itu artinya pembacaan gagal (bukan "tidak ada
+pembeli"). Panel job akan menampilkan merah + apa yang terlihat di halaman, dan ada
+tombol **Periksa inbox Messenger**. Bisa juga dari PowerShell:
+
+```powershell
+.\.venv\Scripts\python.exe -m fbworkspace.browser.messenger --show
+```
+
+Perintah itu **tidak mengirim apa pun**; ia mencetak URL, judul halaman, jumlah
+tautan chat, ada/tidaknya kotak tulis, dan cuplikan teks, lalu menyimpan laporan ke
+`data\diagnostics\`. Kirimkan file itu bila hasilnya masih kosong.
+
 Pengaman bawaan: maksimum 8 chat dibaca & 10 balasan per putaran, jeda 45 detik
 antar balasan, cooldown 10 menit per chat, dan berhenti bila Facebook meminta
 login. Chat yang dibaca akan tampak "sudah dibaca" di sisi pembeli — itu tidak
@@ -384,7 +396,7 @@ Penghapusan data tersedia di tab **Pengaturan → 💾 Data** (postingan, log, p
 .\.venv\Scripts\python.exe -m pytest
 ```
 
-Hasil terakhir di lingkungan pengembangan: **471 tes lulus** (termasuk smoke test
+Hasil terakhir di lingkungan pengembangan: **500 tes lulus** (termasuk smoke test
 dashboard Streamlit untuk 4 tab, segmentasi hasil, filter ulang, daftar harga,
 penyusun balasan, worker balas DM dengan adapter palsu, format notifikasi
 WhatsApp, dan variasi AI yang menolak perubahan fakta), `ruff check` bersih. Detail: **[docs/TESTING.md](docs/TESTING.md)**.

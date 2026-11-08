@@ -5,23 +5,77 @@ Batas yang sama seperti adapter feed:
 - berhenti dan melaporkan status bila diminta login;
 - hanya membalas percakapan yang SUDAH ada (tidak menyapa orang baru).
 
-Selector Facebook sering berubah dan BELUM diuji pada akun nyata. Karena itu
-semua kegagalan dikembalikan sebagai status + pesan, bukan exception diam-diam,
-dan ada ``diagnostics()`` untuk membantu Anda melaporkan apa yang terlihat.
+Selector Facebook sering berubah dan **belum terverifikasi** pada akun nyata.
+Karena itu modul ini:
+
+- memakai beberapa selector berlapis untuk inbox dan kotak tulis,
+- memberi waktu halaman (SPA) memuat sebelum menyimpulkan "tidak ada chat",
+- menyimpan ``last_diagnostics`` berisi apa yang benar-benar terlihat
+  (URL, judul, jumlah tautan chat, ada/tidak kotak tulis, cuplikan teks),
+- mengembalikan status yang bisa dibedakan: ``ok``/``perlu_login``/
+  ``tidak_ada_chat``/``pemblokiran``/``kesalahan``.
+
+Ingin melihat apa yang terbaca tanpa menjalankan worker:
+
+    .\\.venv\\Scripts\\python.exe -m fbworkspace.browser.messenger --diagnose
 """
 
 from __future__ import annotations
 
+import argparse
 import hashlib
+import json
+import sys
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
 INBOX_URL = "https://www.facebook.com/messages/"
-THREAD_LINK_SELECTOR = 'a[href*="/messages/t/"]'
-MESSAGE_ROW_SELECTOR = 'div[role="row"]'
-MESSAGE_TEXT_SELECTOR = 'div[dir="auto"]'
-COMPOSER_SELECTOR = 'div[contenteditable="true"][role="textbox"]'
-LOGIN_MARKERS = ('input[name="email"]', "#email", 'form[action*="login"]')
+
+# --- Selector berlapis (urutan = prioritas) --------------------------------
+THREAD_SELECTORS = (
+    'a[href*="/messages/t/"]',
+    'div[role="listitem"] a[href*="/t/"]',
+    'div[role="row"] a[href]',
+)
+MESSAGE_ROW_SELECTORS = (
+    'div[role="row"]',
+    'div[role="listitem"]',
+    'div[aria-label*="Anda kirim"], div[aria-label*="You sent"]',
+)
+MESSAGE_TEXT_SELECTORS = ('div[dir="auto"]', 'span[dir="auto"]', 'div[role="none"] > span')
+COMPOSER_SELECTORS = (
+    'div[contenteditable="true"][role="textbox"]',
+    'div[role="textbox"][contenteditable="true"]',
+    'div[contenteditable="true"][data-lexical-editor="true"]',
+    'div[aria-label*="Pesan"][contenteditable="true"]',
+    'div[aria-label*="Message"][contenteditable="true"]',
+    'div[contenteditable="true"]',
+)
+LOGIN_MARKERS = (
+    'input[name="email"]',
+    "#email",
+    'form[action*="login"]',
+    'input[name="pass"]',
+)
+# Penanda halaman yang berarti proses harus BERHENTI, bukan diulang.
+BLOCK_MARKERS = (
+    "checkpoint",
+    "security check",
+    "konfirmasi identitas",
+    "verify your identity",
+    "akun anda telah dinonaktifkan",
+    "your account has been locked",
+    "temporarily blocked",
+    "sementara diblokir",
+)
+CHECKPOINT_WORDS = (
+    "checkpoint",
+    "konfirmasi identitas",
+    "verifikasi identitas",
+    "security check",
+    "verify your identity",
+)
 
 
 @dataclass(frozen=True)
@@ -49,6 +103,15 @@ class ThreadRead:
     note: str = ""
 
 
+@dataclass
+class ThreadList:
+    """Hasil daftar chat + diagnostik mentah (untuk laporan pengguna)."""
+
+    threads: list[Thread] = field(default_factory=list)
+    status: str = "ok"
+    diagnostics: dict = field(default_factory=dict)
+
+
 def _text_of(element) -> str:
     try:
         return (element.inner_text() or "").strip()
@@ -56,18 +119,36 @@ def _text_of(element) -> str:
         return ""
 
 
+def _safe_attr(element, name: str) -> str:
+    try:
+        return element.get_attribute(name) or ""
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _safe_body_text(page, limit: int = 400) -> str:
+    try:
+        raw = page.inner_text("body")
+    except Exception:  # noqa: BLE001
+        return ""
+    return " ".join(str(raw).split())[:limit]
+
+
 def _msg_key(thread_key: str, index: int, text: str) -> str:
     digest = hashlib.sha1(text.encode("utf-8", "ignore")).hexdigest()[:10]
     return f"{thread_key}:{index}:{digest}"
 
 
+def _thread_key(url: str) -> str:
+    if "/messages/t/" in url:
+        return url.split("/messages/t/")[1].split("/")[0].split("?")[0]
+    return url
+
+
 def _direction(row, text: str, known_out: list[str]) -> str:
     """Tentukan arah pesan: 'out' (kita) atau 'in' (pembeli)."""
     for attr in ("aria-label", "data-scope"):
-        try:
-            label = (row.get_attribute(attr) or "").lower()
-        except Exception:  # noqa: BLE001
-            label = ""
+        label = _safe_attr(row, attr).lower()
         if not label:
             continue
         if "anda kirim" in label or "you sent" in label or "sent by you" in label:
@@ -88,6 +169,29 @@ def _direction(row, text: str, known_out: list[str]) -> str:
         if sent and normalized and normalized[:60] == " ".join(sent.lower().split())[:60]:
             return "out"
     return "in"
+
+
+def _first_match(page, selectors: tuple[str, ...]):
+    """Kembalikan (selector, elemen pertama) atau (None, None)."""
+    for selector in selectors:
+        try:
+            element = page.query_selector(selector)
+        except Exception:  # noqa: BLE001
+            element = None
+        if element is not None:
+            return selector, element
+    return None, None
+
+
+def _first_match_all(page, selectors: tuple[str, ...]) -> tuple[str | None, list]:
+    for selector in selectors:
+        try:
+            elements = page.query_selector_all(selector)
+        except Exception:  # noqa: BLE001
+            elements = []
+        if elements:
+            return selector, elements
+    return None, []
 
 
 class MessengerAdapter:
@@ -119,7 +223,50 @@ class MessengerAdapter:
         from playwright.sync_api import sync_playwright
 
         self.profile_dir.mkdir(parents=True, exist_ok=True)
-        return sync_playwright().start()
+        try:
+            return sync_playwright().start()
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError(
+                "Playwright gagal dijalankan "
+                f"({exc.__class__.__name__}). Jalankan sekali: "
+                "playwright install chromium"
+            ) from exc
+
+    @staticmethod
+    @staticmethod
+    def _friendly_error(exc: Exception) -> str:
+        """Terjemahkan error Playwright yang sering muncul jadi langkah konkret."""
+        raw = f"{exc.__class__.__name__}: {exc}"
+        lowered = raw.lower()
+        if "executable doesn't exist" in lowered or "looks like playwright" in lowered:
+            return (
+                "Chromium Playwright belum terpasang. Jalankan sekali: "
+                "playwright install chromium"
+            )
+        if "target page, context or browser has been closed" in lowered:
+            return "Jendela browser tertutup di tengah proses."
+        if "profile" in lowered and "in use" in lowered:
+            return (
+                "Profil browser sedang dipakai proses lain. Tutup jendela Chromium "
+                "lain milik aplikasi ini, lalu coba lagi."
+            )
+        if "timeout" in lowered:
+            return f"Halaman tidak selesai dimuat dalam batas waktu ({raw[:160]})"
+        return raw[:300]
+
+    @staticmethod
+    def _close(playwright, context) -> None:
+        """Tutup browser & Playwright; kegagalan menutup tidak boleh menutupi hasil."""
+        if context is not None:
+            try:
+                context.close()
+            except Exception:  # noqa: BLE001
+                pass
+        if playwright is not None:
+            try:
+                playwright.stop()
+            except Exception:  # noqa: BLE001
+                pass
 
     def _context(self, playwright):
         return playwright.chromium.launch_persistent_context(
@@ -128,6 +275,7 @@ class MessengerAdapter:
             slow_mo=self.slow_mo_ms,
         )
 
+    # --------------------------------------------------------------- penanda
     def _login_required(self, page) -> bool:
         for selector in LOGIN_MARKERS:
             try:
@@ -137,73 +285,198 @@ class MessengerAdapter:
                 continue
         return False
 
+    @staticmethod
+    def _blocked(page, diagnostics: dict) -> bool:
+        blob = f"{diagnostics.get('url', '')} {diagnostics.get('title', '')} " \
+               f"{diagnostics.get('text', '')}".lower()
+        return any(word in blob for word in BLOCK_MARKERS)
+
+    @staticmethod
+    def _checkpoint_word(page, diagnostics: dict) -> str:
+        blob = f"{diagnostics.get('url', '')} {diagnostics.get('title', '')} " \
+               f"{diagnostics.get('text', '')}".lower()
+        for word in CHECKPOINT_WORDS:
+            if word in blob:
+                return word
+        return ""
+
+    def _inspect(self, page) -> dict:
+        """Rekam apa yang benar-benar terlihat di halaman (tanpa menebak)."""
+        diagnostics: dict = {
+            "url": "",
+            "title": "",
+            "text": "",
+            "thread_links": 0,
+            "chat_links": 0,
+            "rows": 0,
+            "listitems": 0,
+            "composer": "",
+            "login_form": False,
+        }
+        try:
+            diagnostics["url"] = page.url
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            diagnostics["title"] = (page.title() or "")[:120]
+        except Exception:  # noqa: BLE001
+            pass
+        diagnostics["text"] = _safe_body_text(page)
+        for selector, key in (
+            ('a[href*="/messages/t/"]', "thread_links"),
+            ('a[href*="/t/"]', "chat_links"),
+            ('div[role="row"]', "rows"),
+            ('div[role="listitem"]', "listitems"),
+        ):
+            try:
+                diagnostics[key] = len(page.query_selector_all(selector))
+            except Exception:  # noqa: BLE001
+                diagnostics[key] = 0
+        selector, _ = _first_match(page, COMPOSER_SELECTORS)
+        diagnostics["composer"] = selector or ""
+        diagnostics["login_form"] = self._login_required(page)
+        return diagnostics
+
     # ------------------------------------------------------------- daftar chat
-    def list_threads(self, limit: int = 8) -> tuple[list[Thread], str]:
-        playwright = self._launch()
+    def list_threads_detailed(self, limit: int = 8) -> ThreadList:
+        """Seperti :meth:`list_threads`, tetapi mengembalikan diagnostik juga."""
+        playwright = None
         context = None
         try:
+            playwright = self._launch()
             context = self._context(playwright)
             page = context.pages[0] if context.pages else context.new_page()
-            page.goto(INBOX_URL, wait_until="domcontentloaded", timeout=self.timeout_ms)
-            if self._login_required(page):
-                self.last_diagnostics = {"status": "perlu_login"}
-                return [], "perlu_login"
             try:
-                page.wait_for_selector(THREAD_LINK_SELECTOR, timeout=self.timeout_ms // 3)
-            except Exception:  # noqa: BLE001
-                self.last_diagnostics = {"status": "kosong", "url": page.url}
-                return [], "tidak_ada_chat"
+                page.goto(INBOX_URL, wait_until="domcontentloaded", timeout=self.timeout_ms)
+            except Exception as exc:  # noqa: BLE001
+                diagnostics = {
+                    "status": "kesalahan",
+                    "stage": "buka_halaman",
+                    "url": INBOX_URL,
+                    "error": self._friendly_error(exc),
+                }
+                self.last_diagnostics = diagnostics
+                return ThreadList(status="kesalahan", diagnostics=diagnostics)
 
-            anchors = page.query_selector_all(THREAD_LINK_SELECTOR)
+            # Beri waktu SPA memuat; jangan langsung menyimpulkan "kosong".
+            try:
+                page.wait_for_load_state("networkidle", timeout=min(15_000, self.timeout_ms))
+            except Exception:  # noqa: BLE001
+                pass
+
+            selector, anchors = _first_match_all(page, THREAD_SELECTORS)
+            attempts = 0
+            while not anchors and attempts < 3:
+                attempts += 1
+                try:
+                    page.wait_for_timeout(1500)
+                    page.mouse.wheel(0, 500)
+                except Exception:  # noqa: BLE001
+                    page.wait_for_timeout(1000)
+                selector, anchors = _first_match_all(page, THREAD_SELECTORS)
+
+            diagnostics = self._inspect(page)
+            diagnostics["thread_selector"] = selector or ""
+            diagnostics["attempts"] = attempts
+
+            if self._login_required(page):
+                diagnostics["status"] = "perlu_login"
+                self.last_diagnostics = diagnostics
+                return ThreadList(status="perlu_login", diagnostics=diagnostics)
+
+            word = self._checkpoint_word(page, diagnostics)
+            if word or self._blocked(page, diagnostics):
+                diagnostics["status"] = "pemblokiran"
+                diagnostics["reason"] = word or "halaman pembatasan"
+                self.last_diagnostics = diagnostics
+                return ThreadList(status="pemblokiran", diagnostics=diagnostics)
+
             threads: list[Thread] = []
             seen: set[str] = set()
             for anchor in anchors:
-                href = anchor.get_attribute("href") or ""
-                if "/messages/t/" not in href:
+                href = _safe_attr(anchor, "href")
+                if "/t/" not in href:
                     continue
-                key = href.split("/messages/t/")[1].split("/")[0].split("?")[0]
+                key = _thread_key(href)
                 if not key or key in seen:
                     continue
                 seen.add(key)
                 url = href if href.startswith("http") else f"https://www.facebook.com{href}"
-                label = (anchor.get_attribute("aria-label") or "").strip()
+                label = _safe_attr(anchor, "aria-label").strip()
                 name = label or _text_of(anchor).split("\n")[0][:80]
                 unread = "belum dibaca" in label.lower() or "unread" in label.lower()
                 threads.append(Thread(key=key, name=name or key, url=url, unread=unread))
                 if len(threads) >= max(1, limit):
                     break
-            self.last_diagnostics = {"status": "ok", "threads": len(threads)}
-            return threads, "ok"
+
+            diagnostics["threads"] = len(threads)
+            diagnostics["status"] = "ok" if threads else "tidak_ada_chat"
+            self.last_diagnostics = diagnostics
+            return ThreadList(
+                threads=threads,
+                status=diagnostics["status"],
+                diagnostics=diagnostics,
+            )
         except Exception as exc:  # noqa: BLE001
-            self.last_diagnostics = {"status": "error", "error": f"{exc.__class__.__name__}: {exc}"[:300]}
-            return [], "kesalahan"
+            diagnostics = {
+                "status": "kesalahan",
+                "stage": "siapkan_browser",
+                "error": self._friendly_error(exc),
+            }
+            self.last_diagnostics = diagnostics
+            return ThreadList(status="kesalahan", diagnostics=diagnostics)
         finally:
-            if context is not None:
-                context.close()
-            playwright.stop()
+            self._close(playwright, context)
+
+    def list_threads(self, limit: int = 8) -> tuple[list[Thread], str]:
+        result = self.list_threads_detailed(limit=limit)
+        return result.threads, result.status
 
     # ------------------------------------------------------------- baca isi chat
     def read_thread(self, url: str, *, known_out: list[str] | None = None) -> ThreadRead:
-        thread_key = url.split("/messages/t/")[1].split("/")[0].split("?")[0] if "/messages/t/" in url else url
-        playwright = self._launch()
+        thread_key = _thread_key(url)
+        playwright = None
         context = None
         try:
+            playwright = self._launch()
             context = self._context(playwright)
             page = context.pages[0] if context.pages else context.new_page()
             page.goto(url, wait_until="domcontentloaded", timeout=self.timeout_ms)
+            try:
+                page.wait_for_load_state("networkidle", timeout=min(15_000, self.timeout_ms))
+            except Exception:  # noqa: BLE001
+                pass
+            diagnostics = self._inspect(page)
             if self._login_required(page):
                 return ThreadRead(status="perlu_login")
-            try:
-                page.wait_for_selector(MESSAGE_ROW_SELECTOR, timeout=self.timeout_ms // 2)
-            except Exception:  # noqa: BLE001
-                return ThreadRead(status="tidak_ada_pesan")
+            word = self._checkpoint_word(page, diagnostics)
+            if word or self._blocked(page, diagnostics):
+                return ThreadRead(status="pemblokiran", note=word or "halaman pembatasan")
 
-            rows = page.query_selector_all(MESSAGE_ROW_SELECTOR)
+            selector, rows = _first_match_all(page, MESSAGE_ROW_SELECTORS)
+            attempts = 0
+            while not rows and attempts < 2:
+                attempts += 1
+                page.wait_for_timeout(1500)
+                selector, rows = _first_match_all(page, MESSAGE_ROW_SELECTORS)
+            if not rows:
+                self.last_diagnostics = dict(diagnostics, status="tidak_ada_pesan")
+                return ThreadRead(status="tidak_ada_pesan", note=diagnostics.get("text", "")[:160])
+
+            text_selector = MESSAGE_TEXT_SELECTORS[0]
+            for candidate in MESSAGE_TEXT_SELECTORS:
+                try:
+                    if page.query_selector(candidate) is not None:
+                        text_selector = candidate
+                        break
+                except Exception:  # noqa: BLE001
+                    continue
+
             messages: list[ChatMessage] = []
             for index, row in enumerate(rows):
                 text = ""
                 try:
-                    nodes = row.query_selector_all(MESSAGE_TEXT_SELECTOR)
+                    nodes = row.query_selector_all(text_selector)
                     if nodes:
                         text = "\n".join(_text_of(node) for node in nodes if _text_of(node))
                 except Exception:  # noqa: BLE001
@@ -220,27 +493,39 @@ class MessengerAdapter:
                         text=text[:2000],
                     )
                 )
+            self.last_diagnostics = dict(
+                diagnostics, status="ok", rows=len(rows), messages=len(messages), selector=selector
+            )
             return ThreadRead(messages=messages, status="ok", note=f"{len(rows)} baris")
         except Exception as exc:  # noqa: BLE001
-            return ThreadRead(status="kesalahan", note=f"{exc.__class__.__name__}: {exc}"[:300])
+            return ThreadRead(status="kesalahan", note=self._friendly_error(exc))
         finally:
-            if context is not None:
-                context.close()
-            playwright.stop()
+            self._close(playwright, context)
 
     # ------------------------------------------------------------------ kirim
     def send_message(self, url: str, text: str) -> tuple[bool, str]:
         if not text.strip():
             return False, "teks kosong"
-        playwright = self._launch()
+        playwright = None
         context = None
         try:
+            playwright = self._launch()
             context = self._context(playwright)
             page = context.pages[0] if context.pages else context.new_page()
             page.goto(url, wait_until="domcontentloaded", timeout=self.timeout_ms)
+            diagnostics = self._inspect(page)
             if self._login_required(page):
                 return False, "perlu_login"
-            composer = page.wait_for_selector(COMPOSER_SELECTOR, timeout=self.timeout_ms)
+            word = self._checkpoint_word(page, diagnostics)
+            if word or self._blocked(page, diagnostics):
+                return False, f"pemblokiran: {word or 'halaman pembatasan'}"
+
+            selector, composer = _first_match(page, COMPOSER_SELECTORS)
+            if composer is None:
+                try:
+                    composer = page.wait_for_selector(COMPOSER_SELECTORS[0], timeout=self.timeout_ms)
+                except Exception:  # noqa: BLE001
+                    return False, "kotak tulis tidak ditemukan (selector berubah)"
             composer.click()
             page.keyboard.type(text, delay=25)
             page.keyboard.press("Enter")
@@ -250,8 +535,76 @@ class MessengerAdapter:
                 return True, "terkirim"
             return False, "tidak terverifikasi terkirim"
         except Exception as exc:  # noqa: BLE001
-            return False, f"{exc.__class__.__name__}: {str(exc)[:200]}"
+            return False, self._friendly_error(exc)
         finally:
-            if context is not None:
-                context.close()
-            playwright.stop()
+            self._close(playwright, context)
+
+
+def diagnose(profile_dir: str | Path, *, headless: bool = False) -> dict:
+    """Buka inbox, laporkan apa yang terlihat. Tidak mengirim apa pun."""
+    adapter = MessengerAdapter(profile_dir=profile_dir, headless=headless)
+    ok, why = adapter.is_available()
+    if not ok:
+        return {"ok": False, "error": why}
+    result = adapter.list_threads_detailed(limit=10)
+    payload = dict(result.diagnostics)
+    payload["status"] = result.status
+    payload["threads"] = [
+        {"key": item.key, "name": item.name, "unread": item.unread} for item in result.threads
+    ]
+    return payload
+
+
+def _save_report(payload: dict, settings=None) -> Path | None:
+    """Simpan hasil pemeriksaan ke data/diagnostics/ supaya mudah dikirim."""
+    try:
+        root = Path(__file__).resolve().parent.parent.parent
+        if settings is not None:
+            base = Path(settings.data_dir)
+        else:
+            base = root / "data"
+        folder = base / "diagnostics"
+        folder.mkdir(parents=True, exist_ok=True)
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        path = folder / f"messenger-{stamp}.json"
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        return path
+    except OSError:
+        return None
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description="Periksa inbox Messenger (tanpa mengirim apa pun)"
+    )
+    parser.add_argument("--profile", default="", help="Folder profil browser")
+    parser.add_argument(
+        "--headless", action="store_true", help="Jalankan tanpa jendela (untuk laporan)"
+    )
+    parser.add_argument(
+        "--show", action="store_true", help="Tampilkan jendela browser (bisa Anda lihat)"
+    )
+    args = parser.parse_args(argv)
+
+    root = Path(__file__).resolve().parent.parent.parent
+    if str(root) not in sys.path:
+        sys.path.insert(0, str(root))
+    from fbworkspace.config import get_settings  # noqa: PLC0415
+    from fbworkspace.normalize import collapse_ws  # noqa: PLC0415
+
+    settings = get_settings()
+    profile = args.profile or str(settings.browser_profile_dir)
+
+    started = time.time()
+    payload = diagnose(profile, headless=not args.show)
+    payload["profile"] = str(profile)
+    payload["detik"] = round(time.time() - started, 1)
+    report = _save_report(payload, settings)
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    if report is not None:
+        print(f"\nLaporan disimpan: {collapse_ws(str(report))}")
+    return 0 if payload.get("status") == "ok" else 1
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())

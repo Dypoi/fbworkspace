@@ -27,7 +27,14 @@ from .models import (
 from .normalize import derive_dedupe_key, normalize_text
 from .pricelist import PriceEntry, default_entries
 
-SCHEMA_VERSION = "2"
+SCHEMA_VERSION = "3"
+
+# Kolom job yang ditambahkan setelah skema awal. Dibuat lewat ALTER TABLE
+# supaya database lama (milik pengguna) tetap bisa dibuka tanpa migrasi manual.
+_JOB_EXTRA_COLUMNS = (
+    ("kind", "TEXT NOT NULL DEFAULT 'browser'"),
+    ("diagnostics_json", "TEXT NOT NULL DEFAULT '{}'"),
+)
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -89,7 +96,8 @@ CREATE TABLE IF NOT EXISTS jobs (
     created_at     TEXT NOT NULL,
     started_at     TEXT,
     finished_at    TEXT,
-    heartbeat_at   TEXT
+    heartbeat_at   TEXT,
+    diagnostics_json TEXT NOT NULL DEFAULT '{}'
 );
 CREATE INDEX IF NOT EXISTS idx_jobs_created ON jobs(created_at DESC);
 
@@ -185,12 +193,28 @@ class Database:
     def init(self) -> None:
         with self.conn() as conn:
             conn.executescript(_SCHEMA)
+            self._ensure_columns(conn)
             conn.execute(
                 "INSERT INTO schema_meta(key, value) VALUES('schema_version', ?) "
                 "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                 (SCHEMA_VERSION,),
             )
         self.seed_prices_if_empty()
+
+    @staticmethod
+    def _ensure_columns(conn: sqlite3.Connection) -> None:
+        """Tambahkan kolom baru ke database lama (idempoten, tanpa kehilangan data)."""
+        existing = {
+            row["name"] for row in conn.execute("PRAGMA table_info(jobs)").fetchall()
+        }
+        for name, definition in _JOB_EXTRA_COLUMNS:
+            if name in existing:
+                continue
+            try:
+                conn.execute(f"ALTER TABLE jobs ADD COLUMN {name} {definition}")
+            except sqlite3.OperationalError:
+                # Kolom sudah ada (proses lain menambahkannya lebih dulu).
+                continue
 
     # ---------------------------------------------------------------- postingan
     def insert_post(
@@ -485,7 +509,7 @@ class Database:
     def update_job(self, job_id: int, **fields: Any) -> None:
         allowed = {
             "status", "message", "counters_json", "stop_requested", "pid",
-            "started_at", "finished_at", "heartbeat_at",
+            "started_at", "finished_at", "heartbeat_at", "diagnostics_json",
         }
         sets, params = [], []
         for key, value in fields.items():
@@ -856,7 +880,12 @@ def _row_to_post(row: sqlite3.Row) -> dict[str, Any]:
 
 def _row_to_job(row: sqlite3.Row) -> dict[str, Any]:
     data = dict(row)
-    for key, default in (("group_urls_json", []), ("config_json", {}), ("counters_json", {})):
+    for key, default in (
+        ("group_urls_json", []),
+        ("config_json", {}),
+        ("counters_json", {}),
+        ("diagnostics_json", {}),
+    ):
         try:
             data[key.replace("_json", "")] = json.loads(data.get(key) or json.dumps(default))
         except (TypeError, json.JSONDecodeError):

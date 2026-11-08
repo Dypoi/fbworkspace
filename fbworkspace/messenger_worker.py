@@ -139,17 +139,46 @@ def run(
         )
 
     try:
-        threads, list_status = adapter.list_threads(limit=max_threads)
+        threads, list_status, diagnostics = _list_threads(adapter, max_threads)
+        counters["threads"] = len(threads)
         if list_status == "perlu_login":
             esc = build_login_escalation()
             _escalate(db, job_id, None, esc, counters, sender, dry_run, log)
             status = JobStatus.BLOCKED.value
-            message = "Facebook meminta login. Buka jendela login lalu jalankan ulang."
-            db.log_event(job_id, "warning", message)
+            message = (
+                "Facebook meminta login. Jalankan scripts\\login_helper.py, login sendiri, "
+                "lalu jalankan ulang."
+            )
+            log("warning", message)
+            threads = []
+        elif list_status == "pemblokiran":
+            esc = build_login_escalation()
+            _escalate(db, job_id, None, esc, counters, sender, dry_run, log)
+            status = JobStatus.BLOCKED.value
+            detail = diagnostics.get("reason") or diagnostics.get("title") or "halaman pembatasan"
+            message = (
+                f"Facebook menampilkan halaman pembatasan ({detail}). "
+                "Buka Facebook sendiri, selesaikan di sana, lalu jalankan ulang."
+            )
+            log("warning", message)
+            threads = []
+        elif list_status == "kesalahan":
+            status = JobStatus.FAILED.value
+            message = "Gagal membuka Messenger: " + str(diagnostics.get("error") or "tidak diketahui")
+            log("error", message)
             threads = []
         elif list_status != "ok":
-            log("warning", f"Daftar chat tidak terbaca: {list_status}")
-        counters["threads"] = len(threads)
+            detail = _diagnostics_line(diagnostics)
+            message = (
+                "Tidak ada chat yang terbaca di Messenger. Kemungkinan: belum login di jendela "
+                "browser yang dipakai worker, atau susunan halaman Facebook berubah."
+            )
+            log("warning", f"{message} Diagnostik: {detail}")
+            threads = []
+        if status == JobStatus.COMPLETED.value and list_status != "ok":
+            # Jujur: berhenti tanpa membaca chat bukan "sukses".
+            status = JobStatus.BLOCKED.value if list_status != "kesalahan" else status
+        db.update_job(job_id, diagnostics_json=json.dumps(diagnostics, ensure_ascii=False))
         push()
 
         for thread in threads:
@@ -192,6 +221,8 @@ def run(
                 f"{counters['escalations']} eskalasi, {counters['errors']} error."
                 + (" (uji kering: tidak ada yang dikirim)" if dry_run else "")
             )
+        elif status == JobStatus.BLOCKED.value and not message:
+            message = "Worker berhenti sebelum membaca chat; lihat log di bawah."
     except KeyboardInterrupt:
         status = JobStatus.STOPPED.value
         message = "Worker dihentikan (Ctrl+C)."
@@ -218,6 +249,40 @@ def run(
     return 0 if status == JobStatus.COMPLETED.value else 1
 
 
+def _list_threads(adapter, limit: int):
+    """Ambil daftar chat + diagnostik, dengan adapter lama tetap didukung."""
+    detailed = getattr(adapter, "list_threads_detailed", None)
+    if callable(detailed):
+        result = detailed(limit=limit)
+        return result.threads, result.status, dict(result.diagnostics or {})
+    threads, status = adapter.list_threads(limit=limit)
+    return threads, status, dict(getattr(adapter, "last_diagnostics", {}) or {})
+
+
+def _diagnostics_line(diagnostics: dict) -> str:
+    """Ringkasan pendek apa yang terlihat di halaman (untuk log/dashboard)."""
+    if not diagnostics:
+        return "(tidak ada diagnostik)"
+    parts = []
+    url = str(diagnostics.get("url") or "")[:120]
+    if url:
+        parts.append(f"url={url}")
+    title = str(diagnostics.get("title") or "")[:60]
+    if title:
+        parts.append(f"judul={title!r}")
+    parts.append(f"tautan_chat={diagnostics.get('thread_links', 0)}")
+    parts.append(f"baris={diagnostics.get('rows', 0)}")
+    parts.append(f"kotak_tulis={'ada' if diagnostics.get('composer') else 'tidak ada'}")
+    if diagnostics.get("login_form"):
+        parts.append("form_login=ada")
+    text = str(diagnostics.get("text") or "")[:140]
+    if text:
+        parts.append(f"teks={text!r}")
+    if diagnostics.get("error"):
+        parts.append(f"error={diagnostics['error']}")
+    return " | ".join(parts)
+
+
 def _handle_thread(
     *,
     db: Database,
@@ -236,9 +301,16 @@ def _handle_thread(
 ) -> int:
     """Baca & tanggapi satu percakapan. Kembalikan jumlah pesan masuk baru."""
     known_out = db.outgoing_texts(thread.key)
-    read = adapter.read_thread(thread.url, known_out=known_out)
+    try:
+        read = adapter.read_thread(thread.url, known_out=known_out)
+    except Exception as exc:  # noqa: BLE001 - satu chat rusak tidak boleh menghentikan job
+        counters["errors"] += 1
+        log("error", f"[{thread.name}] gagal membuka chat: {exc.__class__.__name__}: {exc}"[:300])
+        return 0
     if read.status != "ok":
-        log("warning", f"[{thread.name}] gagal membaca chat: {read.status} {read.note}".strip())
+        note = f" ({read.note})" if read.note else ""
+        counters["errors"] += 1
+        log("warning", f"[{thread.name}] gagal membaca chat: {read.status}{note}"[:300])
         return 0
 
     new_messages = 0
