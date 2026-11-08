@@ -935,3 +935,68 @@ def test_no_closing_without_matching_reply(tmp_path):
     read = ThreadRead([CM("m1", "in", "Berapa ya")], "ok")
     assert _close_answered_by_reply(db, THREAD_KEY, read, ["balasan lain"]) == 0
     assert len(db.unanswered_incoming(THREAD_KEY)) == 1
+
+
+_REAL_ORDER_20_19 = [
+    ChatMessage("a", "in", "Iphone 11 ready?"),
+    ChatMessage("o1", "out", "Ready kak"),
+    ChatMessage("o2", "out", "Storage-nya 64GB, 128GB, atau 256GB kak?"),
+    ChatMessage("o3", "out", "Storage-nya 64GB, 128GB, atau 256GB kak?"),
+    ChatMessage("o4", "out", "2.600.000 kak"),
+    ChatMessage("b", "in", "Iphone 8 ready?"),
+    ChatMessage("o5", "out", "coba"),
+    ChatMessage("c", "in", "Berapa ya"),
+    ChatMessage("d", "in", "128 kak"),
+]
+
+
+class _MetaMessenger(FakeMessenger):
+    def read_thread(self, url, *, known_out=None, thread_name=""):
+        from fbworkspace.browser.messenger import ThreadRead
+
+        return ThreadRead(
+            messages=self.messages.get(url, []), status="ok", meta={"our_side": "kanan"}
+        )
+
+
+def test_real_order_still_answers_latest_message(tmp_path):
+    """Laporan 20:19: 9 pesan terbaca, '128 kak' tetap harus ditanggapi."""
+    db = Database(tmp_path / "chat.db")
+    adapter = _MetaMessenger(
+        [Thread(THREAD_KEY, "Pak Bagus Sunaryo", THREAD_URL)],
+        {THREAD_URL: _REAL_ORDER_20_19},
+    )
+    job_id = _job(db, dry_run=False)
+    sender = MemorySender()
+    run(job_id, adapter=adapter, sender=sender, database=db,
+        settings=_settings(tmp_path), sleep=lambda s: None)
+
+    job = db.get_job(job_id)
+    # 128GB iPhone 8 tidak ada di daftar -> tidak dikarang, tetapi TIDAK diam:
+    # pemilik diberi tahu lewat WA.
+    assert adapter.sent == []
+    assert sender.sent and "128 kak" in sender.sent[0]
+    assert job["counters"]["escalations"] == 1
+
+
+def test_incoming_after_our_reply_is_not_closed(tmp_path):
+    """Pesan masuk sesudah balasan kita tidak boleh dianggap 'sudah ditanggapi'."""
+    from fbworkspace.browser.messenger import ChatMessage as CM
+    from fbworkspace.browser.messenger import ThreadRead
+    from fbworkspace.messenger_worker import _close_answered_by_reply
+
+    db = Database(tmp_path / "chat.db")
+    db.upsert_chat(THREAD_KEY, name="x", url=THREAD_URL)
+    db.record_message(THREAD_KEY, "m1", direction="in", text="Iphone 8 ready?")
+
+    read = ThreadRead(
+        [
+            CM("m1", "in", "Iphone 8 ready?"),
+            CM("o1", "out", "coba"),
+        ],
+        "ok",
+    )
+    # "coba" bukan balasan template -> pesan pembeli tidak dianggap terjawab
+    closed = _close_answered_by_reply(db, THREAD_KEY, read, ["coba"])
+    assert closed == 1  # hanya pesan SEBELUM balasan (di sini tidak ada yang lain)
+    assert db.unanswered_incoming(THREAD_KEY) == []

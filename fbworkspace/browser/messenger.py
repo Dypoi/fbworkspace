@@ -287,9 +287,37 @@ EXTRACT_JS = """
   if (composer) variant = 'baru';
   else if (textarea || editableInForm) variant = 'klasik';
 
+  // "18:10 by Pak Bagus: 128 kak" / "18:10 by You: …" -> nama pengirim per pesan.
+  const parseSender = (raw) => {
+    const low = raw.toLowerCase();
+    const byIndex = low.lastIndexOf(' by ');
+    const olehIndex = low.lastIndexOf(' oleh ');
+    const idx = byIndex > olehIndex ? byIndex : olehIndex;
+    if (idx < 0) return null;
+    const skip = idx === byIndex ? 4 : 6;
+    const rest = raw.slice(idx + skip);
+    const colon = rest.indexOf(':');
+    if (colon < 0) return null;
+    const sender = squash(rest.slice(0, colon));
+    const text = squash(rest.slice(colon + 1));
+    if (!sender || !text) return null;
+    return {sender: sender, text: text};
+  };
+  const senders = [];
+  const seenSender = {};
+  for (const el of Array.from(document.querySelectorAll('[aria-label]'))) {
+    const parsed = parseSender(el.getAttribute('aria-label') || '');
+    if (!parsed) continue;
+    const key = parsed.sender + '|' + parsed.text;
+    if (seenSender[key]) continue;
+    seenSender[key] = true;
+    senders.push(parsed);
+  }
+
   return {
     nodes: nodes,
     labels: labels,
+    senders: senders,
     composer: composer ? box(composer) : null,
     container: container ? box(container) : null,
     found_container: !!container,
@@ -382,6 +410,7 @@ class ChatMessage:
     author: str = ""
     unread: bool = False  # ditandai Facebook sebagai belum dibaca
     side: str = ""  # "kiri" (lawan bicara) | "kanan" (kita) | "" (tidak diketahui)
+    sender: str = ""  # nama pengirim dari aria-label ("You" / nama pembeli)
 
 
 @dataclass
@@ -389,6 +418,9 @@ class ThreadRead:
     messages: list[ChatMessage] = field(default_factory=list)
     status: str = "ok"
     note: str = ""
+    # Ringkasan pembacaan (mis. our_side, labels, senders) untuk memutuskan apakah
+    # arah pesan layak dipercaya.
+    meta: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -944,6 +976,23 @@ def filter_text_nodes(
 
     messages.sort(key=lambda m: m["y"])
     messages = _merge_labels(messages, payload.get("labels") or [])
+    # Nama pengirim per pesan (dari aria-label): membedakan "You" dan pembeli,
+    # termasuk saat teksnya sama persis. Ini mencegah pesan masuk dianggap
+    # "sudah ditanggapi" hanya karena ada balasan kita dengan teks yang sama.
+    senders = _sender_label_pairs(payload.get("senders") or [], chat_name)
+    if senders:
+        before = len(messages)
+        _pair_by_sender(messages, senders)
+        meta["senders"] = len(senders)
+        if len(messages) > before:
+            # Pesan baru dari label belum punya posisi: taruh di akhir urutan.
+            known_y = [m["y"] for m in messages if m.get("y") is not None]
+            tail = (max(known_y) + 1) if known_y else 0
+            for msg in messages:
+                if msg.get("y") is None:
+                    tail += 1
+                    msg["y"] = tail
+    messages.sort(key=lambda m: (m["y"] is None, m["y"] or 0))
     meta["labels"] = len(payload.get("labels") or [])
     meta["used"] = len(messages)
     meta["lines"] = [
@@ -958,6 +1007,73 @@ def filter_text_nodes(
 _LABEL_AUTHOR_RE = re.compile(
     r"^(?:message\s+sent|pesan\s+terkirim)\b", re.IGNORECASE
 )
+
+_OUR_AUTHORS = {"you", "anda", "kamu", "saya", "me"}
+# Kata yang muncul di dalam teks pesan tetapi bukan penanda pengirim.
+_NOT_AN_AUTHOR = _OUR_AUTHORS | {"reply"}
+
+
+def _is_our_author(author: str) -> bool:
+    return " ".join((author or "").lower().split()) in _OUR_AUTHORS
+
+
+def _sender_label_pairs(labels: list[dict], chat_name: str) -> dict[int, list[str]]:
+    """Pasangkan label "Message sent" dengan nama pengirim dari aria-label lain.
+
+    Facebook juga menulis ``"Enter, 18:10 by Pak Bagus: 128 kak"`` (tanpa
+    "Message sent") atau ``"18:10 by You: …"`` pada elemen yang sama. Nama pengirim
+    itulah yang membedakan pesan kita dan pesan pembeli — termasuk saat teksnya
+    sama persis (mis. "Ready kak" dua kali).
+    """
+    names = {" ".join((chat_name or "").lower().split())}
+    senders: list[dict] = []
+    for item in labels:
+        name = " ".join(str(item.get("sender") or "").lower().split())
+        text = " ".join(str(item.get("text") or "").split())
+        if not name or not text:
+            continue
+        lowered = name.lower()
+        if lowered in _NOT_AN_AUTHOR - _OUR_AUTHORS:
+            continue  # mis. "Reply" bukan nama pengirim
+        if lowered in names:
+            names.discard(lowered)
+        senders.append(item)
+    if senders:
+        return senders
+    return []
+
+
+def _pair_by_sender(messages: list[dict], senders: list[dict]) -> None:
+    """Tetapkan arah dari nama pengirim, mencocokkan tiap pesan satu per satu."""
+    used: set[int] = set()
+    for sender in senders:
+        name = str(sender.get("sender") or "").strip()
+        text = " ".join(str(sender.get("text") or "").split())
+        if not text:
+            continue
+        ours = _is_our_author(name)
+        for index, msg in enumerate(messages):
+            if index in used or not _same_text(msg["text"], text):
+                continue
+            used.add(index)
+            if not msg.get("unread"):
+                msg["direction"] = "out" if ours else "in"
+                msg["sender"] = name
+            break
+        else:
+            messages.append(
+                {
+                    "text": text,
+                    "direction": "out" if ours else "in",
+                    "y": None,
+                    "unread": False,
+                    "side": "",
+                    "known": False,
+                    "no_box": True,
+                    "from_label": True,
+                    "sender": name,
+                }
+            )
 
 
 def _same_text(left: str, right: str) -> bool:
@@ -988,7 +1104,7 @@ def _merge_labels(messages: list[dict], labels: list[dict], *, our_name: str = "
         text = str(label.get("text") or "").strip()
         if not text:
             continue
-        ours = author.lower() in {"you", "anda", "kamu"}
+        ours = _is_our_author(author)
         match = None
         for index, msg in enumerate(messages):
             if index in used:
@@ -1687,7 +1803,10 @@ class MessengerAdapter:
                 **({"cadangan": cadangan_note} if cadangan_note else {}),
             )
             return ThreadRead(
-                messages=messages, status="ok", note=f"{len(messages)} pesan terbaca"
+                messages=messages,
+                status="ok",
+                note=f"{len(messages)} pesan terbaca",
+                meta=dict(meta),
             )
         except Exception as exc:  # noqa: BLE001
             return ThreadRead(status="kesalahan", note=self._friendly_error(exc))

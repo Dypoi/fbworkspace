@@ -447,7 +447,10 @@ def _handle_thread(
     for msg in read.messages:
         if db.record_message(thread.key, msg.key, direction=msg.direction, text=msg.text):
             new_messages += 1
-        elif db.fix_message_direction(thread.key, msg.key, direction=msg.direction):
+        elif (
+            _direction_is_reliable(read, msg)
+            and db.fix_message_direction(thread.key, msg.key, direction=msg.direction)
+        ):
             flipped += 1
     if flipped:
         log(
@@ -642,6 +645,9 @@ def _close_answered_by_reply(db, thread_key: str, read, replies: list[str]) -> i
                 break
     if last_reply_index <= 0:
         return 0
+    # Hanya pesan yang benar-benar berada SEBELUM balasan terakhir yang ditutup.
+    # Pesan sesudahnya (mis. "Iphone 8 ready?" yang muncul belakangan) tetap
+    # menunggu jawaban; jangan tertutup karena ada balasan kita dengan teks sama.
     keys = [
         msg.key for msg in messages[:last_reply_index] if getattr(msg, "direction", "") == "in"
     ]
@@ -675,6 +681,19 @@ def _context_before(read, text: str, limit: int = 6) -> list[str]:
         index = len(messages)
     before = messages[:index]
     return [msg.text for msg in before if getattr(msg, "direction", "") == "in"][-limit:]
+
+
+def _direction_is_reliable(read, msg) -> bool:
+    """Arah pesan layak dipercaya?
+
+    Hanya bila datang dari bukti Facebook (label pengirim / penanda belum dibaca)
+    atau dari penentuan sisi yang konsisten. Arah hasil tebakan posisi tidak dipakai
+    untuk mengubah data (pernah menyebabkan pesan masuk berubah jadi "out").
+    """
+    if getattr(msg, "unread", False) or getattr(msg, "sender", ""):
+        return True
+    meta = dict(getattr(read, "meta", {}) or {})
+    return bool(meta.get("our_side"))
 
 
 def _pick_target(read, pending: list[dict]):

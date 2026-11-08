@@ -216,6 +216,11 @@ def compose_reply(
     intents = detect_intents(text)
     model = detect_model(text)
     storage = detect_storage(text)
+    # "128 kak" adalah jawaban, bukan sapaan — jangan sampai dianggap small talk.
+    # Tetapi jangan menambah intent harga: itu memicu pertanyaan storage, padahal
+    # pembeli cuma bertanya ketersediaan ("Iphone 11 ready?" -> "Ready kak").
+    if storage is not None and "harga" not in intents:
+        intents = tuple(sorted(set(intents) | {"harga"}))
     # "64gb" saja (tanpa model): ini jawaban atas pertanyaan kita sendiri, mis.
     # kita tanya storage setelah "Iphone 11 ready?". Warisi model dari konteks,
     # lalu harga tetap diambil dari daftar harga.
@@ -398,12 +403,27 @@ def _model_from_context(
     if not context:
         return MatchResult(model_key=None, mention=""), storage
     for earlier in reversed(list(context)[-6:]):
-        found = detect_model(str(earlier))
+        line = str(earlier)
+        # Pertanyaan kita sendiri ("Storage-nya 64GB, 128GB, atau 256GB kak?")
+        # menyebut banyak ukuran; bukan model yang dibicarakan pembeli.
+        if looks_like_our_storage_question(line):
+            continue
+        found = detect_model(line)
         if not found.model_key:
             continue
-        inherited = detect_storage(str(earlier))
+        inherited = detect_storage(line)
         return found, (storage if storage is not None else inherited)
     return MatchResult(model_key=None, mention=""), storage
+
+
+def looks_like_our_storage_question(text: str) -> bool:
+    """True untuk pertanyaan storage yang dikirim worker sendiri."""
+    lowered = " ".join((text or "").lower().split())
+    if not lowered:
+        return False
+    if lowered.startswith("storage-nya") or lowered.startswith("storage nya"):
+        return True
+    return lowered.count("gb") >= 2 and "?" in lowered
 
 
 def summarize_entries(entries: list[PriceEntry]) -> str:

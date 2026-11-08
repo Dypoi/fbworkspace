@@ -1173,3 +1173,40 @@ class TestStorageAnswerAndLatestTarget:
         from fbworkspace.browser.messenger import pick_answer_target
 
         assert pick_answer_target([{"text": "ok makasih kak", "direction": "in"}]) is None
+
+
+class TestSenderNames:
+    """Teks kembar ("Ready kak" dari kita dan pembeli) dibedakan lewat nama pengirim."""
+
+    def payload(self):
+        return {
+            "composer": {"x": 420, "y": 690, "w": 620, "h": 40},
+            "container": {"x": 360, "y": 110, "w": 640, "h": 570},
+            "found_container": True,
+            "vw": 1280,
+            "nodes": [
+                {"text": "Iphone 11 ready?", "x": 380, "y": 300, "w": 140, "h": 30},
+                {"text": "Ready kak", "x": 860, "y": 360, "w": 100, "h": 30},
+                {"text": "Ready kak", "x": 380, "y": 420, "w": 100, "h": 30},
+            ],
+            "labels": [],
+            "senders": [
+                {"sender": "Pak Bagus", "text": "Iphone 11 ready?"},
+                {"sender": "You", "text": "Ready kak"},
+                {"sender": "Pak Bagus", "text": "Ready kak"},
+            ],
+        }
+
+    def test_duplicate_text_assigned_in_order(self):
+        from fbworkspace.browser.messenger import filter_text_nodes
+
+        messages, _, meta = filter_text_nodes(self.payload(), chat_name="Pak Bagus")
+        assert [m["direction"] for m in messages] == ["in", "out", "in"]
+        assert meta["senders"] == 3
+
+    def test_incoming_after_our_reply_stays_in(self):
+        from fbworkspace.browser.messenger import filter_text_nodes
+
+        messages, _, _ = filter_text_nodes(self.payload(), chat_name="Pak Bagus")
+        assert messages[-1]["direction"] == "in"
+        assert messages[-1]["sender"] == "Pak Bagus"
