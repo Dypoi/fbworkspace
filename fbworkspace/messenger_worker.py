@@ -333,6 +333,9 @@ def _handle_thread(
         note = f" ({read.note})" if read.note else ""
         counters["errors"] += 1
         log("warning", f"[{thread.name}] gagal membaca chat: {read.status}{note}"[:300])
+        debug = (getattr(adapter, "last_diagnostics", {}) or {}).get("debug") or {}
+        if debug.get("dropped"):
+            log("info", f"[{thread.name}] contoh baris yang dilewati: " + " ; ".join(debug["dropped"][:4])[:400])
         return 0
 
     new_messages = 0

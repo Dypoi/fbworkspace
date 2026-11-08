@@ -67,13 +67,17 @@ class FakePage:
 
 
 class FakeSkill:
-    """Elemen palsu dengan atribut & teks."""
+    """Elemen palsu dengan atribut, teks, dan kotak di layar."""
 
-    def __init__(self, text="", href="", aria_label="", children=None):
+    def __init__(self, text="", href="", aria_label="", children=None, box=None):
         self._text = text
         self._href = href
         self._aria = aria_label
         self._children = children or {}
+        self._box = box
+
+    def bounding_box(self):
+        return self._box
 
     def get_attribute(self, name):
         if name == "href":
@@ -368,3 +372,77 @@ class TestConversationReading:
         read = adapter.read_thread("https://www.facebook.com/messages/t/123/")
         assert read.status == "ok"
         assert [m.text for m in read.messages] == ["Iphone 11 ready?"]
+
+
+class TestLayoutAnchoring:
+    """Regresi nyata: panel detail kanan ("Customise chat") terbaca sebagai pesan."""
+
+    # layar 1280 lebar: sidebar 0-360, percakapan 360-950, panel detail 950-1280
+    COMPOSER = FakeSkill(box={"x": 400, "y": 700, "width": 500, "height": 40})
+
+    def _page(self, rows):
+        return FakePage(
+            elements={
+                'div[role="main"] div[role="row"]': rows,
+                'div[contenteditable="true"][role="textbox"]': self.COMPOSER,
+            }
+        )
+
+    def _bubble(self, text, x, width=300):
+        return FakeSkill(
+            children={'div[dir="auto"]': FakeSkill(text=text)},
+            box={"x": x, "y": 300, "width": width, "height": 40},
+        )
+
+    def test_detail_panel_rows_are_ignored(self, monkeypatch):
+        rows = [
+            self._bubble("Iphone 11 ready?", x=380),        # pembeli (kiri)
+            self._bubble("Ready kak", x=700),               # kita (kanan)
+            self._bubble("Customise chat", x=980),          # panel detail
+            self._bubble("Media and files", x=980),         # panel detail
+        ]
+        adapter = adapter_with_page(self._page(rows), monkeypatch)
+        read = adapter.read_thread("https://www.facebook.com/messages/t/123/")
+        assert read.status == "ok"
+        assert [m.text for m in read.messages] == ["Iphone 11 ready?", "Ready kak"]
+
+    def test_direction_uses_position(self, monkeypatch):
+        rows = [self._bubble("halo kak", x=380), self._bubble("iya kak", x=700)]
+        adapter = adapter_with_page(self._page(rows), monkeypatch)
+        read = adapter.read_thread("https://www.facebook.com/messages/t/123/")
+        assert [m.direction for m in read.messages] == ["in", "out"]
+
+    def test_rows_below_composer_ignored(self, monkeypatch):
+        rows = [
+            self._bubble("pesan asli", x=380),
+            FakeSkill(
+                children={'div[dir="auto"]': FakeSkill(text="Ketik pesan")},
+                box={"x": 400, "y": 800, "width": 400, "height": 40},
+            ),
+        ]
+        adapter = adapter_with_page(self._page(rows), monkeypatch)
+        read = adapter.read_thread("https://www.facebook.com/messages/t/123/")
+        assert [m.text for m in read.messages] == ["pesan asli"]
+
+    def test_debug_lists_dropped_rows(self, monkeypatch):
+        rows = [
+            self._bubble("Iphone 11 ready?", x=380),
+            self._bubble("Customise chat", x=980),
+        ]
+        adapter = adapter_with_page(self._page(rows), monkeypatch)
+        adapter.read_thread("https://www.facebook.com/messages/t/123/")
+        dropped = " ".join(adapter.last_debug["dropped"])
+        assert "Customise chat" in dropped
+
+    def test_without_composer_text_filter_applies(self, monkeypatch):
+        # Tidak ada kotak tulis: label UI tetap dibuang oleh filter teks.
+        rows = [
+            self._bubble("Iphone 11 ready?", x=380),
+            self._bubble("Customise chat", x=980),
+        ]
+        page = FakePage(elements={'div[role="main"] div[role="row"]': rows})
+        adapter = adapter_with_page(page, monkeypatch)
+        read = adapter.read_thread("https://www.facebook.com/messages/t/123/")
+        assert read.status == "ok"
+        assert [m.text for m in read.messages] == ["Iphone 11 ready?"]
+        assert any("kotak tulis tidak ditemukan" in d for d in adapter.last_debug["dropped"])

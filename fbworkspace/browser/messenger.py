@@ -112,6 +112,38 @@ UI_NOISE_LABELS = (
     "dibaca",
     "seen",
     "delivered",
+    "customise chat",
+    "customize chat",
+    "media and files",
+    "media, files",
+    "privacy & support",
+    "privasi & dukungan",
+    "mute",
+    "bisukan",
+    "search in conversation",
+    "cari dalam percakapan",
+    "add people",
+    "tambah orang",
+    "create group",
+    "buat grup",
+    "leave chat",
+    "keluar dari chat",
+    "archive",
+    "arsipkan",
+    "delete chat",
+    "hapus chat",
+    "block",
+    "blokir",
+    "report",
+    "laporkan",
+    "open profile",
+    "buka profil",
+    "theme",
+    "tema",
+    "emoji",
+    "nicknames",
+    "nama panggilan",
+    "edit nicknames",
 )
 
 LOGIN_MARKERS = (
@@ -217,6 +249,74 @@ def _clean_message_text(text: str) -> str:
     return "\n".join(kept).strip()
 
 
+def _row_text(row) -> str:
+    """Teks mentah satu baris (untuk catatan diagnosa, bukan untuk disimpan).
+
+    ``inner_text`` didahulukan karena elemen baris sungguhan di Messenger berisi
+    teks; pembungkus tanpa teks sendiri tetap punya teks dari anak-anaknya.
+    """
+    text = _text_of(row)
+    if not text:
+        for selector in MESSAGE_TEXT_SELECTORS:
+            try:
+                nodes = row.query_selector_all(selector)
+            except Exception:  # noqa: BLE001
+                nodes = []
+            if nodes:
+                text = " ".join(_text_of(node) for node in nodes if _text_of(node))
+                break
+    return " ".join((text or "").split())
+
+
+def _box(element) -> dict | None:
+    """Kotak elemen di layar (None bila tidak terlihat)."""
+    try:
+        return element.bounding_box()
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _conversation_area(page) -> dict | None:
+    """Tentukan area percakapan dari kotak tulis.
+
+    Ini menjawab masalah nyata: di halaman percakapan, elemen ``role="row"`` juga
+    dipakai panel detail di KANAN ("Customise chat", "Media and files") dan
+    sidebar di KIRI. Pesan sebenarnya berada di kolom yang sama dengan kotak tulis.
+    """
+    _, composer = _first_match(page, COMPOSER_SELECTORS)
+    if composer is None:
+        return None
+    box = _box(composer)
+    if not box or not box.get("width"):
+        return None
+    margin = 60
+    return {
+        "left": box["x"] - margin,
+        "right": box["x"] + box["width"] + margin,
+        "center": box["x"] + box["width"] / 2,
+        "bottom": box["y"] + box.get("height", 0),
+    }
+
+
+def _in_area(box: dict | None, area: dict | None) -> bool:
+    if box is None or area is None:
+        return True  # tanpa informasi posisi, jangan buang (biar filter teks bekerja)
+    center = box["x"] + box.get("width", 0) / 2
+    return area["left"] <= center <= area["right"]
+
+
+def _direction_by_position(box: dict | None, area: dict | None) -> str:
+    """Di Messenger, pesan kita rata kanan, pesan pembeli rata kiri."""
+    if box is None or area is None:
+        return ""
+    center = box["x"] + box.get("width", 0) / 2
+    if center > area["center"] + 24:
+        return "out"
+    if center < area["center"] - 24:
+        return "in"
+    return ""
+
+
 def _msg_key(thread_key: str, index: int, text: str) -> str:
     digest = hashlib.sha1(text.encode("utf-8", "ignore")).hexdigest()[:10]
     return f"{thread_key}:{index}:{digest}"
@@ -319,6 +419,8 @@ class MessengerAdapter:
         self.pin_auto = pin_auto
         self.pin_attempts = 0
         self.pin_status = "tidak diminta"
+        # Cuplikan kandidat pesan yang dibuang/terpakai — untuk diagnosa.
+        self.last_debug: dict = {}
         self.last_diagnostics: dict = {}
 
     # ------------------------------------------------------------------ util
@@ -668,8 +770,19 @@ class MessengerAdapter:
                 except Exception:  # noqa: BLE001
                     continue
 
+            # Area percakapan = kolom yang sama dengan kotak tulis. Tanpa ini,
+            # panel detail di kanan ("Customise chat", "Media and files") ikut terbaca.
+            area = _conversation_area(page)
+            dropped: list[str] = []
             messages: list[ChatMessage] = []
             for index, row in enumerate(rows):
+                box = _box(row)
+                if not _in_area(box, area):
+                    dropped.append(f"(di luar area) {_row_text(row)[:40]}")
+                    continue
+                if area is not None and box is not None and box.get("y", 0) > area["bottom"] + 40:
+                    dropped.append(f"(di bawah kotak tulis) {_row_text(row)[:40]}")
+                    continue
                 text = ""
                 try:
                     nodes = row.query_selector_all(text_selector)
@@ -679,16 +792,31 @@ class MessengerAdapter:
                     text = ""
                 if not text:
                     text = _text_of(row)
+                raw = " ".join(text.split())[:80]
                 text = _clean_message_text(text)
                 if not text:
+                    dropped.append(f"(label UI) {raw}")
                     continue
+                if len(text) > 1200:
+                    dropped.append(f"(kepanjangan) {raw}")
+                    continue
+                position_direction = _direction_by_position(box, area)
+                direction = _direction(row, text, known_out or []) if not position_direction else position_direction
                 messages.append(
                     ChatMessage(
                         key=_msg_key(thread_key, index, text),
-                        direction=_direction(row, text, known_out or []),
+                        direction=direction,
                         text=text[:2000],
                     )
                 )
+            if area is None:
+                dropped.append("(kotak tulis tidak ditemukan -> pemfilteran posisi dilewati)")
+            self.last_debug = {
+                "rows": len(rows),
+                "used": len(messages),
+                "dropped": dropped[:15],
+                "area": area,
+            }
             if not messages:
                 self.last_diagnostics = dict(
                     diagnostics,
@@ -696,6 +824,7 @@ class MessengerAdapter:
                     rows=len(rows),
                     messages=0,
                     conversation_selector=selector or "",
+                    debug=self.last_debug,
                 )
                 return ThreadRead(
                     status="tidak_ada_pesan",
@@ -708,6 +837,7 @@ class MessengerAdapter:
                 rows=len(rows),
                 messages=len(messages),
                 conversation_selector=selector or "",
+                debug=self.last_debug,
             )
             return ThreadRead(messages=messages, status="ok", note=f"{len(rows)} baris")
         except Exception as exc:  # noqa: BLE001
