@@ -1027,6 +1027,24 @@ def _side_of(node: dict, area: dict) -> str:
 
 
 # Permintaan eksplisit ("berapa ya") vs sapaan/obrolan ("iyaa", "halo kak").
+# "128 kak" / "64gb" / "yang 256" = jawaban atas pertanyaan storage kita.
+_STORAGE_ONLY_RE = re.compile(
+    r"^\s*(?:yang\s+|yg\s+|ambil\s+|pilih\s+|mau\s+)?"
+    r"(?P<size>\d{2,4})\s*(?:gb|g|tb)?"
+    r"(?:\s*(?:kak|ka|gan|bang|bg|om|sis|min|ya|aja|saja|deh|dong))?\s*[.?!]*\s*$",
+    re.IGNORECASE,
+)
+
+# Sapaan/ucapan terima kasih saja: bukan pertanyaan, tidak perlu dijawab.
+_SMALL_TALK_WORDS = frozenset(
+    {
+        "halo", "hai", "hi", "hallo", "assalamualaikum", "salam", "permisi",
+        "pagi", "siang", "malam", "sore", "kak", "gan", "bang", "bg", "bro", "sis",
+        "min", "ok", "oke", "okay", "sip", "siap", "makasih", "thanks", "terima",
+        "iya", "iyaa", "ya", "p", "ping", "wkwk", "wkwkwk",
+    }
+)
+
 _REQUEST_WORDS = (
     "berapa", "harga", "hrg", "ready", "stok", "stock", "ada gak", "ada ga", "ada nggak",
     "masih ada", "cod", "lokasi", "alamat", "dimana", "di mana", "minta no", "nomor",
@@ -1042,7 +1060,25 @@ def looks_like_request(text: str) -> bool:
         return False
     if "?" in lowered:
         return True
+    if _STORAGE_ONLY_RE.match(lowered):
+        return True
     return any(word in lowered for word in _REQUEST_WORDS)
+
+
+def looks_like_storage_only(text: str) -> bool:
+    """True bila pesan hanya menyebut ukuran storage (jawaban pertanyaan kita)."""
+    return bool(_STORAGE_ONLY_RE.match(" ".join((text or "").lower().split())))
+
+
+def is_small_talk(text: str) -> bool:
+    """True bila pesan hanya sapaan/ucapan terima kasih (tanpa pertanyaan)."""
+    lowered = " ".join((text or "").lower().split())
+    if not lowered or looks_like_request(lowered):
+        return False
+    words = re.findall(r"[a-z']+", lowered)
+    if not words:
+        return True
+    return all(word in _SMALL_TALK_WORDS for word in words)
 
 
 def pick_answer_target(messages: list[dict], *, answered_texts: set[str] | None = None) -> dict | None:
@@ -1070,9 +1106,12 @@ def pick_answer_target(messages: list[dict], *, answered_texts: set[str] | None 
     if unread:
         return unread[-1]
 
-    permintaan = [msg for msg in lawan if looks_like_request(msg.get("text", ""))]
-    if permintaan:
-        return permintaan[-1]
+    # Pesan masuk terbaru yang bukan sekadar sapaan. Urutan waktu penting: "128 kak"
+    # (jawaban pembeli) harus menang atas "Berapa ya" yang sudah kita tanggapi.
+    for msg in reversed(lawan):
+        if is_small_talk(msg.get("text", "")):
+            continue
+        return msg
     return None
 
 

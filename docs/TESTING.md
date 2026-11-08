@@ -33,7 +33,7 @@ Lint (opsional, butuh `ruff`):
 pytest 8.x. Windows belum dijalankan dari lingkungan ini.
 
 ```
-677 passed in ~7s
+685 passed in ~6s
 ruff check . --select E,F,W,I  ->  All checks passed!
 ```
 

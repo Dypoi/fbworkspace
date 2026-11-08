@@ -456,6 +456,15 @@ def _handle_thread(
             "(sebelumnya teranggap pesan kita)",
         )
 
+    # Rapikan lebih dulu: pesan yang sudah ditanggapi balasan kita bukan "belum dijawab".
+    closed = _close_answered_by_reply(db, thread.key, read, _replied_texts(db, thread.key))
+    if closed:
+        log(
+            "info",
+            f"[{thread.name}] {closed} pesan lama sudah ditanggapi balasan kita; "
+            "tidak akan dijawab ulang",
+        )
+
     pending = db.unanswered_incoming(thread.key)
     if not pending:
         # Jangan percaya buta pada catatan sendiri: bila Facebook menandai pesan
@@ -596,6 +605,61 @@ def _heal_unanswered(db, job_id, thread, read, counters, sender, dry_run, log) -
             f"[{thread.name}] {healed} pesan dibuka kembali untuk dijawab "
             "(ditandai belum dibaca di Facebook, tetapi tercatat sudah dijawab)",
         )
+
+
+def _replied_texts(db, thread_key: str) -> list[str]:
+    getter = getattr(db, "replied_texts", None)
+    if callable(getter):
+        try:
+            return list(getter(thread_key))
+        except Exception:  # noqa: BLE001
+            return []
+    return []
+
+
+def _close_answered_by_reply(db, thread_key: str, read, replies: list[str]) -> int:
+    """Tandai pesan masuk yang sudah ditanggapi oleh balasan yang kita kirim.
+
+    Bug nyata 8 Nov 19:43 (dua kali terjadi): "Berapa ya" sudah dijawab
+    "Storage-nya 64GB, 128GB, atau 256GB kak?", tetapi tetap dianggap belum
+    dijawab sehingga worker menanyakan hal yang sama lagi dan mengabaikan
+    jawaban pembeli ("128 kak").
+
+    Aturannya sederhana: semua pesan masuk yang berada SEBELUM pesan terakhir
+    yang kita kirim sudah ditanggapi.
+    """
+    messages = list(getattr(read, "messages", []) or [])
+    if not messages or not replies:
+        return 0
+    last_reply_index = -1
+    for index, msg in enumerate(messages):
+        if getattr(msg, "direction", "") != "out":
+            continue
+        text = " ".join(str(getattr(msg, "text", "") or "").lower().split())
+        for reply in replies:
+            if text and _same_conversation_text(text, reply):
+                last_reply_index = index
+                break
+    if last_reply_index <= 0:
+        return 0
+    keys = [
+        msg.key for msg in messages[:last_reply_index] if getattr(msg, "direction", "") == "in"
+    ]
+    if not keys:
+        return 0
+    closer = getattr(db, "mark_answered_many", None)
+    if not callable(closer):
+        return 0
+    closer(thread_key, keys, "", note="dibalas")
+    return len(keys)
+
+
+def _same_conversation_text(left: str, right: str) -> bool:
+    a = " ".join((left or "").lower().split())
+    b = " ".join((right or "").lower().split())
+    if not a or not b:
+        return False
+    return a == b or a.startswith(b[:50]) or b.startswith(a[:50])
 
 
 def _context_before(read, text: str, limit: int = 6) -> list[str]:

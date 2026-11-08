@@ -1123,3 +1123,53 @@ class TestFallbackExtraction:
         assert read.status == "ok"
         assert [m.text for m in read.messages][-1] == "Berapa ya"
         assert "cadangan" in (adapter.last_diagnostics or {})
+
+
+class TestStorageAnswerAndLatestTarget:
+    """Bug 19:43: '128 kak' (jawaban pembeli) terlewat, 'Berapa ya' dijawab dua kali."""
+
+    CHAT = [
+        {"text": "Iphone 11 ready?", "direction": "in"},
+        {"text": "Ready kak", "direction": "out"},
+        {"text": "Berapa ya", "direction": "in"},
+        {"text": "Storage-nya 64GB, 128GB, atau 256GB kak?", "direction": "out"},
+        {"text": "128 kak", "direction": "in"},
+    ]
+
+    def test_latest_answer_wins(self):
+        from fbworkspace.browser.messenger import pick_answer_target
+
+        assert pick_answer_target(self.CHAT)["text"] == "128 kak"
+
+    def test_storage_only_counts_as_request(self):
+        from fbworkspace.browser.messenger import (
+            looks_like_request,
+            looks_like_storage_only,
+        )
+
+        for text in ["128 kak", "64gb", "yang 256", "256 gb kak", "64"]:
+            assert looks_like_request(text) is True, text
+            assert looks_like_storage_only(text) is True, text
+
+    def test_small_talk_not_a_request(self):
+        from fbworkspace.browser.messenger import is_small_talk, looks_like_request
+
+        for text in ["halo kak", "ok makasih", "iyaa", "wkwk"]:
+            assert looks_like_request(text) is False, text
+            assert is_small_talk(text) is True, text
+
+    def test_small_talk_skipped_when_question_exists(self):
+        from fbworkspace.browser.messenger import pick_answer_target
+
+        chat = [
+            {"text": "ip 11 128 berapa", "direction": "in"},
+            {"text": "2.600.000 kak", "direction": "out"},
+            {"text": "ok makasih kak", "direction": "in"},
+        ]
+        # ucapan terima kasih dilewati; pesan yang menunggu tanggapan tetap dipilih
+        assert pick_answer_target(chat)["text"] == "ip 11 128 berapa"
+
+    def test_only_small_talk_returns_none(self):
+        from fbworkspace.browser.messenger import pick_answer_target
+
+        assert pick_answer_target([{"text": "ok makasih kak", "direction": "in"}]) is None

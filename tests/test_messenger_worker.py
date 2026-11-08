@@ -858,3 +858,80 @@ def test_failed_whatsapp_is_reported_in_summary(tmp_path):
     assert "PERHATIAN" in job["message"]
     events = [e["message"] for e in db.get_events(job_id)]
     assert any("TIDAK menerima kabar" in m for m in events)
+
+
+_FULL_CHAT = [
+    ChatMessage("m1", "in", "Iphone 11 ready?"),
+    ChatMessage("o1", "out", "Ready kak"),
+    ChatMessage("m2", "in", "Berapa ya"),
+    ChatMessage("o2", "out", "Storage-nya 64GB, 128GB, atau 256GB kak?"),
+    ChatMessage("m3", "in", "128 kak", unread=True),
+]
+
+
+def _seed_stale_question(db):
+    """Keadaan nyata: 'Berapa ya' masih tercatat belum dijawab padahal sudah dibalas."""
+    db.upsert_chat(THREAD_KEY, name="Pak Bagus Sunaryo", url=THREAD_URL)
+    for msg in _FULL_CHAT[:4]:
+        db.record_message(THREAD_KEY, msg.key, direction=msg.direction, text=msg.text)
+    db.record_message(
+        THREAD_KEY, "o2b", direction="out", text="Storage-nya 64GB, 128GB, atau 256GB kak?"
+    )
+    db.mark_answered_many(
+        THREAD_KEY, ["m2"], "Storage-nya 64GB, 128GB, atau 256GB kak?", note="dibalas"
+    )
+
+
+def test_old_question_is_not_asked_twice(tmp_path):
+    """Bug 19:37-19:44: worker menanyakan storage lagi padahal jawabannya '128 kak'."""
+    db = Database(tmp_path / "chat.db")
+    _seed_stale_question(db)
+    adapter = FakeMessenger(
+        [Thread(THREAD_KEY, "Pak Bagus Sunaryo", THREAD_URL)], {THREAD_URL: _FULL_CHAT}
+    )
+    job_id = _job(db, dry_run=False)
+    run(job_id, adapter=adapter, sender=MemorySender(), database=db,
+        settings=_settings(tmp_path), sleep=lambda s: None)
+
+    assert adapter.sent == [(THREAD_URL, "2.600.000 kak")]
+    events = [e["message"] for e in db.get_events(job_id)]
+    assert any("sudah ditanggapi balasan kita" in m for m in events)
+
+
+def test_reply_closes_older_incoming_messages(tmp_path):
+    """Pesan masuk sebelum balasan terakhir kita dianggap sudah ditanggapi."""
+    from fbworkspace.browser.messenger import ChatMessage as CM
+    from fbworkspace.browser.messenger import ThreadRead
+    from fbworkspace.messenger_worker import _close_answered_by_reply
+
+    db = Database(tmp_path / "chat.db")
+    db.upsert_chat(THREAD_KEY, name="x", url=THREAD_URL)
+    db.record_message(THREAD_KEY, "m1", direction="in", text="Berapa ya")
+    db.record_message(THREAD_KEY, "o1", direction="out", text="Storage-nya 64 atau 128 kak?")
+    db.mark_answered_many(THREAD_KEY, ["m1"], "", note="diam")  # belum ditutup
+
+    read = ThreadRead(
+        [
+            CM("m1", "in", "Berapa ya"),
+            CM("o1", "out", "Storage-nya 64 atau 128 kak?"),
+            CM("m2", "in", "128 kak"),
+        ],
+        "ok",
+    )
+    closed = _close_answered_by_reply(db, THREAD_KEY, read, ["Storage-nya 64 atau 128 kak?"])
+    assert closed == 1
+    assert [row["msg_key"] for row in db.unanswered_incoming(THREAD_KEY)] == []
+
+
+def test_no_closing_without_matching_reply(tmp_path):
+    from fbworkspace.browser.messenger import ChatMessage as CM
+    from fbworkspace.browser.messenger import ThreadRead
+    from fbworkspace.messenger_worker import _close_answered_by_reply
+
+    db = Database(tmp_path / "chat.db")
+    db.upsert_chat(THREAD_KEY, name="x", url=THREAD_URL)
+    db.record_message(THREAD_KEY, "m1", direction="in", text="Berapa ya")
+
+    read = ThreadRead([CM("m1", "in", "Berapa ya")], "ok")
+    assert _close_answered_by_reply(db, THREAD_KEY, read, ["balasan lain"]) == 0
+    assert len(db.unanswered_incoming(THREAD_KEY)) == 1

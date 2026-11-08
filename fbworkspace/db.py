@@ -755,6 +755,26 @@ class Database:
             )
         return cursor.rowcount > 0
 
+    def thread_history(self, thread_key: str, limit: int = 30) -> list[dict]:
+        """Riwayat pesan satu chat (untuk menentukan mana yang sudah ditanggapi)."""
+        with self.conn() as conn:
+            rows = conn.execute(
+                "SELECT msg_key, direction, text, answered, reply_text, created_at "
+                "FROM chat_messages WHERE thread_key=? ORDER BY id DESC LIMIT ?",
+                (thread_key, max(1, limit)),
+            ).fetchall()
+        return [dict(row) for row in reversed(rows)]
+
+    def replied_texts(self, thread_key: str) -> list[str]:
+        """Teks balasan yang benar-benar pernah terkirim di chat ini."""
+        with self.conn() as conn:
+            rows = conn.execute(
+                "SELECT reply_text FROM chat_messages "
+                "WHERE thread_key=? AND direction='in' AND reply_text<>'' ORDER BY id",
+                (thread_key,),
+            ).fetchall()
+        return [row["reply_text"] for row in rows]
+
     def reopen_messages(self, thread_key: str, texts: set[str]) -> int:
         """Buka kembali pesan masuk yang tertandai terjawab padahal tak pernah dibalas.
 
