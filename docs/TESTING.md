@@ -33,7 +33,7 @@ Lint (opsional, butuh `ruff`):
 pytest 8.x. Windows belum dijalankan dari lingkungan ini.
 
 ```
-560 passed in ~4s
+617 passed in ~5s
 ruff check . --select E,F,W,I  ->  All checks passed!
 ```
 
@@ -60,7 +60,7 @@ ruff check . --select E,F,W,I  ->  All checks passed!
 | `tests/test_reply_style.py` | 22 | prompt variasi, gaya diterima, **angka berubah/lokasi hilang/nomor WA hilang/klaim terlarang → ditolak**, Ollama mati tetap memakai teks template |
 | `tests/test_chat_pin.py` | 30 | PIN hanya diisi di layar permintaan PIN, **ditolak di checkpoint/verifikasi/2FA/password**, PIN tidak bocor ke diagnostik/log/pesan WA, batas 2 percobaan |
 | `tests/test_messenger_adapter.py` | 52 | adapter Messenger dengan halaman tiruan: selector berlapis, deteksi login/checkpoint, diagnostik saat 0 chat, arah pesan, gagal tanpa Chromium jadi status (bukan exception), **bentuk akun nyata: 1 tautan `/messages/t/` + 13 tautan `/t/` → 14 chat terbaca** (versi lama: 0), pembacaan berbasis blok teks `dir="auto"` + posisi kotak tulis: sidebar & panel detail dibuang, urutan pesan berdasarkan Y, arah dari kiri/kanan, kontainer raksasa diabaikan, nama chat & notifikasi enkripsi & jam dibuang, arah pesan dari jarak tepi (bukan titik tengah), ditambah **wadah percakapan** dari kotak tulis (membuang bilah atas "Find friends", sidebar, panel detail) |
-| `tests/test_messenger_worker.py` | 29 | uji kering tidak mengirim, balasan nyata memakai harga, **"nego" memicu notifikasi WA**, dedup eskalasi, cooldown per chat, batas balasan, `perlu_login` → job diblokir, gagal kirim dihitung, variasi AI hanya saat Ollama aktif, **0 chat = status diblokir (bukan selesai)**, uji kering tidak menandai pesan terjawab (uji kering -> kirim nyata mengirim),, diagnostik tersimpan di job, checkpoint → diblokir, satu chat error tidak menghentikan job |
+| `tests/test_messenger_worker.py` | 31 | uji kering tidak mengirim, balasan nyata memakai harga, **"nego" memicu notifikasi WA**, dedup eskalasi, cooldown per chat, batas balasan, `perlu_login` → job diblokir, gagal kirim dihitung, variasi AI hanya saat Ollama aktif, **0 chat = status diblokir (bukan selesai)**, uji kering tidak menandai pesan terjawab (uji kering -> kirim nyata mengirim),, diagnostik tersimpan di job, checkpoint → diblokir, satu chat error tidak menghentikan job |
 
 ### Pengujian non-unit yang juga dijalankan
 

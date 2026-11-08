@@ -206,3 +206,22 @@ class TestSafety:
 
     def test_silent_has_no_body(self):
         assert plan("bisa nego?").body == ""
+
+
+class TestGreetings:
+    """Sapaan murni tidak boleh memicu WA; pertanyaan pendek tetap dieskalasi."""
+
+    @pytest.mark.parametrize(
+        "text",
+        ["permisi kak", "halo kak", "assalamualaikum", "malam kak", "permisi", "oke makasih"],
+    )
+    def test_greeting_is_silent(self, text):
+        plan = compose_reply(text, default_entries())
+        assert plan.action == "diam"
+        assert plan.escalate is False
+
+    @pytest.mark.parametrize("text", ["berapa ya", "ini berapa", "harganya?"])
+    def test_short_question_escalates(self, text):
+        plan = compose_reply(text, default_entries())
+        assert plan.action == "diam"
+        assert plan.escalate is True

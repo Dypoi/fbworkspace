@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from fbworkspace.browser.messenger import (
     MessengerAdapter,
     _direction,
@@ -832,3 +834,33 @@ class TestVariantReporting:
         payload = mod.diagnose("/tmp/x")
         assert payload["variant"] == "klasik"
         assert payload["has_textarea"] is True
+
+
+class TestChatNameFromLabel:
+    """aria-label daftar chat: nama orang harus diambil, bukan label utuh."""
+
+    @pytest.mark.parametrize(
+        "label,expected",
+        [
+            ("2 pesan belum dibaca dari Budi, 15:40", "Budi"),
+            ("1 unread message from Budi", "Budi"),
+            ("Revan Permana, Sat 17:50", "Revan Permana"),
+            ("Pak Bagus Sunaryo, Yesterday 09:12", "Pak Bagus Sunaryo"),
+            ("Pak Bagus Sunaryo", "Pak Bagus Sunaryo"),
+            ("Sat 17:50", ""),
+            ("", ""),
+        ],
+    )
+    def test_name_extraction(self, label, expected):
+        from fbworkspace.browser.messenger import _chat_name_from
+
+        assert _chat_name_from(label) == expected
+
+    @pytest.mark.parametrize(
+        "text",
+        ["Sat 17:50", "Yesterday 09:12", "5 menit lalu", "2 pesan belum dibaca dari"],
+    )
+    def test_time_markers_are_noise(self, text):
+        from fbworkspace.browser.messenger import _is_ui_noise
+
+        assert _is_ui_noise(text) is True

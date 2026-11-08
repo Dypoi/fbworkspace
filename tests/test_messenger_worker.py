@@ -613,3 +613,57 @@ def test_single_cycle_is_default(tmp_path):
 
     # satu putaran = 1 cycle; mode pantau tidak aktif
     assert db.get_job(job_id)["counters"]["cycles"] == 1
+
+
+def test_earlier_question_still_answered_when_last_is_greeting(tmp_path):
+    """Pembeli: "berapa ya" lalu "permisi kak" -> pertanyaan pertama tetap dijawab."""
+    db = Database(tmp_path / "chat.db")
+    adapter = FakeMessenger(
+        [Thread(THREAD_KEY, "Bagas", THREAD_URL)],
+        {
+            THREAD_URL: [
+                _incoming("ip 11 64gb berapa ya", key="q1"),
+                _incoming("permisi kak", key="q2"),
+            ]
+        },
+    )
+    job_id = _job(db, dry_run=False)
+    run(job_id, adapter=adapter, sender=MemorySender(), database=db,
+        settings=_settings(tmp_path), sleep=lambda s: None)
+
+    assert adapter.sent == [(THREAD_URL, "2.400.000 kak")]
+
+
+class _PreviewThread(Thread):
+    pass
+
+
+def _fake_thread(**kwargs):
+    from fbworkspace.browser.messenger import Thread as T
+
+    return T(**kwargs)
+
+
+def test_lost_question_is_reported_not_silent(tmp_path):
+    """Chat ditandai belum dibaca tetapi tak ada pesan terbaca -> WA ke pemilik."""
+    from fbworkspace.browser.messenger import Thread as T
+
+    db = Database(tmp_path / "chat.db")
+    thread = T(
+        key=THREAD_KEY,
+        name="Bagas Sunaryo",
+        url=THREAD_URL,
+        unread=True,
+        preview="berapa ya",
+    )
+    adapter = FakeMessenger([], {}, list_status="ok")
+    adapter.threads = [thread]
+
+    job_id = _job(db, dry_run=False)
+    sender = MemorySender()
+    run(job_id, adapter=adapter, sender=sender, database=db,
+        settings=_settings(tmp_path), sleep=lambda s: None)
+
+    assert sender.sent, "pemilik harus diberi tahu"
+    assert "berapa ya" in sender.sent[0]
+    assert "Bagas Sunaryo" in sender.sent[0]

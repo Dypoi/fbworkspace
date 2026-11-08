@@ -291,6 +291,14 @@ FBW_MESSENGER_WATCH=true
 FBW_MESSENGER_INTERVAL_SECONDS=30
 ```
 
+Bila notifikasi WA gagal karena kotak tulis tidak ketemu / Chrome ditolak:
+
+```powershell
+.\.venv\Scripts\python.exe -m fbworkspace.notify --diagnose --show
+```
+
+Perintah itu hanya melaporkan keadaan WhatsApp Web (tidak mengirim apa pun).
+
 Ubah juga di `.env` bila perlu:
 
 ```

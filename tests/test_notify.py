@@ -192,3 +192,60 @@ class TestSender:
         assert ok is False
         assert sender.sent == []
         assert "QR" in message
+
+
+class TestWaComposerSelectors:
+    """WA gagal karena kotak tulis tidak ditemukan; pastikan pencariannya berlapis."""
+
+    def test_footer_composer_tried_first(self):
+        from fbworkspace.notify import _WA_COMPOSER
+
+        first = _WA_COMPOSER.split(",")[0].strip()
+        assert "footer" in first and "contenteditable" in first
+
+    def test_has_generic_fallback(self):
+        from fbworkspace.notify import _WA_COMPOSER
+
+        selectors = [s.strip() for s in _WA_COMPOSER.split(",") if s.strip()]
+        assert any("spellcheck" in s or 'role="textbox"' in s for s in selectors)
+        assert len(selectors) >= 5
+
+    def test_find_composer_scans_all_selectors(self):
+        from fbworkspace.notify import _find_wa_composer
+
+        class Page:
+            def __init__(self):
+                self.tried = []
+
+            def wait_for_selector(self, selector, timeout=0):
+                self.tried.append(selector)
+                return object() if len(self.tried) == 4 else None
+
+            def query_selector_all(self, selector):
+                return []
+
+        page = Page()
+        found = _find_wa_composer(page, timeout_ms=1)
+        assert found is not None
+        assert len(page.tried) == 4
+
+    def test_browser_block_detected(self):
+        from fbworkspace.notify import WhatsAppWebSender
+
+        class Page:
+            def inner_text(self, selector):
+                return (
+                    "WhatsApp dapat digunakan di Google Chrome 100+ Untuk menggunakan "
+                    "WhatsApp, perbarui Chrome atau gunakan Mozilla Firefox"
+                )
+
+        assert WhatsAppWebSender._browser_blocked(Page()) is True
+
+    def test_browser_block_not_flagged_on_normal_page(self):
+        from fbworkspace.notify import WhatsAppWebSender
+
+        class Page:
+            def inner_text(self, selector):
+                return "Chats Status Channels Komunitas"
+
+        assert WhatsAppWebSender._browser_blocked(Page()) is False

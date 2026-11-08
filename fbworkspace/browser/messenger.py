@@ -256,6 +256,8 @@ class Thread:
     name: str
     url: str
     unread: bool = False
+    # Teks cuplikan yang terlihat di daftar chat (belum tentu pesan masuk).
+    preview: str = ""
 
 
 @dataclass
@@ -317,7 +319,64 @@ _NOISE_PATTERNS = (
     re.compile(r"\bterenkripsi\b.*\bpanggilan\b"),
     re.compile(r"\bonly people in this chat can read\b"),
     re.compile(r"^·?\s*\d+[hmd]\b$"),                        # "· 1h"
+    # "Sat 17:50" / "Yesterday 09:12": cap waktu gaya baru yang muncul sendiri.
+    re.compile(r"^(mon|tue|wed|thu|fri|sat|sun)\b.{0,14}\d{1,2}[.:]\d{2}$"),
+    re.compile(
+        r"^(?:\d+\s+)?(?:pesan\s+)?(?:belum\s+dibaca|unread)"
+        r"(?:\s+messages?)?(?:\s+dari|\s+from)?\s*$"
+    ),  # "2 pesan belum dibaca dari"
+    re.compile(r"^\d{1,2}\s+(?:menit|jam|hari)\s+lalu$"),      # "5 menit lalu"
 )
+
+
+_UNREAD_NAME_RE = re.compile(
+    r"^\s*(?:\d+\s+)?(?:pesan\s+)?(?:belum\s+dibaca|unread)(?:\s+messages?)?"
+    r"(?:\s+dari|\s+from)?\s*[:,]?\s*(?P<name>.*)$",
+    re.IGNORECASE,
+)
+# Ekor metadata pada aria-label: ", 15:40" / ", Sat 17:50" / ", Yesterday 09:12" / ", · 1h"
+_NAME_TIME_RE = re.compile(
+    r"\s*[,·|]\s*(?:"
+    r"(?:mon|tue|wed|thu|fri|sat|sun|senin|selasa|rabu|kamis|jumat|jum'at|sabtu|minggu)"
+    r"|(?:yesterday|kemarin|today|hari ini)"
+    r"|\d{1,2}[./]\d{1,2}[./]\d{2,4}"
+    r"|\d{1,2}[.:]\d{2}"
+    r"|·?\s*\d+[hmd]\b"
+    r").*$",
+    re.IGNORECASE,
+)
+
+
+def _chat_name_from(label: str) -> str:
+    """Ambil nama lawan bicara dari aria-label tautan chat.
+
+    Contoh nyata: "2 pesan belum dibaca dari Budi, 15:40" -> "Budi";
+    "Budi, 16:50" -> "Budi"; "Budi" -> "Budi".
+    """
+    text = " ".join((label or "").split())
+    if not text:
+        return ""
+    match = _UNREAD_NAME_RE.match(text)
+    if match:
+        text = match.group("name")
+    text = _NAME_TIME_RE.sub("", text)
+    text = text.strip(" ,·|:-")
+    # Label yang seluruhnya metadata jam bukan nama orang.
+    if not text or _is_ui_noise(text):
+        return ""
+    return text[:80]
+
+
+def _has_unread_badge(anchor) -> bool:
+    """Cari penanda belum-dibaca di dalam tautan chat (tanpa menebak teks chat)."""
+    try:
+        found = anchor.query_selector_all(
+            '[aria-label*="belum dibaca"], [aria-label*="Belum dibaca"], '
+            '[aria-label*="unread"], [aria-label*="Unread"]'
+        )
+    except Exception:  # noqa: BLE001
+        return False
+    return bool(found)
 
 
 def _is_ui_noise(text: str) -> bool:
@@ -1123,9 +1182,22 @@ class MessengerAdapter:
                 seen.add(key)
                 url = href if href.startswith("http") else f"https://www.facebook.com{href}"
                 label = _safe_attr(anchor, "aria-label").strip()
-                name = label or _text_of(anchor).split("\n")[0][:80]
                 unread = "belum dibaca" in label.lower() or "unread" in label.lower()
-                threads.append(Thread(key=key, name=name or key, url=url, unread=unread))
+                if not unread:
+                    unread = _has_unread_badge(anchor)
+                # aria-label sering berbunyi "2 pesan belum dibaca dari Budi, 16:50"
+                # atau "Budi, 16:50" -> ambil nama orangnya, bukan label utuh.
+                name = _chat_name_from(label) or _text_of(anchor).split("\n")[0][:80]
+                preview = _text_of(anchor).split("\n")[-1][:120] if _text_of(anchor) else ""
+                threads.append(
+                    Thread(
+                        key=key,
+                        name=name or key,
+                        url=url,
+                        unread=unread,
+                        preview=preview,
+                    )
+                )
                 if len(threads) >= max(1, limit):
                     break
 
@@ -1338,7 +1410,8 @@ def diagnose(profile_dir: str | Path, *, headless: bool = False) -> dict:
     if getattr(adapter, "lock_warning", ""):
         payload.setdefault("peringatan", adapter.lock_warning)
     payload["threads"] = [
-        {"key": item.key, "name": item.name, "unread": item.unread} for item in result.threads
+        {"key": item.key, "name": item.name, "unread": item.unread, "preview": item.preview}
+        for item in result.threads
     ]
     if result.threads:
         first = result.threads[0]

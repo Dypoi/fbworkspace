@@ -436,15 +436,31 @@ def _handle_thread(
     pending = db.unanswered_incoming(thread.key)
     if not pending:
         counters["silent"] += 1
+        preview = ""
+        if read.messages:
+            last = read.messages[-1]
+            preview = f" | terakhir [{last.direction}]: {last.text[:60]!r}"
         log(
             "info",
             f"[{thread.name}] tidak ada pesan masuk yang belum dijawab "
-            f"({len(read.messages)} pesan terbaca di percakapan)",
+            f"({len(read.messages)} pesan terbaca di percakapan){preview}",
         )
+        # Jangan biarkan pertanyaan pembeli hilang tanpa jejak: kalau daftar chat
+        # menandai belum dibaca (atau cuplikannya berbunyi seperti pertanyaan),
+        # beri tahu pemilik alih-alih diam.
+        _maybe_flag_lost_question(db, job_id, thread, counters, sender, dry_run, log)
         return new_messages
 
     latest = pending[-1]
     plan = compose_reply(latest["text"], entries)
+    if not plan.should_send and not plan.escalate:
+        # Pesan terakhir hanya sapaan/wilayah tanpa pertanyaan. Jangan buang
+        # pertanyaan sebelumnya (mis. "berapa ya" lalu "permisi kak").
+        for row in reversed(pending[:-1]):
+            earlier = compose_reply(row["text"], entries)
+            if earlier.should_send or earlier.escalate:
+                latest, plan = row, earlier
+                break
     keys = [row["msg_key"] for row in pending]
     sender_desc = "kirim" if plan.should_send else "diam"
     log(
@@ -520,6 +536,52 @@ def _handle_thread(
     note = "dibalas" if sent_text else ("diam" if not plan.should_send else "gagal_kirim")
     db.mark_answered_many(thread.key, keys, sent_text, note=note)
     return new_messages
+
+
+_QUESTION_HINTS = (
+    "berapa", "harganya", "harga", "ready", "cod", "lokasi", "alamat", "stok",
+    "masih ada", "bisa", "buka", "wa", "nomor", "?",
+)
+
+
+def _looks_like_question(text: str) -> bool:
+    lowered = " ".join((text or "").lower().split())
+    if not lowered:
+        return False
+    return any(hint in lowered for hint in _QUESTION_HINTS)
+
+
+def _maybe_flag_lost_question(db, job_id, thread, counters, sender, dry_run, log) -> None:
+    """Chat bertanda belum dibaca/kotak berisi pertanyaan tapi tak terbaca sebagai pesan."""
+    preview = getattr(thread, "preview", "") or ""
+    if not (getattr(thread, "unread", False) or _looks_like_question(preview)):
+        return
+    reason = (
+        "daftar chat menandai belum dibaca, tetapi worker tidak menemukan pesan masuk"
+        if getattr(thread, "unread", False)
+        else "cuplikan di daftar chat berbunyi seperti pertanyaan"
+    )
+    log(
+        "warning",
+        f"[{thread.name}] {reason}; saya beri tahu Anda lewat WhatsApp "
+        f"(cuplikan: {preview[:60]!r})",
+    )
+    _escalate(
+        db,
+        job_id,
+        thread,
+        Escalation(
+            chat_name=thread.name,
+            message=preview or "(tidak ada pesan terbaca)",
+            reason=f"{reason} — periksa chat ini sendiri",
+            url=thread.url,
+            when=datetime.now().strftime("%d/%m %H:%M"),
+        ),
+        counters,
+        sender,
+        dry_run,
+        log,
+    )
 
 
 def _escalate(db, job_id, thread, escalation: Escalation, counters, sender, dry_run, log) -> None:

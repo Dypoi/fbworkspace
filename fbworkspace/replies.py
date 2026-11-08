@@ -74,7 +74,14 @@ _INTENT_PATTERNS: dict[str, re.Pattern[str]] = {
 
 _ACK_RE = re.compile(
     r"\b(ok|oke|okay|okey|sip|siap|makasih|terima\s*kasih|thanks|thank\s*you|p|ping|"
-    r"halo|hai|hi|hallo|assalamualaikum|pagi|siang|malam|sore)\b",
+    r"halo|hai|hi|hallo|hallo|assalamualaikum|salam|permisi|pagi|siang|malam|sore|"
+    r"kak|gan|bang|bg|bro|sis|min)\b",
+    re.I,
+)
+# Sapaan murni: seluruh kalimat hanya sapaan (boleh diulang), tanpa pertanyaan.
+_GREETING_ONLY_RE = re.compile(
+    r"^(?:(?:halo|hai|hi|hallo|assalamualaikum|salam|permisi|pagi|siang|malam|sore|"
+    r"kak|gan|bang|bg|bro|sis|min|semuanya)\b[\s,!.?]*)+$",
     re.I,
 )
 
@@ -331,6 +338,9 @@ def compose_reply(message: str, entries: list[PriceEntry]) -> ReplyPlan:
 
     if _ACK_RE.search(text):
         return ReplyPlan(reason="hanya sapaan/ucapan terima kasih", intents=intents)
+
+    if _GREETING_ONLY_RE.match(" ".join(text.split())):
+        return ReplyPlan(reason="hanya sapaan", intents=intents)
 
     return ReplyPlan(
         reason="di luar template",

@@ -28,13 +28,27 @@ HEADER = "cek facebook ada chat yang bukan ranah saya"
 STOP_HEADER = "worker fbworkspace berhenti"
 MAX_WA_CHARS = 900
 
-# Selector kotak tulis WhatsApp Web (beberapa versi)
+# Selector kotak tulis WhatsApp Web (beberapa versi). Urutan penting: yang paling
+# spesifik dulu, terakhir cadangan umum. Kotak tulis WhatsApp punya aria-label
+# "Ketik pesan"/"Type a message" dan berada di footer.
 _WA_COMPOSER = (
+    'footer div[contenteditable="true"][role="textbox"], '
     'div[contenteditable="true"][data-tab="10"], '
     'div[contenteditable="true"][data-tab="6"], '
-    'div[contenteditable="true"][role="textbox"]'
+    'div[contenteditable="true"][aria-label*="Ketik pesan"], '
+    'div[contenteditable="true"][aria-label*="Type a message"], '
+    'div[contenteditable="true"][role="textbox"], '
+    'div[contenteditable="true"][spellcheck="true"]'
 )
 _WA_QR = 'canvas[aria-label*="Scan"], canvas[aria-label*="scan"]'
+# Halaman error Chrome yang muncul bila WhatsApp Web menolak versi Chrome.
+_WA_BROWSER_BLOCK_WORDS = (
+    "perbarui chrome",
+    "whatsapp dapat digunakan di google chrome",
+    "update chrome",
+    "uses google chrome",
+    "chrome 100+",
+)
 
 
 @dataclass(frozen=True)
@@ -156,19 +170,23 @@ class WhatsAppWebSender:
                     if page.query_selector(_WA_QR):
                         return False, "WhatsApp Web belum login (perlu scan QR lewat scripts/wa_login.py)"
 
+                    # WhatsApp kadang baru menyiapkan kotak tulis setelah sesi siap.
                     composer = None
-                    for selector in _WA_COMPOSER.split(","):
-                        selector = selector.strip()
-                        if not selector:
-                            continue
-                        try:
-                            composer = page.wait_for_selector(selector, timeout=8_000)
-                        except Exception:  # noqa: BLE001
-                            composer = None
+                    for attempt in range(3):
+                        composer = _find_wa_composer(page, timeout_ms=6_000)
                         if composer is not None:
                             break
+                        page.wait_for_timeout(2_500)
                     if composer is None:
+                        blocked = self._browser_blocked(page)
                         detail = self._diagnose(page)
+                        if blocked:
+                            return False, (
+                                "WhatsApp Web menolak versi Chrome bawaan Playwright. "
+                                "Jalankan sekali di PowerShell: "
+                                "\\.\\venv\\Scripts\\python.exe -m fbworkspace.notify --setup-profile "
+                                f"(lalu scan QR). Detail: {detail}"
+                            )
                         return False, f"kotak tulis WhatsApp tidak ditemukan ({detail})"
 
                     composer.click()
@@ -197,6 +215,65 @@ class WhatsAppWebSender:
         except Exception as exc:  # noqa: BLE001
             return False, _friendly_wa_error(exc)
 
+    def inspect(self, *, headless: bool = True) -> tuple[bool, str]:
+        """Buka WhatsApp Web dan laporkan keadaannya tanpa mengirim apa pun."""
+        try:
+            from playwright.sync_api import sync_playwright
+        except Exception as exc:  # noqa: BLE001
+            return False, f"Playwright tidak tersedia: {exc.__class__.__name__}"
+
+        self.profile_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            with sync_playwright() as p:
+                context = p.chromium.launch_persistent_context(
+                    str(self.profile_dir), headless=headless
+                )
+                try:
+                    page = context.pages[0] if context.pages else context.new_page()
+                    page.goto(
+                        f"https://web.whatsapp.com/send?phone={self.phone}",
+                        wait_until="domcontentloaded",
+                        timeout=self.timeout_ms,
+                    )
+                    try:
+                        page.wait_for_load_state("networkidle", timeout=20_000)
+                    except Exception:  # noqa: BLE001
+                        pass
+                    page.wait_for_timeout(3_000)
+                    qr = bool(page.query_selector(_WA_QR))
+                    composer = _find_wa_composer(page, timeout_ms=8_000)
+                    blocked = self._browser_blocked(page)
+                    version = ""
+                    try:
+                        version = f"{p.chromium.name} {page.evaluate('navigator.userAgent')[:80]}"
+                    except Exception:  # noqa: BLE001
+                        version = ""
+                    parts = [
+                        f"qr={qr}",
+                        f"kotak_tulis={'ada' if composer is not None else 'tidak ada'}",
+                        f"ditolak_versi_chrome={blocked}",
+                        self._diagnose(page),
+                    ]
+                    if version:
+                        parts.append(f"browser={version}")
+                    ok = composer is not None and not qr and not blocked
+                    return ok, " | ".join(parts)
+                finally:
+                    try:
+                        context.close()
+                    except Exception:  # noqa: BLE001
+                        pass
+        except Exception as exc:  # noqa: BLE001
+            return False, _friendly_wa_error(exc)
+
+    @staticmethod
+    def _browser_blocked(page) -> bool:
+        try:
+            body = " ".join(page.inner_text("body").split()).lower()
+        except Exception:  # noqa: BLE001
+            return False
+        return any(word in body for word in _WA_BROWSER_BLOCK_WORDS)
+
     @staticmethod
     def _diagnose(page) -> str:
         """Ringkasan keadaan halaman WhatsApp untuk laporan kegagalan."""
@@ -215,6 +292,28 @@ class WhatsAppWebSender:
         except Exception:  # noqa: BLE001
             pass
         return " | ".join(parts)
+
+
+def _find_wa_composer(page, *, timeout_ms: int = 6_000):
+    """Cari kotak tulis WhatsApp; coba tiap selector lalu cadangan umum."""
+    for selector in [part.strip() for part in _WA_COMPOSER.split(",") if part.strip()]:
+        try:
+            found = page.wait_for_selector(selector, timeout=timeout_ms)
+        except Exception:  # noqa: BLE001
+            found = None
+        if found is not None:
+            return found
+    # Cadangan terakhir: contenteditable mana pun yang terlihat.
+    try:
+        for candidate in page.query_selector_all('div[contenteditable="true"]'):
+            try:
+                if candidate.is_visible():
+                    return candidate
+            except Exception:  # noqa: BLE001
+                continue
+    except Exception:  # noqa: BLE001
+        return None
+    return None
 
 
 def _friendly_wa_error(exc: Exception) -> str:
@@ -265,6 +364,11 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Tes notifikasi WhatsApp (tidak lewat dashboard)")
     parser.add_argument("--test", action="store_true", help="Kirim satu pesan uji")
     parser.add_argument("--show", action="store_true", help="Tampilkan jendela browser")
+    parser.add_argument(
+        "--diagnose",
+        action="store_true",
+        help="Buka WhatsApp Web dan laporkan apa yang terlihat (tidak mengirim)",
+    )
     parser.add_argument("--text", default="tes notifikasi fbworkspace")
     args = parser.parse_args(argv)
 
@@ -278,6 +382,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     print(f"Tujuan : {sender.phone}")
     print(f"Profil : {sender.profile_dir}")
+    if args.diagnose:
+        ok, note = sender.inspect(headless=not args.show)
+        print(json.dumps({"ok": ok, "keterangan": note}, ensure_ascii=False, indent=2))
+        return 0 if ok else 1
     ok, note = sender.send(args.text, blocking=True)
     print(json.dumps({"ok": ok, "keterangan": note}, ensure_ascii=False, indent=2))
     if not ok:
