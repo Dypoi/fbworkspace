@@ -146,6 +146,31 @@ UI_NOISE_LABELS = (
     "edit nicknames",
 )
 
+# Ekstraksi berbasis blok teks (bukan role=row): di Messenger, isi pesan hidup di
+# elemen dir="auto", sedangkan role=row dipakai untuk sidebar/panel detail.
+EXTRACT_JS = """
+() => {
+  const out = [];
+  const nodes = document.querySelectorAll('div[dir="auto"], span[dir="auto"], div[role="none"] > span[dir="auto"]');
+  for (const n of nodes) {
+    const t = (n.innerText || n.textContent || '').trim();
+    if (!t) continue;
+    const r = n.getBoundingClientRect();
+    if (!r || r.width === 0 || r.height === 0) continue;
+    out.push({text: t, x: r.x, y: r.y, w: r.width, h: r.height});
+  }
+  const composer = document.querySelector(
+    'div[contenteditable="true"][role="textbox"], div[role="textbox"][contenteditable="true"], div[contenteditable="true"]'
+  );
+  let cbox = null;
+  if (composer) {
+    const cr = composer.getBoundingClientRect();
+    cbox = {x: cr.x, y: cr.y, w: cr.width, h: cr.height};
+  }
+  return {nodes: out, composer: cbox, url: location.href, title: document.title, vw: window.innerWidth};
+}
+"""
+
 LOGIN_MARKERS = (
     'input[name="email"]',
     "#email",
@@ -315,6 +340,76 @@ def _direction_by_position(box: dict | None, area: dict | None) -> str:
     if center < area["center"] - 24:
         return "in"
     return ""
+
+
+def filter_text_nodes(
+    payload: dict,
+    *,
+    known_out: list[str] | None = None,
+) -> tuple[list[dict], list[str], dict]:
+    """Ubah blok teks mentah dari halaman menjadi daftar pesan kandidat.
+
+    Aturan:
+    - hanya blok yang berada di **kolom kotak tulis** (bukan sidebar/panel detail),
+    - hanya blok **di atas** kotak tulis,
+    - blok selebar/sepandekar halaman diabaikan (itu kontainer, bukan gelembung),
+    - label antarmuka dibuang.
+
+    Kembalikan (pesan, catatan_dibuang, ringkasan).
+    """
+    nodes = payload.get("nodes") or []
+    composer = payload.get("composer") or None
+    viewport = float(payload.get("vw") or 1280)
+    dropped: list[str] = []
+    meta: dict = {"raw_nodes": len(nodes), "composer": bool(composer)}
+
+    if composer:
+        area = {
+            "left": composer["x"] - 60,
+            "right": composer["x"] + composer["w"] + 60,
+            "center": composer["x"] + composer["w"] / 2,
+            "bottom": composer["y"] + composer.get("h", 0),
+        }
+    else:
+        # Tanpa kotak tulis: pakai blok teks terbanyak sebagai kolom percakapan.
+        xs = sorted(n["x"] + n["w"] / 2 for n in nodes) or [viewport / 2]
+        middle = xs[len(xs) // 2]
+        area = {"left": middle - 320, "right": middle + 320, "center": middle, "bottom": 10**6}
+        dropped.append("(kotak tulis tidak ditemukan -> kolom ditebak)")
+
+    messages: list[dict] = []
+    for node in nodes:
+        text_raw = " ".join(str(node.get("text") or "").split())
+        if not text_raw:
+            continue
+        center = node["x"] + node.get("w", 0) / 2
+        if not (area["left"] <= center <= area["right"]):
+            dropped.append(f"(di luar kolom) {text_raw[:40]}")
+            continue
+        if node.get("y", 0) + node.get("h", 0) > area["bottom"] + 10:
+            dropped.append(f"(di bawah kotak tulis) {text_raw[:40]}")
+            continue
+        if node.get("w", 0) > viewport * 0.75 or node.get("h", 0) > 400:
+            dropped.append(f"(kontainer) {text_raw[:40]}")
+            continue
+        text = _clean_message_text(str(node.get("text") or ""))
+        if not text:
+            dropped.append(f"(label UI) {text_raw[:40]}")
+            continue
+        if len(text) > 1200:
+            dropped.append(f"(kepanjangan) {text_raw[:40]}")
+            continue
+        direction = "out" if center > area["center"] + 24 else "in"
+        if abs(center - area["center"]) <= 24:
+            for sent in known_out or []:
+                if sent and text_raw[:60].lower() == " ".join(sent.lower().split())[:60]:
+                    direction = "out"
+                    break
+        messages.append({"text": text, "direction": direction, "y": node.get("y", 0)})
+
+    messages.sort(key=lambda m: m["y"])
+    meta["used"] = len(messages)
+    return messages, dropped, meta
 
 
 def _msg_key(thread_key: str, index: int, text: str) -> str:
@@ -743,103 +838,59 @@ class MessengerAdapter:
             if word or self._blocked(page, diagnostics):
                 return ThreadRead(status="pemblokiran", note=word or "halaman pembatasan")
 
-            selector, rows = _first_match_all(page, CONVERSATION_ROW_SELECTORS)
-            attempts = 0
-            while not rows and attempts < 2:
-                attempts += 1
-                page.wait_for_timeout(1500)
-                selector, rows = _first_match_all(page, CONVERSATION_ROW_SELECTORS)
-            if not rows:
+            # Ekstraksi berbasis blok teks: role="row" di Messenger dipakai untuk
+            # sidebar & panel detail, sedangkan isi pesan ada di elemen dir="auto".
+            payload = {}
+            try:
+                payload = page.evaluate(EXTRACT_JS) or {}
+            except Exception as exc:  # noqa: BLE001
                 self.last_diagnostics = dict(
-                    diagnostics, status="tidak_ada_pesan", conversation_selector=""
+                    diagnostics, status="kesalahan", error=self._friendly_error(exc)
                 )
-                return ThreadRead(
-                    status="tidak_ada_pesan",
-                    note=(
-                        "tidak ada baris pesan di area percakapan "
-                        f"(baris di halaman: {diagnostics.get('rows', 0)})"
-                    ),
+                return ThreadRead(status="kesalahan", note="gagal membaca blok teks halaman")
+            texts, dropped, meta = filter_text_nodes(payload, known_out=known_out)
+            messages = [
+                ChatMessage(
+                    key=_msg_key(thread_key, index, item["text"]),
+                    direction=item["direction"],
+                    text=item["text"][:2000],
                 )
-
-            text_selector = MESSAGE_TEXT_SELECTORS[0]
-            for candidate in MESSAGE_TEXT_SELECTORS:
-                try:
-                    if page.query_selector(candidate) is not None:
-                        text_selector = candidate
-                        break
-                except Exception:  # noqa: BLE001
-                    continue
-
-            # Area percakapan = kolom yang sama dengan kotak tulis. Tanpa ini,
-            # panel detail di kanan ("Customise chat", "Media and files") ikut terbaca.
-            area = _conversation_area(page)
-            dropped: list[str] = []
-            messages: list[ChatMessage] = []
-            for index, row in enumerate(rows):
-                box = _box(row)
-                if not _in_area(box, area):
-                    dropped.append(f"(di luar area) {_row_text(row)[:40]}")
-                    continue
-                if area is not None and box is not None and box.get("y", 0) > area["bottom"] + 40:
-                    dropped.append(f"(di bawah kotak tulis) {_row_text(row)[:40]}")
-                    continue
-                text = ""
-                try:
-                    nodes = row.query_selector_all(text_selector)
-                    if nodes:
-                        text = "\n".join(_text_of(node) for node in nodes if _text_of(node))
-                except Exception:  # noqa: BLE001
-                    text = ""
-                if not text:
-                    text = _text_of(row)
-                raw = " ".join(text.split())[:80]
-                text = _clean_message_text(text)
-                if not text:
-                    dropped.append(f"(label UI) {raw}")
-                    continue
-                if len(text) > 1200:
-                    dropped.append(f"(kepanjangan) {raw}")
-                    continue
-                position_direction = _direction_by_position(box, area)
-                direction = _direction(row, text, known_out or []) if not position_direction else position_direction
-                messages.append(
-                    ChatMessage(
-                        key=_msg_key(thread_key, index, text),
-                        direction=direction,
-                        text=text[:2000],
-                    )
-                )
-            if area is None:
-                dropped.append("(kotak tulis tidak ditemukan -> pemfilteran posisi dilewati)")
+                for index, item in enumerate(texts)
+            ]
+            selector = "dir=auto"
             self.last_debug = {
-                "rows": len(rows),
+                "raw_nodes": meta.get("raw_nodes", 0),
                 "used": len(messages),
                 "dropped": dropped[:15],
-                "area": area,
+                "composer": meta.get("composer", False),
             }
             if not messages:
                 self.last_diagnostics = dict(
                     diagnostics,
                     status="tidak_ada_pesan",
-                    rows=len(rows),
                     messages=0,
-                    conversation_selector=selector or "",
+                    conversation_selector=selector,
                     debug=self.last_debug,
                 )
+                total = meta.get("raw_nodes", 0)
                 return ThreadRead(
                     status="tidak_ada_pesan",
-                    note=f"{len(rows)} baris di area percakapan, semuanya label antarmuka",
+                    note=(
+                        f"{total} blok teks di halaman, tidak ada yang lolos sebagai pesan "
+                        f"(kotak tulis {'ada' if meta.get('composer') else 'tidak ditemukan'})"
+                    ),
                 )
 
             self.last_diagnostics = dict(
                 diagnostics,
                 status="ok",
-                rows=len(rows),
                 messages=len(messages),
-                conversation_selector=selector or "",
+                conversation_selector=selector,
                 debug=self.last_debug,
             )
-            return ThreadRead(messages=messages, status="ok", note=f"{len(rows)} baris")
+            return ThreadRead(
+                messages=messages, status="ok", note=f"{len(messages)} pesan terbaca"
+            )
         except Exception as exc:  # noqa: BLE001
             return ThreadRead(status="kesalahan", note=self._friendly_error(exc))
         finally:

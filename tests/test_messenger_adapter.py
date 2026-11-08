@@ -19,13 +19,17 @@ class FakePage:
     """Halaman palsu: cukup untuk query_selector / query_selector_all."""
 
     def __init__(self, *, url="https://www.facebook.com/messages/", title="Messenger",
-                 elements=None, text="", body_text=""):
+                 elements=None, text="", body_text="", payload=None):
         self.url = url
         self._title = title
         self.elements = elements or {}
         self._text = text
         self._body_text = body_text or text
+        self.payload = payload or {"nodes": [], "composer": None, "vw": 1280}
         self.waits = 0
+
+    def evaluate(self, _script):
+        return self.payload
 
     def query_selector(self, selector):
         found = self.elements.get(selector)
@@ -217,17 +221,28 @@ class TestListThreads:
 
 
 class TestReadThread:
-    def test_messages_parsed(self, monkeypatch):
-        incoming = FakeSkill(children={'div[dir="auto"]': FakeSkill(text="harga iphone 11?")})
-        outgoing = FakeSkill(
-            aria_label="Anda kirim: 2.600.000 kak",
-            children={'div[dir="auto"]': FakeSkill(text="2.600.000 kak")},
-        )
+    """Pembacaan pesan kini berbasis blok teks (`dir=auto`) + posisi layar."""
+
+    COMPOSER = {"x": 400, "y": 700, "w": 500, "h": 40}
+
+    def _payload(self, nodes, composer=None, vw=1280):
+        return {
+            "nodes": nodes,
+            "composer": self.COMPOSER if composer is None else composer,
+            "vw": vw,
+        }
+
+    def _node(self, text, x=380, y=400, w=300, h=40):
+        return {"text": text, "x": x, "y": y, "w": w, "h": h}
+
+    def test_messages_parsed_in_order(self, monkeypatch):
         page = FakePage(
-            elements={
-                'div[role="main"] div[role="row"]': [incoming, outgoing],
-                'div[dir="auto"]': FakeSkill(text="x"),
-            }
+            payload=self._payload(
+                [
+                    self._node("harga iphone 11?", x=380, y=300),
+                    self._node("2.600.000 kak", x=700, y=400),
+                ]
+            )
         )
         adapter = adapter_with_page(page, monkeypatch)
         read = adapter.read_thread("https://www.facebook.com/messages/t/999/")
@@ -235,16 +250,119 @@ class TestReadThread:
         assert [m.text for m in read.messages] == ["harga iphone 11?", "2.600.000 kak"]
         assert [m.direction for m in read.messages] == ["in", "out"]
 
-    def test_no_message_rows(self, monkeypatch):
-        page = FakePage(elements={'div[role="main"] div[role="row"]': []})
+    def test_no_candidate_messages(self, monkeypatch):
+        page = FakePage(payload=self._payload([self._node("Chat Info", x=980, y=300)]))
         adapter = adapter_with_page(page, monkeypatch)
         read = adapter.read_thread("https://www.facebook.com/messages/t/999/")
         assert read.status == "tidak_ada_pesan"
+        assert "kotak tulis ada" in read.note
+
+    def test_detail_panel_ignored(self, monkeypatch):
+        page = FakePage(
+            payload=self._payload(
+                [
+                    self._node("Iphone 11 ready?", x=380, y=300),
+                    self._node("Customise chat", x=980, y=300),
+                    self._node("Media and files", x=980, y=360),
+                ]
+            )
+        )
+        adapter = adapter_with_page(page, monkeypatch)
+        read = adapter.read_thread("https://www.facebook.com/messages/t/999/")
+        assert [m.text for m in read.messages] == ["Iphone 11 ready?"]
+
+    def test_sidebar_ignored(self, monkeypatch):
+        page = FakePage(
+            payload=self._payload(
+                [
+                    self._node("Pak Bagus Sunaryo", x=20, y=200, w=250),
+                    self._node("Iphone 11 ready?", x=380, y=500),
+                ]
+            )
+        )
+        adapter = adapter_with_page(page, monkeypatch)
+        read = adapter.read_thread("https://www.facebook.com/messages/t/999/")
+        assert [m.text for m in read.messages] == ["Iphone 11 ready?"]
+
+    def test_below_composer_ignored(self, monkeypatch):
+        page = FakePage(
+            payload=self._payload(
+                [
+                    self._node("pesan asli", x=380, y=500),
+                    self._node("Ketik pesan", x=420, y=760),
+                ]
+            )
+        )
+        adapter = adapter_with_page(page, monkeypatch)
+        read = adapter.read_thread("https://www.facebook.com/messages/t/999/")
+        assert [m.text for m in read.messages] == ["pesan asli"]
+
+    def test_container_blocks_ignored(self, monkeypatch):
+        page = FakePage(
+            payload=self._payload(
+                [
+                    self._node("Iphone 11 ready?", x=380, y=300),
+                    self._node("seluruh halaman " * 40, x=0, y=0, w=1280, h=700),
+                ]
+            )
+        )
+        adapter = adapter_with_page(page, monkeypatch)
+        read = adapter.read_thread("https://www.facebook.com/messages/t/999/")
+        assert len(read.messages) == 1
+
+    def test_ui_labels_dropped(self, monkeypatch):
+        page = FakePage(
+            payload=self._payload(
+                [
+                    self._node("Chat Info", x=500, y=100),
+                    self._node("Iphone 11 ready?", x=380, y=300),
+                ]
+            )
+        )
+        adapter = adapter_with_page(page, monkeypatch)
+        read = adapter.read_thread("https://www.facebook.com/messages/t/999/")
+        assert [m.text for m in read.messages] == ["Iphone 11 ready?"]
+        assert any("label UI" in d for d in adapter.last_debug["dropped"])
+
+    def test_without_composer_uses_text_column(self, monkeypatch):
+        page = FakePage(
+            payload=self._payload(
+                [self._node("Iphone 11 ready?", x=380, y=300)], composer=False
+            )
+        )
+        adapter = adapter_with_page(page, monkeypatch)
+        read = adapter.read_thread("https://www.facebook.com/messages/t/999/")
+        assert read.status == "ok"
 
     def test_login_on_thread(self, monkeypatch):
         page = FakePage(elements={'input[name="email"]': FakeSkill()})
         adapter = adapter_with_page(page, monkeypatch)
         assert adapter.read_thread("https://www.facebook.com/messages/t/999/").status == "perlu_login"
+
+
+class TestFilterTextNodes:
+    def _payload(self, nodes, composer=None, vw=1280):
+        return {"nodes": nodes, "composer": composer, "vw": vw}
+
+    def test_known_out_marks_centered_message(self):
+        from fbworkspace.browser.messenger import filter_text_nodes
+
+        payload = self._payload(
+            [{"text": "2.600.000 kak", "x": 620, "y": 300, "w": 120, "h": 40}],
+            composer={"x": 400, "y": 700, "w": 500, "h": 40},
+        )
+        messages, _dropped, _meta = filter_text_nodes(
+            payload, known_out=["2.600.000 kak"]
+        )
+        assert messages and messages[0]["direction"] == "out"
+
+    def test_missing_composer_is_reported(self):
+        from fbworkspace.browser.messenger import filter_text_nodes
+
+        payload = self._payload([{"text": "halo", "x": 600, "y": 300, "w": 80, "h": 30}])
+        _messages, dropped, meta = filter_text_nodes(payload)
+        assert meta["composer"] is False
+        assert any("kotak tulis tidak ditemukan" in d for d in dropped)
 
 
 class TestSend:
@@ -324,125 +442,3 @@ class TestRealAccountShape:
         assert len(result.threads) == 3
 
 
-class TestConversationReading:
-    """Regresi nyata: worker sempat membaca label sidebar ('Chat Info') sebagai pesan."""
-
-    def test_ui_labels_are_dropped(self):
-        from fbworkspace.browser.messenger import _clean_message_text, _is_ui_noise
-
-        assert _is_ui_noise("Chat Info") is True
-        assert _is_ui_noise("Ketik pesan") is True
-        assert _is_ui_noise("Active now") is True
-        assert _is_ui_noise("Iphone 11 ready?") is False
-        assert _clean_message_text("Chat Info\nIphone 11 ready?\nAktif sekarang") == "Iphone 11 ready?"
-
-    def test_conversation_url_is_direct(self):
-        adapter = MessengerAdapter(profile_dir="/tmp/x")
-        assert adapter.conversation_url("https://www.facebook.com/t/123456/") == (
-            "https://www.facebook.com/messages/t/123456/"
-        )
-        assert adapter.conversation_url("https://www.facebook.com/messages/t/99/?x=1") == (
-            "https://www.facebook.com/messages/t/99/"
-        )
-
-    def test_sidebar_rows_not_used_as_messages(self, monkeypatch):
-        # Sidebar punya 13 baris; area percakapan kosong -> harus 'tidak_ada_pesan'
-        sidebar = FakeSkill(children={'div[dir="auto"]': FakeSkill(text="Chat Info")})
-        page = FakePage(
-            elements={
-                'div[role="row"]': [sidebar] * 13,
-                'div[role="main"] div[role="row"]': [],
-            }
-        )
-        adapter = adapter_with_page(page, monkeypatch)
-        read = adapter.read_thread("https://www.facebook.com/messages/t/123/")
-        assert read.status == "tidak_ada_pesan"
-        assert "baris di halaman: 13" in read.note
-
-    def test_real_message_in_conversation_area(self, monkeypatch):
-        bubble = FakeSkill(children={'div[dir="auto"]': FakeSkill(text="Iphone 11 ready?")})
-        header = FakeSkill(children={'div[dir="auto"]': FakeSkill(text="Chat Info")})
-        page = FakePage(
-            elements={
-                'div[role="row"]': [header] * 13,
-                'div[role="main"] div[role="row"]': [header, bubble],
-            }
-        )
-        adapter = adapter_with_page(page, monkeypatch)
-        read = adapter.read_thread("https://www.facebook.com/messages/t/123/")
-        assert read.status == "ok"
-        assert [m.text for m in read.messages] == ["Iphone 11 ready?"]
-
-
-class TestLayoutAnchoring:
-    """Regresi nyata: panel detail kanan ("Customise chat") terbaca sebagai pesan."""
-
-    # layar 1280 lebar: sidebar 0-360, percakapan 360-950, panel detail 950-1280
-    COMPOSER = FakeSkill(box={"x": 400, "y": 700, "width": 500, "height": 40})
-
-    def _page(self, rows):
-        return FakePage(
-            elements={
-                'div[role="main"] div[role="row"]': rows,
-                'div[contenteditable="true"][role="textbox"]': self.COMPOSER,
-            }
-        )
-
-    def _bubble(self, text, x, width=300):
-        return FakeSkill(
-            children={'div[dir="auto"]': FakeSkill(text=text)},
-            box={"x": x, "y": 300, "width": width, "height": 40},
-        )
-
-    def test_detail_panel_rows_are_ignored(self, monkeypatch):
-        rows = [
-            self._bubble("Iphone 11 ready?", x=380),        # pembeli (kiri)
-            self._bubble("Ready kak", x=700),               # kita (kanan)
-            self._bubble("Customise chat", x=980),          # panel detail
-            self._bubble("Media and files", x=980),         # panel detail
-        ]
-        adapter = adapter_with_page(self._page(rows), monkeypatch)
-        read = adapter.read_thread("https://www.facebook.com/messages/t/123/")
-        assert read.status == "ok"
-        assert [m.text for m in read.messages] == ["Iphone 11 ready?", "Ready kak"]
-
-    def test_direction_uses_position(self, monkeypatch):
-        rows = [self._bubble("halo kak", x=380), self._bubble("iya kak", x=700)]
-        adapter = adapter_with_page(self._page(rows), monkeypatch)
-        read = adapter.read_thread("https://www.facebook.com/messages/t/123/")
-        assert [m.direction for m in read.messages] == ["in", "out"]
-
-    def test_rows_below_composer_ignored(self, monkeypatch):
-        rows = [
-            self._bubble("pesan asli", x=380),
-            FakeSkill(
-                children={'div[dir="auto"]': FakeSkill(text="Ketik pesan")},
-                box={"x": 400, "y": 800, "width": 400, "height": 40},
-            ),
-        ]
-        adapter = adapter_with_page(self._page(rows), monkeypatch)
-        read = adapter.read_thread("https://www.facebook.com/messages/t/123/")
-        assert [m.text for m in read.messages] == ["pesan asli"]
-
-    def test_debug_lists_dropped_rows(self, monkeypatch):
-        rows = [
-            self._bubble("Iphone 11 ready?", x=380),
-            self._bubble("Customise chat", x=980),
-        ]
-        adapter = adapter_with_page(self._page(rows), monkeypatch)
-        adapter.read_thread("https://www.facebook.com/messages/t/123/")
-        dropped = " ".join(adapter.last_debug["dropped"])
-        assert "Customise chat" in dropped
-
-    def test_without_composer_text_filter_applies(self, monkeypatch):
-        # Tidak ada kotak tulis: label UI tetap dibuang oleh filter teks.
-        rows = [
-            self._bubble("Iphone 11 ready?", x=380),
-            self._bubble("Customise chat", x=980),
-        ]
-        page = FakePage(elements={'div[role="main"] div[role="row"]': rows})
-        adapter = adapter_with_page(page, monkeypatch)
-        read = adapter.read_thread("https://www.facebook.com/messages/t/123/")
-        assert read.status == "ok"
-        assert [m.text for m in read.messages] == ["Iphone 11 ready?"]
-        assert any("kotak tulis tidak ditemukan" in d for d in adapter.last_debug["dropped"])
