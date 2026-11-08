@@ -26,6 +26,7 @@ import argparse
 import hashlib
 import json
 import os
+import subprocess
 import sys
 import time
 from dataclasses import dataclass, field
@@ -371,6 +372,85 @@ def acquire_profile_lock(profile_dir: Path) -> str:
     except OSError:
         pass
     return ""
+
+
+def _powershell() -> str:
+    import shutil
+
+    return shutil.which("powershell") or shutil.which("pwsh") or ""
+
+
+def list_profile_browsers(profile_dir: Path) -> list[dict]:
+    """Daftar proses Chromium yang memakai folder profil aplikasi ini."""
+    marker = str(profile_dir)
+    found: list[dict] = []
+    if os.name == "nt":
+        powershell = _powershell()
+        if not powershell:
+            return found
+        script = (
+            "Get-CimInstance Win32_Process -Filter \"Name='chrome.exe' OR Name='chromium.exe'\" "
+            "| Where-Object { $_.CommandLine -like '*" + marker.replace("'", "''") + "*' } "
+            "| Select-Object ProcessId, Name, CommandLine | ConvertTo-Json -Compress"
+        )
+        try:
+            out = subprocess.run(
+                [powershell, "-NoProfile", "-NonInteractive", "-Command", script],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            ).stdout.strip()
+            if out:
+                data = json.loads(out)
+                found = data if isinstance(data, list) else [data]
+        except Exception:  # noqa: BLE001
+            return found
+    else:
+        try:
+            out = subprocess.run(
+                ["pgrep", "-af", marker], capture_output=True, text=True, timeout=15, check=False
+            ).stdout
+            for line in out.splitlines():
+                pid, _, rest = line.partition(" ")
+                if pid.isdigit():
+                    found.append({"ProcessId": int(pid), "CommandLine": rest[:200]})
+        except Exception:  # noqa: BLE001
+            return found
+    return found
+
+
+def close_profile_browsers(profile_dir: Path, *, dry_run: bool = False) -> tuple[list[int], str]:
+    """Tutup paksa Chromium yang memakai profil aplikasi ini (bukan Chrome pribadi).
+
+    Hanya proses yang baris perintahnya memuat folder profil aplikasi yang
+    disentuh, sehingga Chrome pribadi Anda tidak ikut tertutup.
+    """
+    processes = list_profile_browsers(profile_dir)
+    pids = [int(p.get("ProcessId") or 0) for p in processes if p.get("ProcessId")]
+    if not pids:
+        return [], "Tidak ada jendela Chromium milik aplikasi ini yang berjalan."
+    if dry_run:
+        return pids, "Akan ditutup: PID " + ", ".join(str(p) for p in pids)
+    errors: list[str] = []
+    for pid in pids:
+        try:
+            if os.name == "nt":
+                subprocess.run(
+                    ["taskkill", "/PID", str(pid), "/T", "/F"],
+                    capture_output=True,
+                    timeout=20,
+                    check=False,
+                )
+            else:
+                os.kill(pid, 15)
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"{pid}: {exc.__class__.__name__}")
+    release_profile_lock(profile_dir)
+    note = "Ditutup: PID " + ", ".join(str(p) for p in pids)
+    if errors:
+        note += " (gagal: " + ", ".join(errors) + ")"
+    return pids, note
 
 
 def release_profile_lock(profile_dir: Path) -> None:
@@ -1148,6 +1228,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--show", action="store_true", help="Tampilkan jendela browser (bisa Anda lihat)"
     )
+    parser.add_argument(
+        "--close-browsers",
+        action="store_true",
+        help="Tutup paksa jendela Chromium milik aplikasi ini (Chrome pribadi tidak disentuh)",
+    )
+    parser.add_argument(
+        "--dry-run", action="store_true", help="Hanya tampilkan PID, tidak menutup apa pun"
+    )
     args = parser.parse_args(argv)
 
     root = Path(__file__).resolve().parent.parent.parent
@@ -1158,6 +1246,11 @@ def main(argv: list[str] | None = None) -> int:
 
     settings = get_settings()
     profile = args.profile or str(settings.browser_profile_dir)
+
+    if args.close_browsers:
+        pids, note = close_profile_browsers(Path(profile), dry_run=args.dry_run)
+        print(note)
+        return 0 if pids or "Tidak ada" in note else 1
 
     started = time.time()
     lock_note = acquire_profile_lock(Path(profile))

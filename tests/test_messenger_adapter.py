@@ -573,3 +573,49 @@ class TestProfileLock:
             chromium = FakeChromium()
 
         assert adapter._chromium_executable(FakePW()) == (True, "")
+
+
+class TestCloseProfileBrowsers:
+    """Jendela Chromium milik aplikasi harus bisa ditutup tanpa menyentuh Chrome pribadi."""
+
+    def test_reports_none_when_idle(self, tmp_path, monkeypatch):
+        from fbworkspace.browser import messenger as mod
+
+        monkeypatch.setattr(mod, "list_profile_browsers", lambda path: [])
+        pids, note = mod.close_profile_browsers(tmp_path)
+        assert pids == []
+        assert "Tidak ada" in note
+
+    def test_dry_run_does_not_kill(self, tmp_path, monkeypatch):
+        from fbworkspace.browser import messenger as mod
+
+        killed = []
+        monkeypatch.setattr(
+            mod, "list_profile_browsers", lambda path: [{"ProcessId": 1234}, {"ProcessId": 5678}]
+        )
+        monkeypatch.setattr(mod.os, "kill", lambda pid, sig: killed.append(pid))
+        pids, note = mod.close_profile_browsers(tmp_path, dry_run=True)
+        assert pids == [1234, 5678]
+        assert killed == []
+        assert "1234" in note
+
+    def test_filter_only_uses_profile_path(self, tmp_path, monkeypatch):
+        from fbworkspace.browser import messenger as mod
+
+        class FakeRun:
+            def __init__(self, *a, **k):
+                self.stdout = ""
+
+        seen = {}
+
+        def fake_run(cmd, **kwargs):
+            seen["cmd"] = " ".join(cmd)
+            return FakeRun()
+
+        monkeypatch.setattr(mod.os, "name", "nt")
+        monkeypatch.setattr(mod, "_powershell", lambda: "powershell")
+        monkeypatch.setattr(mod.subprocess, "run", fake_run)
+        mod.list_profile_browsers(tmp_path)
+        # perintah penyaring harus memuat folder profil, bukan nama proses saja
+        assert str(tmp_path) in seen["cmd"]
+        assert "chrome.exe" in seen["cmd"]

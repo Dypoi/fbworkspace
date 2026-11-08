@@ -117,8 +117,10 @@ def run(
     if adapter is None:
         adapter = MessengerAdapter(
             profile_dir=settings.browser_profile_dir,
-            headless=settings.browser_headless,
-            slow_mo_ms=settings.browser_slow_mo_ms,
+            # Worker balas DM berjalan TANPA jendela: tidak mengganggu Chrome Anda
+            # dan tidak berebut fokus. Untuk melihat halaman, pakai --show.
+            headless=True,
+            slow_mo_ms=1,
             chat_pin=getattr(settings, "chat_pin", ""),
             pin_auto=getattr(settings, "chat_pin_auto", True),
         )

@@ -302,6 +302,16 @@ Untuk **notifikasi WhatsApp**, tesnya tidak lewat dashboard (dashboard bisa memb
 Perintah itu mencetak jelas kenapa pengiriman gagal (belum scan QR, kotak tulis tidak
 ditemukan, profil sedang dipakai, Chromium belum terpasang).
 
+Worker balas DM berjalan **tanpa jendela** (headless), jadi Chrome pribadi Anda tidak
+terganggu. Kalau ada jendela Chromium aplikasi yang tidak bisa ditutup (profil terkunci),
+pakai perintah ini — ia **hanya** menutup Chromium yang memakai folder profil aplikasi,
+Chrome pribadi Anda tidak disentuh:
+
+```powershell
+.\\.venv\\Scripts\\python.exe -m fbworkspace.browser.messenger --close-browsers --dry-run
+.\\.venv\\Scripts\\python.exe -m fbworkspace.browser.messenger --close-browsers
+```
+
 Perintah `fbworkspace.browser.messenger` **tidak mengirim apa pun**; ia mencetak URL,
 judul halaman, jumlah tautan chat, ada/tidaknya kotak tulis, dan cuplikan teks, lalu
 menyimpan laporan ke `data\diagnostics\`. Kirimkan file itu bila hasilnya masih kosong.

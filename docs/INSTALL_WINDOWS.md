@@ -292,6 +292,16 @@ FBW_MESSENGER_MAX_REPLIES=10
 FBW_MESSENGER_GAP_SECONDS=45
 ```
 
+Kalau ada jendela Chromium aplikasi yang tidak bisa ditutup atau pesan "profil sedang
+dipakai", jalankan (hanya menutup Chromium milik aplikasi, bukan Chrome pribadi):
+
+```powershell
+.\.venv\Scripts\python.exe -m fbworkspace.browser.messenger --close-browsers
+```
+
+Worker balas DM berjalan **tanpa jendela**; untuk melihat halaman Messenger pakai
+`python -m fbworkspace.browser.messenger --show`.
+
 > Peringatan jujur: selector Messenger **belum diuji di akun nyata**. Putaran
 > pertama bisa menghasilkan 0 chat terbaca (status/log akan menjelaskan). Baca
 > [LIMITATIONS.md](LIMITATIONS.md) §8b sebelum mematikan uji kering.
