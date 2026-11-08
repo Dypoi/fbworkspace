@@ -30,6 +30,9 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from ..chat_pin import decide as decide_pin
+from ..chat_pin import fill_pin, looks_like_pin_prompt, mask
+
 INBOX_URL = "https://www.facebook.com/messages/"
 
 # --- Selector berlapis (urutan = prioritas) --------------------------------
@@ -204,11 +207,18 @@ class MessengerAdapter:
         headless: bool = False,
         slow_mo_ms: int = 120,
         timeout_ms: int = 45_000,
+        chat_pin: str = "",
+        pin_auto: bool = True,
     ) -> None:
         self.profile_dir = Path(profile_dir)
         self.headless = headless
         self.slow_mo_ms = slow_mo_ms
         self.timeout_ms = timeout_ms
+        # PIN disimpan hanya di memori proses ini; tidak pernah dicetak.
+        self.chat_pin = chat_pin or ""
+        self.pin_auto = pin_auto
+        self.pin_attempts = 0
+        self.pin_status = "tidak diminta"
         self.last_diagnostics: dict = {}
 
     # ------------------------------------------------------------------ util
@@ -232,7 +242,6 @@ class MessengerAdapter:
                 "playwright install chromium"
             ) from exc
 
-    @staticmethod
     @staticmethod
     def _friendly_error(exc: Exception) -> str:
         """Terjemahkan error Playwright yang sering muncul jadi langkah konkret."""
@@ -337,6 +346,63 @@ class MessengerAdapter:
         diagnostics["login_form"] = self._login_required(page)
         return diagnostics
 
+    # ------------------------------------------------------------------- PIN
+    def _handle_pin(self, page, *, stage: str) -> str:
+        """Isi PIN HANYA di layar permintaan PIN pemulihan chat.
+
+        Kembalikan status: ``tidak_diminta`` / ``terisi`` / ``perlu_pin``.
+        """
+        diagnostics = {
+            "url": "",
+            "title": "",
+            "text": _safe_body_text(page, limit=600),
+        }
+        try:
+            diagnostics["url"] = page.url
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            diagnostics["title"] = (page.title() or "")[:120]
+        except Exception:  # noqa: BLE001
+            pass
+
+        if not looks_like_pin_prompt(" ".join(diagnostics.values())):
+            return "tidak_diminta"
+
+        decision = decide_pin(
+            page_text=diagnostics["text"],
+            url=diagnostics["url"],
+            title=diagnostics["title"],
+            pin=self.chat_pin,
+            auto=self.pin_auto,
+        )
+        if not decision.allowed:
+            self.pin_status = f"perlu_pin ({stage}): {decision.reason}"
+            self.last_diagnostics = dict(
+                self.last_diagnostics, pin=decision.reason, pin_stage=stage
+            )
+            return "perlu_pin"
+
+        if self.pin_attempts >= 2:
+            self.pin_status = "perlu_pin: PIN sudah dicoba 2 kali tanpa berhasil"
+            return "perlu_pin"
+
+        self.pin_attempts += 1
+        ok, note = fill_pin(page, self.chat_pin, timeout_ms=self.timeout_ms)
+        self.pin_status = f"{'terisi' if ok else 'gagal'}: {note}" if ok else note
+        self.last_diagnostics = dict(
+            self.last_diagnostics,
+            pin=f"{note} (percobaan {self.pin_attempts}, {mask(self.chat_pin)})",
+            pin_stage=stage,
+        )
+        if not ok:
+            return "perlu_pin"
+        try:
+            page.wait_for_load_state("networkidle", timeout=min(15_000, self.timeout_ms))
+        except Exception:  # noqa: BLE001
+            pass
+        return "terisi"
+
     # ------------------------------------------------------------- daftar chat
     def list_threads_detailed(self, limit: int = 8) -> ThreadList:
         """Seperti :meth:`list_threads`, tetapi mengembalikan diagnostik juga."""
@@ -375,9 +441,19 @@ class MessengerAdapter:
                     page.wait_for_timeout(1000)
                 selector, anchors = _first_match_all(page, THREAD_SELECTORS)
 
+            pin_state = self._handle_pin(page, stage="daftar_chat")
+            if pin_state == "terisi":
+                selector, anchors = _first_match_all(page, THREAD_SELECTORS)
+
             diagnostics = self._inspect(page)
             diagnostics["thread_selector"] = selector or ""
             diagnostics["attempts"] = attempts
+            diagnostics["pin"] = self.pin_status
+
+            if pin_state == "perlu_pin":
+                diagnostics["status"] = "perlu_pin"
+                self.last_diagnostics = diagnostics
+                return ThreadList(status="perlu_pin", diagnostics=diagnostics)
 
             if self._login_required(page):
                 diagnostics["status"] = "perlu_login"
@@ -447,6 +523,12 @@ class MessengerAdapter:
             except Exception:  # noqa: BLE001
                 pass
             diagnostics = self._inspect(page)
+            if pin_state := self._handle_pin(page, stage="baca_chat"):
+                if pin_state == "perlu_pin":
+                    return ThreadRead(
+                        status="perlu_pin",
+                        note="Messenger meminta PIN pemulihan chat; worker tidak mengisinya",
+                    )
             if self._login_required(page):
                 return ThreadRead(status="perlu_login")
             word = self._checkpoint_word(page, diagnostics)
@@ -519,6 +601,8 @@ class MessengerAdapter:
             word = self._checkpoint_word(page, diagnostics)
             if word or self._blocked(page, diagnostics):
                 return False, f"pemblokiran: {word or 'halaman pembatasan'}"
+            if self._handle_pin(page, stage="kirim") == "perlu_pin":
+                return False, "perlu_pin"
 
             selector, composer = _first_match(page, COMPOSER_SELECTORS)
             if composer is None:

@@ -270,6 +270,19 @@ Tangerang`, dan `081513839973`. Pertanyaan di luar itu **tidak dijawab**; Anda
 menerima WhatsApp berawalan `cek facebook ada chat yang bukan ranah saya`.
 Kata **"nego"** selalu memicu WhatsApp itu.
 
+Kalau Facebook meminta **PIN pemulihan chat** saat membuka Messenger, isi di `.env`
+(kosongkan bila Anda ingin mengisinya sendiri saat diminta):
+
+```
+FBW_CHAT_PIN=
+FBW_CHAT_PIN_AUTO=true
+```
+
+Worker hanya mengisi PIN di layar "masukkan PIN pemulihan chat"; di layar
+checkpoint/verifikasi identitas/kode 2FA ia berhenti dan memberi tahu Anda. Jangan
+pernah menaruh PIN di kode, dokumen, atau berkas yang masuk Git — `.env` sudah
+diabaikan Git, tapi file itu berisi rahasia: jangan dibagikan.
+
 Ubah juga di `.env` bila perlu:
 
 ```

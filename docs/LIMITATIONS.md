@@ -216,6 +216,7 @@ batasnya harus jelas.
 | Batas | 8 chat / 10 balasan per putaran, jeda 45 detik, cooldown 10 menit per chat, berhenti saat diminta login. Angka ini kecil sengaja. |
 | Pembatasan akun | Facebook dapat membatasi akun yang membalas cepat dalam jumlah banyak. Risiko ada di Anda; gunakan angka kecil dan pantau. |
 | Variasi bahasa AI | Bila Ollama aktif, gaya kalimat boleh divariasikan, tetapi hasilnya diperiksa: angka harus identik, lokasi & nomor WA harus tetap ada, klaim terlarang menggugurkan hasil, lalu jatuh ke teks template. AI **tidak pernah** menentukan harga. Model kecil tetap bisa menghasilkan kalimat aneh yang lolos pemeriksaan — periksa beberapa putaran uji kering. |
+| PIN pemulihan chat | Kalau Facebook meminta PIN, worker mengisinya **hanya** bila (a) `FBW_CHAT_PIN` diisi dan (b) layar yang terdeteksi memang "masukkan PIN pemulihan chat". Di layar checkpoint/verifikasi identitas/kode 2FA password worker **berhenti** dan memberi tahu Anda. Deteksi layar berbasis teks halaman — bisa salah baca; maksimum 2 percobaan per putaran. PIN tidak pernah ditulis ke log, database, atau pesan WhatsApp. |
 | Anti-balas-ganda | Berbasis `msg_key` (hash pesan). Pesan yang diedit/dihapus Facebook bisa terbaca sebagai pesan baru. |
 
 ---

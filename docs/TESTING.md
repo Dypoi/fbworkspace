@@ -33,7 +33,7 @@ Lint (opsional, butuh `ruff`):
 pytest 8.x. Windows belum dijalankan dari lingkungan ini.
 
 ```
-500 passed in ~4s
+532 passed in ~4s
 ruff check . --select E,F,W,I  ->  All checks passed!
 ```
 
@@ -58,6 +58,7 @@ ruff check . --select E,F,W,I  ->  All checks passed!
 | `tests/test_replies.py` | 43 | harga hanya dari daftar, tanya storage bila lebih dari satu varian, ready/lokasi/WA, "nego" → eskalasi, model tak dikenal & nomor pembeli → diam + eskalasi, sapaan → diam tanpa eskalasi, batas 400 karakter |
 | `tests/test_notify.py` | 12 | baris pertama pesan WA, isi Chat/Isi/Alasan/Link, pemotongan 900 karakter, normalisasi nomor `08…`/`+62…` → `62…`, URL `web.whatsapp.com/send` |
 | `tests/test_reply_style.py` | 22 | prompt variasi, gaya diterima, **angka berubah/lokasi hilang/nomor WA hilang/klaim terlarang → ditolak**, Ollama mati tetap memakai teks template |
+| `tests/test_chat_pin.py` | 30 | PIN hanya diisi di layar permintaan PIN, **ditolak di checkpoint/verifikasi/2FA/password**, PIN tidak bocor ke diagnostik/log/pesan WA, batas 2 percobaan |
 | `tests/test_messenger_adapter.py` | 20 | adapter Messenger dengan halaman tiruan: selector berlapis, deteksi login/checkpoint, diagnostik saat 0 chat, arah pesan, gagal tanpa Chromium jadi status (bukan exception) |
 | `tests/test_messenger_worker.py` | 19 | uji kering tidak mengirim, balasan nyata memakai harga, **"nego" memicu notifikasi WA**, dedup eskalasi, cooldown per chat, batas balasan, `perlu_login` → job diblokir, gagal kirim dihitung, variasi AI hanya saat Ollama aktif, **0 chat = status diblokir (bukan selesai)**, diagnostik tersimpan di job, checkpoint → diblokir, satu chat error tidak menghentikan job |
 

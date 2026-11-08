@@ -140,6 +140,13 @@ class Settings:
     messenger_dry_run: bool = field(
         default_factory=lambda: _env_bool("FBW_MESSENGER_DRY_RUN", True)
     )
+    # PIN pemulihan chat Messenger (kalau Facebook memintanya). RAHASIA:
+    # hanya dibaca dari .env, tidak pernah ditulis ke log/database/pesan WA.
+    chat_pin: str = field(default_factory=lambda: os.getenv("FBW_CHAT_PIN", "").strip())
+    chat_pin_auto: bool = field(
+        default_factory=lambda: _env_bool("FBW_CHAT_PIN_AUTO", True)
+    )
+
     # Variasi gaya bahasa balasan dengan Ollama (fakta tetap dari template).
     # Hanya jalan bila Ollama juga diaktifkan (FBW_OLLAMA_ENABLED=true).
     messenger_ai_style: bool = field(
@@ -166,6 +173,13 @@ class Settings:
             "tunggu_login": f"{self.login_wait_seconds} detik",
             "ollama": f"{self.ollama_url} (model: {self.ollama_model})",
             "ollama_aktif": "ya" if self.ollama_enabled else "tidak",
+            # Hanya status, bukan nilainya: PIN tidak pernah ditampilkan.
+            "pin_chat": (
+                f"terisi ({len(self.chat_pin)} angka)"
+                if self.chat_pin
+                else "belum diisi"
+            )
+            + ("" if self.chat_pin_auto else " · isi otomatis mati"),
         }
 
 

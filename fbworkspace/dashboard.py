@@ -1600,6 +1600,19 @@ def render_balas(settings: Settings, db: Database) -> None:
         "diskon/tukar tambah) **selalu** memicu notifikasi WhatsApp ke Anda."
     )
 
+    if getattr(settings, "chat_pin", ""):
+        st.caption(
+            f"PIN pemulihan chat: terisi ({len(settings.chat_pin)} angka) · "
+            + ("diisi otomatis hanya di layar permintaan PIN" if settings.chat_pin_auto else "isi otomatis DIMATIKAN")
+            + " · rahasianya hanya di `.env`, tidak pernah di log/WA."
+        )
+    else:
+        st.caption(
+            "PIN pemulihan chat belum diisi. Kalau Facebook meminta PIN saat membuka chat, "
+            "worker akan **berhenti** dan memberi tahu Anda (isi `FBW_CHAT_PIN` di `.env` "
+            "bila ingin diisi otomatis)."
+        )
+
     stats = db.chat_stats()
     prices = db.list_prices()
     cols = st.columns(4)

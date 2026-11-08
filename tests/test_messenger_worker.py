@@ -404,3 +404,42 @@ def test_read_failure_note_is_logged(tmp_path):
     assert code == 0
     assert db.get_job(job_id)["counters"]["errors"] == 1
     assert any("TimeoutError" in e["message"] for e in db.get_events(job_id))
+
+
+def test_pin_required_blocks_job_and_notifies(tmp_path):
+    db = Database(tmp_path / "chat.db")
+    job_id = _job(db, dry_run=False)
+    adapter = FakeMessenger(
+        [],
+        {},
+        list_status="perlu_pin",
+        diagnostics={"url": "https://www.facebook.com/messages/", "pin": "bukan layar permintaan PIN"},
+    )
+    sender = MemorySender()
+
+    code = run(job_id, adapter=adapter, sender=sender, database=db, settings=_settings(tmp_path), sleep=lambda s: None)
+
+    job = db.get_job(job_id)
+    assert code == 1
+    assert job["status"] == "diblokir/tidak diizinkan"
+    assert "PIN" in job["message"]
+    assert sender.sent and sender.sent[0].startswith(STOP_HEADER)
+    assert "PIN pemulihan" in sender.sent[0]
+    assert "102002" not in sender.sent[0]
+
+
+def test_send_needs_pin_fails_job(tmp_path):
+    db = Database(tmp_path / "chat.db")
+    job_id = _job(db, dry_run=False)
+
+    class PinOnSend(FakeMessenger):
+        def send_message(self, url, text):
+            return False, "perlu_pin"
+
+    adapter = PinOnSend([Thread(THREAD_KEY, "Rian", THREAD_URL)], {THREAD_URL: [_incoming("iphone 11 ready?")]})
+    code = run(job_id, adapter=adapter, sender=MemorySender(), database=db, settings=_settings(tmp_path), sleep=lambda s: None)
+
+    job = db.get_job(job_id)
+    assert code == 1
+    assert job["status"] == "gagal"
+    assert "PIN" in job["message"]

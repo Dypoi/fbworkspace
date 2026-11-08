@@ -172,7 +172,7 @@ fbworkspace/
 │   └── check_extraction_dom.cjs # uji logika ekstraksi DOM (Node + jsdom, opsional)
 ├── data/demo_posts_DEMO.json   # data sintetis berlabel DEMO
 ├── docs/                       # instalasi, POC, batasan, Git, testing
-├── tests/                      # 500 tes otomatis
+├── tests/                      # 532 tes otomatis
 ├── requirements.txt
 ├── .env.example
 └── .gitignore
@@ -278,6 +278,11 @@ diverifikasi ulang: semua angka harus sama, `Kutabumi, Tangerang` dan
 # 3) kalau sudah yakin: hilangkan centang "Uji kering", centang pernyataan,
 #    lalu jalankan lagi. Balasan nyata dikirim ke pembeli.
 ```
+
+**Kalau Facebook meminta PIN pemulihan chat.** Isi `FBW_CHAT_PIN` di `.env`
+(kalau tidak, worker berhenti dan memberi tahu Anda). Worker hanya mengisinya di
+layar "masukkan PIN pemulihan chat"; di layar checkpoint/verifikasi identitas/kode
+2FA ia berhenti. PIN tidak pernah muncul di log, database, atau pesan WhatsApp.
 
 **Kalau hasilnya "0 chat dibaca"**, itu artinya pembacaan gagal (bukan "tidak ada
 pembeli"). Panel job akan menampilkan merah + apa yang terlihat di halaman, dan ada
@@ -396,7 +401,7 @@ Penghapusan data tersedia di tab **Pengaturan → 💾 Data** (postingan, log, p
 .\.venv\Scripts\python.exe -m pytest
 ```
 
-Hasil terakhir di lingkungan pengembangan: **500 tes lulus** (termasuk smoke test
+Hasil terakhir di lingkungan pengembangan: **532 tes lulus** (termasuk smoke test
 dashboard Streamlit untuk 4 tab, segmentasi hasil, filter ulang, daftar harga,
 penyusun balasan, worker balas DM dengan adapter palsu, format notifikasi
 WhatsApp, dan variasi AI yang menolak perubahan fakta), `ruff check` bersih. Detail: **[docs/TESTING.md](docs/TESTING.md)**.

@@ -21,10 +21,11 @@ import traceback
 from datetime import datetime, timezone
 
 from .browser.messenger import MessengerAdapter, Thread
+from .chat_pin import pin_escalation_text
 from .config import get_settings
 from .db import Database
 from .models import JobStatus
-from .notify import Escalation, WhatsAppWebSender, build_login_escalation
+from .notify import STOP_HEADER, Escalation, WhatsAppWebSender, build_login_escalation
 from .ollama_client import OllamaConfig
 from .replies import compose_reply
 from .reply_style import polish
@@ -118,6 +119,8 @@ def run(
             profile_dir=settings.browser_profile_dir,
             headless=settings.browser_headless,
             slow_mo_ms=settings.browser_slow_mo_ms,
+            chat_pin=getattr(settings, "chat_pin", ""),
+            pin_auto=getattr(settings, "chat_pin_auto", True),
         )
     available, why = adapter.is_available()
     if not available:
@@ -159,6 +162,21 @@ def run(
             message = (
                 f"Facebook menampilkan halaman pembatasan ({detail}). "
                 "Buka Facebook sendiri, selesaikan di sana, lalu jalankan ulang."
+            )
+            log("warning", message)
+            threads = []
+        elif list_status == "perlu_pin":
+            esc = Escalation(
+                chat_name="",
+                message=pin_escalation_text(),
+                reason="Messenger meminta PIN pemulihan chat",
+                header=STOP_HEADER,
+            )
+            _escalate(db, job_id, None, esc, counters, sender, dry_run, log)
+            status = JobStatus.BLOCKED.value
+            message = (
+                "Messenger meminta PIN pemulihan chat dan worker tidak mengisinya. "
+                "Isi PIN sendiri di jendela browser, atau set FBW_CHAT_PIN di .env."
             )
             log("warning", message)
             threads = []
@@ -307,6 +325,10 @@ def _handle_thread(
         counters["errors"] += 1
         log("error", f"[{thread.name}] gagal membuka chat: {exc.__class__.__name__}: {exc}"[:300])
         return 0
+    if read.status == "perlu_pin":
+        counters["errors"] += 1
+        log("warning", f"[{thread.name}] {read.note or 'perlu PIN pemulihan chat'}"[:300])
+        return 0
     if read.status != "ok":
         note = f" ({read.note})" if read.note else ""
         counters["errors"] += 1
@@ -364,6 +386,10 @@ def _handle_thread(
                 log("error", f"[{thread.name}] gagal mengirim: {note}")
                 if note == "perlu_login":
                     raise RuntimeError("Facebook meminta login saat mengirim balasan.")
+                if note == "perlu_pin":
+                    raise RuntimeError(
+                        "Messenger meminta PIN pemulihan chat saat mengirim balasan."
+                    )
 
     if plan.escalate:
         _escalate(
