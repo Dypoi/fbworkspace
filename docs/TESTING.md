@@ -33,7 +33,7 @@ Lint (opsional, butuh `ruff`):
 pytest 8.x. Windows belum dijalankan dari lingkungan ini.
 
 ```
-352 passed in ~2s
+685 passed in ~6s
 ruff check . --select E,F,W,I  ->  All checks passed!
 ```
 
@@ -50,10 +50,17 @@ ruff check . --select E,F,W,I  ->  All checks passed!
 | `tests/test_export.py` | 14 | formula injection, BOM, header, detail & alasan, truncation |
 | `tests/test_pipeline.py` | 12 | parsing input manual, penyimpanan, dedupe, batch |
 | `tests/test_drafts.py` | 11 | draf netral, larangan klaim, placeholder, profil |
-| `tests/test_app_smoke.py` | 7 | dashboard dirender (kosong & setelah DEMO), hanya 3 tab, segmentasi Semua/Lolos/Tersembunyi, tombol filter ulang, hapus baris komentar |
+| `tests/test_app_smoke.py` | 9 | dashboard dirender (kosong & setelah DEMO), tepat 4 tab, segmentasi Semua/Lolos/Tersembunyi, tombol filter ulang, hapus baris komentar, tab Balas bawaannya uji kering, panel job 0-chat tidak memicu `StreamlitDuplicateElementKey` |
 | `tests/test_post_extraction.py` | 37 | kartu dari tautan `/posts/` **dan** kartu feed `[aria-posinset]`, dedupe, buang komentar, blok `dir=auto`, pembersihan label "Facebook"/huruf berjauhan, fallback selector |
 | `tests/test_text_quality.py` | 26 | pola komentar/reply (contoh asli dari ekspor), postingan sah tidak ikut terbuang, adapter melewati komentar, `skipped_comment`, pembersihan data lama |
 | `tests/test_ui_data.py` | 12 | hitungan per status filter, hapus per sumber (DEMO), pratinjau filter, "terapkan ulang filter" tanpa duplikasi |
+| `tests/test_pricelist.py` | 29 | nama model baku (`iphone se 2020` → `iphone se gen2`), format rupiah, parsing baris harga (`iphone 11 64gb 2,4jt`), pencarian per model/storage, stok |
+| `tests/test_replies.py` | 43 | harga hanya dari daftar, tanya storage bila lebih dari satu varian, ready/lokasi/WA, "nego" → eskalasi, model tak dikenal & nomor pembeli → diam + eskalasi, sapaan → diam tanpa eskalasi, batas 400 karakter |
+| `tests/test_notify.py` | 19 | baris pertama pesan WA, isi Chat/Isi/Alasan/Link, pemotongan 900 karakter, normalisasi nomor `08…`/`+62…` → `62…`, URL `web.whatsapp.com/send`, status QR/kotak tulis tidak ditemukan, mode latar belakang, pesan error Playwright diterjemahkan |
+| `tests/test_reply_style.py` | 22 | prompt variasi, gaya diterima, **angka berubah/lokasi hilang/nomor WA hilang/klaim terlarang → ditolak**, Ollama mati tetap memakai teks template |
+| `tests/test_chat_pin.py` | 30 | PIN hanya diisi di layar permintaan PIN, **ditolak di checkpoint/verifikasi/2FA/password**, PIN tidak bocor ke diagnostik/log/pesan WA, batas 2 percobaan |
+| `tests/test_messenger_adapter.py` | 52 | adapter Messenger dengan halaman tiruan: selector berlapis, deteksi login/checkpoint, diagnostik saat 0 chat, arah pesan, gagal tanpa Chromium jadi status (bukan exception), **bentuk akun nyata: 1 tautan `/messages/t/` + 13 tautan `/t/` → 14 chat terbaca** (versi lama: 0), pembacaan berbasis blok teks `dir="auto"` + posisi kotak tulis: sidebar & panel detail dibuang, urutan pesan berdasarkan Y, arah dari kiri/kanan, kontainer raksasa diabaikan, nama chat & notifikasi enkripsi & jam dibuang, arah pesan dari jarak tepi (bukan titik tengah), ditambah **wadah percakapan** dari kotak tulis (membuang bilah atas "Find friends", sidebar, panel detail) |
+| `tests/test_messenger_worker.py` | 31 | uji kering tidak mengirim, balasan nyata memakai harga, **"nego" memicu notifikasi WA**, dedup eskalasi, cooldown per chat, batas balasan, `perlu_login` → job diblokir, gagal kirim dihitung, variasi AI hanya saat Ollama aktif, **0 chat = status diblokir (bukan selesai)**, uji kering tidak menandai pesan terjawab (uji kering -> kirim nyata mengirim),, diagnostik tersimpan di job, checkpoint → diblokir, satu chat error tidak menghentikan job |
 
 ### Pengujian non-unit yang juga dijalankan
 
@@ -68,7 +75,9 @@ ruff check . --select E,F,W,I  ->  All checks passed!
 | Penyaring komentar pada data nyata | `looks_like_comment` atas ekspor 122 baris pengguna | 122/122 terdeteksi; 9 teks DEMO & postingan contoh tidak ikut tertandai |
 | POC tanpa Chromium terpasang | `python scripts/poc_facebook.py --yes` | Gagal dengan pesan jelas + saran `playwright install chromium`, diagnostik JSON tersimpan, exit code kesalahan |
 | Server Streamlit | `streamlit run app.py` + `curl /_stcore/health` | `200 ok` |
-| Render dashboard | `streamlit.testing.v1.AppTest` | Tanpa exception; hanya 3 tab; segmentasi Semua/Lolos/Tersembunyi ada; DEMO & filter ulang berjalan |
+| Render dashboard | `streamlit.testing.v1.AppTest` | Tanpa exception; tepat 4 tab; segmentasi Semua/Lolos/Tersembunyi ada; DEMO & filter ulang berjalan; tab Balas bawaannya uji kering, panel job 0-chat tidak memicu `StreamlitDuplicateElementKey` |
+| Worker balas DM tanpa browser | `run()` dengan adapter + `MemorySender` palsu | Uji kering mencatat tanpa mengirim; "nego" mengirim notifikasi `cek facebook ada chat yang bukan ranah saya`; dedup & cooldown bekerja |
+| Penyusun balasan (18 pesan nyata) | `compose_reply` manual | "iphone 8 berapa?" tidak menjawab harga (harus tanya storage); "ada yang lain?" tidak dijawab "Ready"; nomor pembeli → eskalasi |
 
 ---
 
@@ -80,6 +89,8 @@ ruff check . --select E,F,W,I  ->  All checks passed!
 | Login manual di jendela Chromium | Butuh akun nyata | Jalankan `scripts/login_helper.py`; pastikan status `selesai`, lalu POC tidak lagi `perlu_login` |
 | Penantian login di halaman nyata | Butuh halaman login nyata | Jalankan pembacaan tanpa login; jendela harus tetap terbuka sampai `FBW_LOGIN_WAIT_SECONDS` |
 | Selector `div[role="article"]` pada akun Anda | Perlu halaman nyata | POC: periksa jumlah postingan & kualitas teks |
+| Selector Messenger (`div[role="listitem"]`, kotak tulis) | Butuh akun nyata | `python -m fbworkspace.browser.messenger --show` (tidak mengirim apa pun) → kirim `data/diagnostics/*.json` bila `thread_links` = 0 |
+| Pengiriman WhatsApp Web nyata | Butuh scan QR di ponsel Anda | `scripts/wa_login.py`, lalu **Kirim tes WhatsApp** di tab Balas |
 | Deteksi checkpoint nyata | Butuh halaman challenge nyata | Hentikan jika muncul; laporkan teks penandanya bila tidak terdeteksi |
 | Kecepatan & kualitas Ollama | Model tidak diunduh di sandbox | Pengaturan → Ollama → Cek koneksi → analisis 1–2 postingan |
 | JSON `qwen3:4b` dengan `think:false` | Butuh model nyata | Set model di kotak "Model untuk sesi ini", analisis 1 postingan |
@@ -123,11 +134,26 @@ Jalankan berurutan. Beri tanda centang hanya jika benar-benar terlihat.
 - [ ] Status POC dapat Anda tafsirkan dengan tabel di POC_FACEBOOK.md.
 - [ ] Jika diblokir: proses berhenti, tidak ada percobaan ulang otomatis.
 
-**D. Ollama (hanya jika dipakai)**
+**D. Balas DM Messenger (mulai dari uji kering)**
+- [ ] Tab **Balas** muncul dan bawaannya **Uji kering tercentang**; tombol nonsaktif sebelum pernyataan dicentang.
+- [ ] Daftar harga tampil 9 baris sesuai pricelist Anda; ubah 1 harga → **Simpan daftar harga** berhasil.
+- [ ] Jalankan uji kering → log menunjukkan chat terbaca dan balasan yang **akan** dikirim; tidak ada pesan terkirim ke pembeli.
+- [ ] Kalau **0 chat dibaca**: panel job menampilkan merah + diagnostik, dan tombol **Periksa inbox Messenger** menghasilkan JSON. Status job = diblokir, bukan "selesai".
+- [ ] Chat berisi "nego" → muncul baris eskalasi di daftar **Eskalasi** (alasan `nego`) dan status `antre` (uji kering tidak mengirim WA).
+- [ ] `scripts\wa_login.py` → scan QR → **Kirim tes WhatsApp** masuk ke nomor `081513839973`.
+- [ ] Matikan uji kering untuk 1 chat uji: balasan pembeli sesuai harga di daftar; chat "nego" mengirim WA ke Anda.
+- [ ] Bila WhatsApp Web logout: job tetap selesai, notifikasi tercatat `gagal`, dan chat tetap ada di daftar Eskalasi.
+
+**E. Ollama (hanya jika dipakai)**
 - [ ] `ollama pull qwen2.5:3b` selesai.
 - [ ] Pengaturan → Ollama: "Cek koneksi" hijau.
 - [ ] 1 postingan dianalisis; bandingkan hasil AI vs analisis aturan.
 - [ ] Matikan Ollama lalu analisis lagi → aplikasi tidak crash, pesan jelas.
+
+---
+
+> Catatan jujur: tab Balas yang mengirim pesan **belum** diuji di akun Facebook nyata.
+> Semua yang tercatat sebagai ✅ adalah tes otomatis dengan adapter/pengirim palsu.
 
 ---
 

@@ -9,9 +9,12 @@ Fokusnya bukan "memanen" grup, melainkan:
 2. menyimpannya di SQLite lokal,
 3. memfilter kata kunci, lokasi, dan rentang harga,
 4. mengekstrak kategori/model/harga/budget/lokasi dengan aturan yang bisa dijelaskan,
-5. membuat draf balasan netral yang **Anda** periksa dan kirim manual di Facebook.
+5. membuat draf balasan netral yang **Anda** periksa dan kirim manual di Facebook,
+6. (opsional, bawaannya **uji kering**) membalas **DM Messenger** yang isinya ada di
+   template Anda, lalu mengirim notifikasi WhatsApp ke Anda untuk chat yang di luar
+   template.
 
-Tidak ada auto-post, auto-comment, auto-chat, atau unggahan data ke cloud.
+Tidak ada auto-post, auto-comment, auto-chat ke grup, atau unggahan data ke cloud.
 
 ---
 
@@ -21,7 +24,7 @@ Ini penting supaya Anda tidak salah harap.
 
 | Bagian | Status |
 |---|---|
-| Dashboard Streamlit (3 langkah: Mulai · Hasil · Pengaturan) | ✅ Berjalan & diuji (termasuk smoke test otomatis) |
+| Dashboard Streamlit (4 tab: Mulai · Hasil · Balas · Pengaturan) | ✅ Berjalan & diuji (termasuk smoke test otomatis) |
 | Hitungan Semua/Lolos/Tersembunyi + "Terapkan ulang filter" | ✅ Diuji otomatis (data & UI) |
 | Penyaring komentar/reply + pembersih baris lama | ✅ Diuji otomatis (122 baris ekspor nyata terdeteksi) |
 | Ekstraksi isi postingan (tautan `/posts/` **atau kartu feed**) | ✅ Unit + uji DOM (jsdom); ⚠️ tetap perlu POC di akun Anda |
@@ -36,6 +39,11 @@ Ini penting supaya Anda tidak salah harap.
 | **Login manual di jendela Chromium** | ⚠️ **BELUM diverifikasi** di laptop Anda. Alur menunggu-login & deteksi cookie sudah diuji dengan simulasi, bukan akun nyata |
 | **Helper login (`scripts/login_helper.py`)** | ✅ Diuji tanpa browser; ⚠️ perlu uji di laptop |
 | **Kualitas & kecepatan Ollama di laptop Anda** | ⚠️ **BELUM diukur** |
+| Daftar harga + penyusun balasan DM (`pricelist.py`, `replies.py`) | ✅ Diuji otomatis (harga tidak pernah dikarang) |
+| Variasi gaya balasan dengan AI (`reply_style.py`) | ✅ Diuji otomatis — angka/lokasi/nomor WA yang berubah **selalu ditolak** |
+| Worker balas DM (`messenger_worker.py`) | ✅ Diuji otomatis dengan adapter & pengirim palsu |
+| Notifikasi WhatsApp Web (`notify.py`) | ✅ Format pesan & normalisasi nomor diuji; ⚠️ pengiriman nyata perlu uji di laptop |
+| **Selector Messenger di akun nyata** | ⚠️ **BELUM diverifikasi** — semua pagar aktif, kegagalan jadi status/log, bukan crash |
 
 > Jangan menganggap selector `div[role="article"]` pasti bekerja. Struktur halaman
 > Facebook berubah dan berbeda antar akun/bahasa. Skrip POC disediakan justru untuk
@@ -62,11 +70,13 @@ Ini penting supaya Anda tidak salah harap.
 
 ## 3. Fitur MVP
 
-**Alur UI tiga langkah** (menggantikan 6 tab lama)
+**Alur UI empat tab** (menggantikan 6 tab lama)
 - Tab **Mulai**: ① sumber (Grup Facebook / Tempel manual / DEMO) → ② filter →
   ③ batas + mulai. Ringkasan satu baris menunjukkan apa yang akan dijalankan.
 - Tab **Hasil**: hitungan **Semua / Lolos filter / Tersembunyi**, klik baris untuk
   detail, ekspor CSV, dan tombol **Terapkan ulang filter** untuk data lama.
+- Tab **Balas**: daftar harga (satu-satunya sumber harga), tombol jalankan worker
+  balas DM, notifikasi WhatsApp, dan daftar eskalasi "perlu Anda".
 - Tab **Pengaturan**: Ollama, profil bisnis, data (termasuk hapus DEMO), keamanan,
   bantuan. Sidebar hanya ringkasan — tidak ada filter ganda.
 
@@ -140,22 +150,29 @@ fbworkspace/
 │   ├── demo.py                 # pemuat data DEMO sintetis
 │   ├── jobs.py                 # start/stop worker dari dashboard
 │   ├── worker.py               # proses pembacaan browser terpisah
+│   ├── pricelist.py            # daftar harga: satu-satunya sumber harga
+│   ├── replies.py              # pesan masuk -> rencana balasan (tanpa kirim)
+│   ├── reply_style.py          # variasi gaya dengan AI (fakta diverifikasi)
+│   ├── notify.py               # notifikasi eskalasi (WhatsApp Web + toast Windows)
+│   ├── messenger_worker.py     # worker balas DM (uji kering bawaannya)
 │   └── browser/
 │       ├── base.py             # kontrak adapter
 │       ├── manual.py           # adapter manual (tanpa browser)
 │       ├── page_state.py       # deteksi login/checkpoint/penolakan
-│       └── playwright_fb.py    # adapter Playwright (POC, belum terverifikasi)
+│       ├── playwright_fb.py    # adapter Playwright (POC, belum terverifikasi)
+│       └── messenger.py        # adapter DM Messenger (belum diuji di akun nyata)
 ├── scripts/
 │   ├── login_helper.py         # login manual sekali (profil browser)
+│   ├── wa_login.py             # login WhatsApp Web sekali (scan QR)
 │   ├── poc_facebook.py         # POC satu grup, batas kecil
 │   ├── setup_windows.ps1       # setup otomatis Windows
 │   ├── run_windows.ps1         # menjalankan dashboard
 │   ├── poc_windows.ps1         # pembungkus POC
+│   ├── load_demo.py            # muat data DEMO via CLI
 │   └── check_extraction_dom.cjs # uji logika ekstraksi DOM (Node + jsdom, opsional)
-│   └── load_demo.py            # muat data DEMO via CLI
 ├── data/demo_posts_DEMO.json   # data sintetis berlabel DEMO
 ├── docs/                       # instalasi, POC, batasan, Git, testing
-├── tests/                      # 352 tes otomatis
+├── tests/                      # 685 tes otomatis
 ├── requirements.txt
 ├── .env.example
 └── .gitignore
@@ -221,6 +238,140 @@ Batas awal disarankan: 3–5 postingan, 2–3 menit.
 
 ### Langkah E — Ollama (opsional, terakhir)
 Buka tab **Pengaturan → 🧠 Ollama** dan bagian 8 di bawah.
+
+### Langkah F — Balas DM Messenger (opsional, mulai dari uji kering)
+
+Tab **💬 Balas**. Alurnya: worker membuka daftar chat Messenger, membaca pesan
+**masuk**, lalu hanya menjawab pertanyaan yang ada di template:
+
+| Pertanyaan pembeli | Jawaban worker |
+|---|---|
+| "harga iphone 11 128gb?" | `2.600.000 kak` (hanya dari daftar harga Anda) |
+| "harga iphone 11?" (tanpa storage) | `Storage-nya 64GB, 128GB, atau 256GB kak?` |
+| "ready kak?" / "iphone 8 ready?" | `Ready kak` atau `Lagi kosong kak` |
+| "cod dimana?" / "lokasi?" | `Kutabumi, Tangerang` |
+| "minta nomor WA" | `081513839973` |
+
+Di luar template worker **diam**, tetapi Anda dapat notifikasi WhatsApp ke
+`081513839973` yang diawali kalimat `cek facebook ada chat yang bukan ranah saya`.
+Kata **"nego"** (juga "kurang", "diskon", "tawar", "tukar tambah") **selalu**
+memicu notifikasi itu. Bila pertanyaannya tetap bisa dijawab dari template
+(mis. "harga 11 64 nego?"), worker menjawab harga **dan** mengirim notifikasi.
+
+Harga **tidak pernah dikarang**: model/storage yang tidak ada di daftar harga
+(atau nomor telepon yang dikirim pembeli) → worker diam + notifikasi.
+
+**Variasi AI (opsional).** Bila Ollama aktif dan centang *Variasikan gaya bahasa
+dengan Ollama* dibiarkan, kalimatnya boleh lebih luwes — tetapi hasil AI
+diverifikasi ulang: semua angka harus sama, `Kutabumi, Tangerang` dan
+`081513839973` tidak boleh hilang, dan klaim terlarang ("garansi resmi",
+"termurah", …) menggugurkan hasil. Kalau gagal, teks template yang dipakai.
+
+```powershell
+# 1) scan QR WhatsApp Web sekali (untuk notifikasi), lalu tutup jendelanya
+.\.venv\Scripts\python.exe scripts\wa_login.py
+
+# 2) buka dashboard, tab Balas:
+#    - isi/periksa daftar harga  -> "Simpan daftar harga"
+#    - biarkan "Uji kering" tercentang -> "Jalankan balas DM"
+#    - periksa log: balasan apa yang AKAN dikirim, tanpa ada yang terkirim
+# 3) kalau sudah yakin: hilangkan centang "Uji kering", centang pernyataan,
+#    lalu jalankan lagi. Balasan nyata dikirim ke pembeli.
+```
+
+**Kalau Facebook meminta PIN pemulihan chat.** Isi `FBW_CHAT_PIN` di `.env`
+(kalau tidak, worker berhenti dan memberi tahu Anda). Worker hanya mengisinya di
+layar "masukkan PIN pemulihan chat"; di layar checkpoint/verifikasi identitas/kode
+2FA ia berhenti. PIN tidak pernah muncul di log, database, atau pesan WhatsApp.
+
+**Kalau hasilnya "0 chat dibaca"**, itu artinya pembacaan gagal (bukan "tidak ada
+pembeli"). Panel job akan menampilkan merah + apa yang terlihat di halaman, dan ada
+tombol **Periksa inbox Messenger**. Bisa juga dari PowerShell:
+
+```powershell
+.\.venv\Scripts\python.exe -m fbworkspace.browser.messenger --show
+```
+
+Untuk memeriksa apa yang **benar-benar terbaca** pada percakapan pertama (pesan,
+arah, dan baris yang dilewati), jalankan dengan `--show` — hasilnya juga disimpan di
+`data\diagnostics\`.
+
+Untuk **notifikasi WhatsApp**, tesnya tidak lewat dashboard (dashboard bisa membeku
+1 menit). Jalankan:
+
+```powershell
+.\.venv\Scripts\python.exe -m fbworkspace.notify --test --show
+```
+
+Perintah itu mencetak jelas kenapa pengiriman gagal (belum scan QR, kotak tulis tidak
+ditemukan, profil sedang dipakai, Chromium belum terpasang).
+
+Worker balas DM berjalan **tanpa jendela** (headless), jadi Chrome pribadi Anda tidak
+terganggu. Kalau ada jendela Chromium aplikasi yang tidak bisa ditutup (profil terkunci),
+pakai perintah ini — ia **hanya** menutup Chromium yang memakai folder profil aplikasi,
+Chrome pribadi Anda tidak disentuh:
+
+```powershell
+.\\.venv\\Scripts\\python.exe -m fbworkspace.browser.messenger --close-browsers --dry-run
+.\\.venv\\Scripts\\python.exe -m fbworkspace.browser.messenger --close-browsers
+```
+
+Perintah `fbworkspace.browser.messenger` **tidak mengirim apa pun**; ia mencetak URL,
+judul halaman, jumlah tautan chat, ada/tidaknya kotak tulis, dan cuplikan teks, lalu
+menyimpan laporan ke `data\diagnostics\`. Kirimkan file itu bila hasilnya masih kosong.
+
+**Mode pantau (bawaan aktif).** Worker tidak berhenti setelah satu putaran: ia
+memeriksa DM baru setiap 30 detik (bisa diubah 10–180 detik) dan mengirim WA untuk
+chat yang di luar template. Berhenti hanya bila Anda menekan **⛔ Hentikan worker**,
+atau bila ada masalah yang butuh tindakan Anda (login/checkpoint/PIN) — dalam hal
+itu worker berhenti dan mengirim WA.
+
+**Di mana tombol berhenti?** Tab **Balas** (dan tab Mulai) → panel job → tepat di
+bawah angka *Chat dibaca / Pesan baru / Balasan terkirim / Eskalasi / Error*.
+Tombolnya bertuliskan **⛔ Hentikan worker**. Setelah ditekan, panel berubah menjadi
+**🔁 Batalkan berhenti** + **⛔ Hentikan paksa** (dipakai bila worker tampak macet).
+Tombol ini tetap muncul walau dashboard sudah di-restart, karena worker berjalan
+sebagai proses terpisah dan PID-nya disimpan di database.
+
+Chat yang ditandai **belum dibaca** tetapi isinya tidak terbaca oleh worker
+(misalnya pesan baru belum termuat) **tidak didiamkan**: Anda langsung dikirimi WA
+berisi nama chat + cuplikannya supaya bisa Anda periksa sendiri.
+
+Log worker kini menampilkan **isi** yang benar-benar terbaca per chat
+(`isi terbaca: in: … | out: …`), sehingga "tidak ada pesan masuk" bisa Anda
+periksa sendiri, bukan dipercaya begitu saja. Perintah `--show` juga membaca
+**lima** percakapan pertama, bukan hanya yang pertama.
+
+**Arah pesan diambil dari data Facebook, bukan tebakan.** Messenger menyimpan
+`aria-label` seperti `"Message sent 18:10 by Pak Bagus: Berapa ya"` dan
+`"… by You: Ready kak"`. Label itu menyebut pengirim dan isinya, sehingga worker
+tidak perlu menebak dari posisi gelembung — dan pesan yang elemennya tidak terlihat
+tetap terbaca. Penanda "belum dibaca" tetap yang paling diutamakan.
+
+**Tidak menanyakan hal yang sama dua kali.** Pesan masuk yang sudah kita tanggapi
+(ada balasan kita sesudahnya) ditandai selesai, sehingga worker tidak mengulang
+pertanyaan lama dan justru mengabaikan jawaban pembeli. Pesan masuk **terbaru**
+selalu didahulukan; ucapan terima kasih/sapaan dilewati.
+
+**Jawaban pendek juga dipahami.** Setelah worker menanyakan storage, pembeli cukup
+menulis `64gb` / `64` / `yang 128` — model diwarisi dari percakapan, harga diambil
+dari daftar harga Anda (`64gb` setelah "Iphone 11" → `2.400.000 kak`). Storage yang
+tidak ada di daftar (mis. `500gb`) tetap tidak dijawab dan masuk WA.
+
+**Pertanyaan lanjutan memakai konteks.** "Berapa ya?" setelah "Iphone 11 ready?"
+dijawab dengan menanyakan storage (atau harga pasti bila storage sudah disebut) —
+model diambil dari pesan sebelumnya, sedangkan **harga tetap dari daftar harga Anda**.
+Bila konteks tidak menyebut model sama sekali, worker tidak mengarang: Anda dikirimi WA.
+
+**Pesan yang terlewat tidak lagi hilang.** Facebook menandai pesan yang belum
+dibaca (`aria-label` "Pesan belum dibaca"). Worker memakai penanda itu sebagai bukti
+utama: pesan tersebut dijawab walau catatan lama sempat salah menandainya
+"terjawab", dan bila tidak bisa dijawab aman, Anda dikirimi WA.
+
+Pengaman bawaan: maksimum 8 chat dibaca & 10 balasan per putaran, jeda 45 detik
+antar balasan, cooldown 10 menit per chat, dan berhenti bila Facebook meminta
+login. Chat yang dibaca akan tampak "sudah dibaca" di sisi pembeli — itu tidak
+bisa dihindari.
 
 ---
 
@@ -322,8 +473,10 @@ Penghapusan data tersedia di tab **Pengaturan → 💾 Data** (postingan, log, p
 .\.venv\Scripts\python.exe -m pytest
 ```
 
-Hasil terakhir di lingkungan pengembangan: **352 tes lulus** (termasuk smoke test
-dashboard Streamlit untuk 3 tab, segmentasi hasil, dan filter ulang), `ruff check` bersih. Detail: **[docs/TESTING.md](docs/TESTING.md)**.
+Hasil terakhir di lingkungan pengembangan: **685 tes lulus** (termasuk smoke test
+dashboard Streamlit untuk 4 tab, segmentasi hasil, filter ulang, daftar harga,
+penyusun balasan, worker balas DM dengan adapter palsu, format notifikasi
+WhatsApp, dan variasi AI yang menolak perubahan fakta), `ruff check` bersih. Detail: **[docs/TESTING.md](docs/TESTING.md)**.
 
 Yang **belum** diuji dan harus Anda validasi sendiri:
 1. Pembacaan grup Facebook nyata (selector, login, pembatasan).
@@ -331,6 +484,9 @@ Yang **belum** diuji dan harus Anda validasi sendiri:
 3. Perilaku saat Facebook menampilkan challenge di akun Anda.
 4. Kecepatan/kualitas Ollama dengan model nyata di laptop Anda (termasuk `qwen3:4b`).
 5. Tampilan dashboard di browser Anda (Chrome/Edge/Firefox).
+6. Selector Messenger (`div[role="listitem"]`, kotak tulis chat) di akun Anda.
+7. Pengiriman nyata WhatsApp Web: scan QR lewat `scripts/wa_login.py`, tombol
+   **Kirim tes WhatsApp** di tab Balas.
 
 ---
 
@@ -343,7 +499,12 @@ Ringkasan (lengkap di **[docs/LIMITATIONS.md](docs/LIMITATIONS.md)**):
 - Deduplikasi tanpa ID tautan memakai hash teks (teks yang diedit = postingan baru).
 - Waktu relatif ("3 jam lalu") hanya perkiraan.
 - Model kecil bisa salah membaca model/harga; selalu periksa manual.
-- Aplikasi tidak mengirim pesan; semua respons Anda kirim sendiri.
+- Bagian pencarian postingan & draf komentar **tidak mengirim pesan**; semua
+  komentar Anda kirim sendiri.
+- Balas DM Messenger **mengirim pesan** bila Anda mematikan uji kering. Bawaannya
+  uji kering. Selector Messenger belum diuji di akun nyata, membaca inbox membuat
+  chat tampak "sudah dibaca" oleh pembeli, dan WhatsApp Web bisa logout
+  (notifikasi yang gagal tetap tercatat di daftar **Eskalasi**).
 - Ekstraksi memakai tautan `/posts/` (bila ada) atau kartu feed `[aria-posinset]`.
   Grup tanpa tautan tetap terbaca, tetapi `post_url` menjadi "tidak diketahui"
   sehingga dedupe memakai hash teks. Struktur Facebook bisa berubah kapan saja.

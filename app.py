@@ -13,6 +13,7 @@ import streamlit as st
 from fbworkspace.dashboard import (
     build_filter_config,
     get_context,
+    render_balas,
     render_demo_banner,
     render_hasil,
     render_mulai,
@@ -35,12 +36,14 @@ render_sidebar(settings, db)
 st.title("📱 FB Workspace")
 st.caption(
     "Alat bantu lokal untuk membaca & menganalisis postingan iPhone di grup Facebook "
-    "yang Anda akses secara sah. Tidak ada auto-post, auto-comment, atau auto-chat."
+    "yang Anda akses secara sah. Tidak ada auto-post atau auto-comment. Auto-chat "
+    "dibatasi: hanya membalas DM yang masuk, hanya untuk template milik Anda, dan "
+    "bawaannya dalam mode uji kering (tidak mengirim apa pun)."
 )
 
 render_demo_banner(db)
 
-tabs = st.tabs(["🚀 Mulai", "📋 Hasil", "⚙️ Pengaturan"])
+tabs = st.tabs(["🚀 Mulai", "📋 Hasil", "💬 Balas", "⚙️ Pengaturan"])
 
 with tabs[0]:
     render_mulai(settings, db)
@@ -49,4 +52,7 @@ with tabs[1]:
     render_hasil(settings, db, build_filter_config())
 
 with tabs[2]:
+    render_balas(settings, db)
+
+with tabs[3]:
     render_pengaturan(settings, db)

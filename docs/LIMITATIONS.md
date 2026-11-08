@@ -199,6 +199,36 @@ markup (bukan Excel), tetap berhati-hati.
 
 ---
 
+## 8b. Balas DM Messenger (opsional, bawaannya uji kering)
+
+Bagian ini **mengirim pesan** ke pembeli bila Anda mematikan uji kering. Karena itu
+batasnya harus jelas.
+
+| Hal | Kenyataan |
+|---|---|
+| Cakupan | Hanya **DM/Messenger** (daftar chat di `facebook.com/messages`). Bukan komentar grup, bukan Marketplace. |
+| Yang dijawab | Hanya pertanyaan yang ada di template: harga (dari daftar Anda), ready/stok, lokasi/cod, nomor WA. Sisanya **diam**. |
+| Harga | Selalu dari tabel **Balas → Daftar harga**. Model/storage yang tidak ada → tidak dijawab, dieskalasi. |
+| "Nego" | Kata `nego`, `kurang`, `diskon`, `tawar`, `tukar tambah` **selalu** memicu notifikasi WhatsApp ke Anda, meski harganya tetap dijawab. |
+| Notifikasi | WhatsApp Web dari laptop Anda (profil `data/wa_profile`, perlu `scripts/wa_login.py`). Bila WA logout, notifikasi tercatat `gagal` dan chat tetap ada di daftar **Eskalasi**. |
+| Siapa yang membaca chat | Worker membuka daftar chat Anda, jadi chat baru akan tampak **sudah dibaca** di sisi pembeli. Ini tidak bisa dihindari. |
+| Selector | Tautan chat, `div[role="listitem"]`, dan kotak tulis Messenger **belum diuji di akun nyata**. Ada beberapa selector berlapis + diagnostik, tetap saja bisa berarti 0 chat terbaca. Pada versi pertama, "0 chat" sempat dilaporkan sebagai selesai — sekarang statusnya **diblokir** disertai diagnostik. |
+| Batas | 8 chat / 10 balasan per putaran, jeda 45 detik, cooldown 10 menit per chat, berhenti saat diminta login. Angka ini kecil sengaja. |
+| Pembatasan akun | Facebook dapat membatasi akun yang membalas cepat dalam jumlah banyak. Risiko ada di Anda; gunakan angka kecil dan pantau. |
+| Variasi bahasa AI | Bila Ollama aktif, gaya kalimat boleh divariasikan, tetapi hasilnya diperiksa: angka harus identik, lokasi & nomor WA harus tetap ada, klaim terlarang menggugurkan hasil, lalu jatuh ke teks template. AI **tidak pernah** menentukan harga. Model kecil tetap bisa menghasilkan kalimat aneh yang lolos pemeriksaan — periksa beberapa putaran uji kering. |
+| Profil browser dipakai bersamaan | Chromium menolak dua proses memakai folder profil yang sama. Worker menulis `data/browser_profile/.fbworkspace.lock`; bila proses lain masih hidup, perintah berhenti dengan pesan yang menyebut PID-nya. Samakan selalu `FBW_BROWSER_PROFILE_DIR` worker & `fbworkspace.browser.messenger` (worker sudah mewarisi nilainya dari dashboard). |
+| PIN pemulihan chat | Kalau Facebook meminta PIN, worker mengisinya **hanya** bila (a) `FBW_CHAT_PIN` diisi dan (b) layar yang terdeteksi memang "masukkan PIN pemulihan chat". Di layar checkpoint/verifikasi identitas/kode 2FA password worker **berhenti** dan memberi tahu Anda. Deteksi layar berbasis teks halaman — bisa salah baca; maksimum 2 percobaan per putaran. PIN tidak pernah ditulis ke log, database, atau pesan WhatsApp. |
+| Notifikasi headless | WhatsApp Web kadang hanya mau dimuat bila jendela browser ditampilkan. Worker mencoba headless dulu lalu berpindah ke jendela terlihat (maks 3 percobaan). Untuk memaksa selalu terlihat: `FBW_WA_HEADLESS=false`. |
+| WhatsApp Web | WhatsApp Web kadang menolak Chromium bawaan Playwright ("perbarui Chrome"). Bila itu terjadi, pesan galat kini menyebutkannya. Periksa dengan `.\\.venv\\Scripts\\python.exe -m fbworkspace.notify --diagnose --show`; sesi WA juga bisa kedaluwarsa dan perlu scan QR ulang lewat `scripts\\wa_login.py`. |
+| Pembaca cadangan | Bila skrip pembaca pesan utama gagal (mis. sintaks JS rusak karena perubahan), worker memakai pembaca cadangan yang lebih sederhana: pesan tetap terbaca, tetapi penanda "belum dibaca" dan kotak tulis bisa tidak terbaca. Log akan menyebut `memakai pembaca cadangan`. Ada tes `node --check` untuk mencegah JS rusak terulang. |
+| Pembacaan arah pesan | Arah pesan ditentukan dari posisi gelembung + teks balasan yang pernah kita kirim + penanda "belum dibaca" Facebook. Bila Facebook mengubah tata letak, arah bisa salah; log `isi terbaca` memperlihatkannya sehingga bisa dilaporkan. Pesan yang **sudah** Anda buka manual di HP tidak lagi bertanda belum dibaca, jadi worker bisa menganggapnya sudah lewat. |
+| Windows | `os.kill(pid, 0)` tidak bisa dipakai memeriksa proses di Windows; aplikasi memakai OpenProcess/GetExitCodeProcess. |
+| Mode pantau | Worker berjalan terus sampai dihentikan. Setiap putaran membuka Chromium (headless) sekali, jadi ada beban CPU/RAM berkala; jeda 30–60 detik disarankan. Membaca inbox tetap membuat chat tampak "sudah dibaca" di sisi pembeli. Berhenti otomatis hanya bila ada masalah yang butuh tindakan Anda. |
+| Uji kering | Uji kering **tidak** menandai pesan terjawab; setelah uji kering dimatikan, putaran berikutnya mengirim balasan untuk pesan yang sama. Tanda lama yang salah sudah dibersihkan otomatis saat database dibuka. |
+| Anti-balas-ganda | Berbasis `msg_key` (hash pesan). Pesan yang diedit/dihapus Facebook bisa terbaca sebagai pesan baru. |
+
+---
+
 ## 9. Keamanan lokal
 
 - Dashboard default `127.0.0.1` — tidak dapat diakses perangkat lain.
@@ -206,6 +236,9 @@ markup (bukan Excel), tetap berhati-hati.
 - Ollama dipanggil lewat `127.0.0.1`; endpoint non-local **ditolak** oleh klien.
 - Profil browser berisi cookie/sesi Facebook: diperlakukan sebagai rahasia,
   ada di `.gitignore`, dan bisa dihapus dari dashboard.
+- Profil WhatsApp Web (`data/wa_profile`) berisi sesi tertaut ke WhatsApp Anda:
+  juga diabaikan Git. Siapa pun yang menyalin folder itu bisa memakai sesi tersebut
+  sampai Anda logout dari ponsel (**Perangkat tertaut**).
 - Database SQLite tidak terenkripsi. Jika laptop dipakai bersama, gunakan akun
   Windows terpisah atau BitLocker.
 - Tidak ada telemetri. Streamlit diatur `gatherUsageStats = false`.
@@ -214,7 +247,7 @@ markup (bukan Excel), tetap berhati-hati.
 
 ## 10. Hal yang sengaja TIDAK dibuat
 
-- Auto-comment, auto-post, auto-chat, auto-DM.
+- Auto-comment dan auto-post (komentar tetap Anda kirim sendiri).
 - Menyamar sebagai pengguna lain atau memalsukan perangkat.
 - Mengumpulkan daftar anggota grup.
 - Menyimpan kata sandi/cookie ke Git atau mengunggahnya.

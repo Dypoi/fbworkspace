@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from fbworkspace.db import Database
 from fbworkspace.models import UNKNOWN
 
 
@@ -182,3 +183,96 @@ class TestStats:
         assert stats["total"] == 1
         assert stats["by_source"]["demo"] == 1
         assert "db_path" in stats
+
+
+class TestSchemaMigration:
+    """Database lama (dibuat sebelum tab Balas) harus tetap bisa dibuka."""
+
+    def test_old_jobs_table_gets_new_columns(self, tmp_path):
+        import sqlite3
+
+        path = tmp_path / "lama.db"
+        conn = sqlite3.connect(path)
+        conn.executescript(
+            """
+            CREATE TABLE jobs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                status TEXT NOT NULL,
+                group_urls_json TEXT NOT NULL DEFAULT '[]',
+                config_json TEXT NOT NULL DEFAULT '{}',
+                message TEXT NOT NULL DEFAULT '',
+                counters_json TEXT NOT NULL DEFAULT '{}',
+                stop_requested INTEGER NOT NULL DEFAULT 0,
+                pid INTEGER,
+                created_at TEXT NOT NULL,
+                started_at TEXT, finished_at TEXT, heartbeat_at TEXT
+            );
+            INSERT INTO jobs(status, created_at) VALUES('selesai','2026-11-01T00:00:00+00:00');
+            """
+        )
+        conn.commit()
+        conn.close()
+
+        db = Database(path)
+        old = db.get_job(1)
+        assert old["status"] == "selesai"
+        assert old["kind"] == "browser"
+        assert old["diagnostics"] == {}
+
+        job_id = db.create_job(kind="messenger", group_urls=[], config={})
+        db.update_job(job_id, diagnostics_json='{"threads": 0}')
+        assert db.get_job(job_id)["diagnostics"] == {"threads": 0}
+
+    def test_init_is_idempotent(self, tmp_path):
+        path = tmp_path / "dua.db"
+        Database(path)
+        Database(path)  # tidak boleh error karena kolom sudah ada
+        assert Database(path).list_prices()
+
+
+class TestUnansweredMarks:
+    """Bug nyata: uji kering menandai pesan terjawab walau tidak ada balasan."""
+
+    def _seed(self, path):
+        from fbworkspace.db import Database
+
+        db = Database(path)
+        db.upsert_chat("t1", name="Rian", url="https://x/messages/t/t1/")
+        db.record_message("t1", "m1", direction="in", text="iphone 11 ready?")
+        return db
+
+    def test_marked_with_reply_needs_text(self, tmp_path):
+        db = self._seed(tmp_path / "a.db")
+        db.mark_answered_many("t1", ["m1"], "Ready kak")
+        assert db.unanswered_incoming("t1") == []
+        assert db.get_chat("t1")["last_reply_at"]
+
+    def test_silent_mark_does_not_set_last_reply(self, tmp_path):
+        db = self._seed(tmp_path / "b.db")
+        db.mark_answered_many("t1", ["m1"], "", note="diam")
+        assert db.unanswered_incoming("t1") == []
+        assert not db.get_chat("t1")["last_reply_at"]
+
+    def test_reset_clears_marks_without_reply(self, tmp_path):
+        db = self._seed(tmp_path / "c.db")
+        # meniru data lama yang rusak: terjawab tanpa balasan
+        with db.conn() as conn:
+            conn.execute("UPDATE chat_messages SET answered=1 WHERE msg_key='m1'")
+        assert db.reset_unanswered_marks() == 1
+        assert len(db.unanswered_incoming("t1")) == 1
+
+    def test_reset_keeps_real_replies(self, tmp_path):
+        db = self._seed(tmp_path / "d.db")
+        db.mark_answered_many("t1", ["m1"], "Ready kak")
+        assert db.reset_unanswered_marks() == 0
+        assert db.unanswered_incoming("t1") == []
+
+    def test_init_migrates_old_bad_marks(self, tmp_path):
+        from fbworkspace.db import Database
+
+        path = tmp_path / "e.db"
+        db = self._seed(path)
+        with db.conn() as conn:
+            conn.execute("UPDATE chat_messages SET answered=1 WHERE msg_key='m1'")
+        reopened = Database(path)  # init() membersihkan tanda rusak
+        assert len(reopened.unanswered_incoming("t1")) == 1

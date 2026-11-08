@@ -116,6 +116,57 @@ class Settings:
         default_factory=lambda: _env_int("FBW_OLLAMA_NUM_PREDICT", 512)
     )
 
+    # --- Balas chat (Messenger) ---
+    # Nomor pemilik untuk notifikasi eskalasi (format 62...).
+    wa_phone: str = field(default_factory=lambda: os.getenv("FBW_WA_PHONE", "081513839973").strip())
+    wa_profile_dir: Path = field(
+        default_factory=lambda: resolve_path(os.getenv("FBW_WA_PROFILE_DIR", "data/wa_profile"))
+    )
+    messenger_max_threads: int = field(
+        default_factory=lambda: _env_int("FBW_MESSENGER_MAX_THREADS", 8)
+    )
+    messenger_max_replies: int = field(
+        default_factory=lambda: _env_int("FBW_MESSENGER_MAX_REPLIES", 10)
+    )
+    # Jeda antar balasan (detik) — pengaman agar tidak terlihat seperti spam.
+    messenger_gap_seconds: int = field(
+        default_factory=lambda: _env_int("FBW_MESSENGER_GAP_SECONDS", 45)
+    )
+    # Jangan balas chat yang sama lebih sering dari ini.
+    messenger_cooldown_seconds: int = field(
+        default_factory=lambda: _env_int("FBW_MESSENGER_COOLDOWN_SECONDS", 600)
+    )
+    # Bawaannya uji kering: tidak ada pesan yang benar-benar dikirim.
+    messenger_dry_run: bool = field(
+        default_factory=lambda: _env_bool("FBW_MESSENGER_DRY_RUN", True)
+    )
+    # PIN pemulihan chat Messenger (kalau Facebook memintanya). RAHASIA:
+    # hanya dibaca dari .env, tidak pernah ditulis ke log/database/pesan WA.
+    chat_pin: str = field(default_factory=lambda: os.getenv("FBW_CHAT_PIN", "").strip())
+    chat_pin_auto: bool = field(
+        default_factory=lambda: _env_bool("FBW_CHAT_PIN_AUTO", True)
+    )
+
+    # Mode pantau: jeda antar pemeriksaan DM (detik). 30-60 aman; jangan terlalu cepat.
+    # Notifikasi WA: jalankan browser TANPA jendela (lebih tenang) atau terlihat.
+    # Bila headless gagal di laptop Anda, matikan ini; worker akan memakai jendela
+    # terlihat seperti perintah "notify --test --show" yang terbukti berhasil.
+    wa_headless: bool = field(default_factory=lambda: _env_bool("FBW_WA_HEADLESS", True))
+
+    messenger_interval_seconds: int = field(
+        default_factory=lambda: _env_int("FBW_MESSENGER_INTERVAL_SECONDS", 30)
+    )
+    # Bawaannya memantau terus sampai dihentikan pengguna.
+    messenger_watch: bool = field(
+        default_factory=lambda: _env_bool("FBW_MESSENGER_WATCH", True)
+    )
+
+    # Variasi gaya bahasa balasan dengan Ollama (fakta tetap dari template).
+    # Hanya jalan bila Ollama juga diaktifkan (FBW_OLLAMA_ENABLED=true).
+    messenger_ai_style: bool = field(
+        default_factory=lambda: _env_bool("FBW_MESSENGER_AI_STYLE", True)
+    )
+
     # --- Folder ---
     data_dir: Path = field(default_factory=lambda: PROJECT_ROOT / "data")
     log_dir: Path = field(default_factory=lambda: PROJECT_ROOT / "logs")
@@ -136,6 +187,13 @@ class Settings:
             "tunggu_login": f"{self.login_wait_seconds} detik",
             "ollama": f"{self.ollama_url} (model: {self.ollama_model})",
             "ollama_aktif": "ya" if self.ollama_enabled else "tidak",
+            # Hanya status, bukan nilainya: PIN tidak pernah ditampilkan.
+            "pin_chat": (
+                f"terisi ({len(self.chat_pin)} angka)"
+                if self.chat_pin
+                else "belum diisi"
+            )
+            + ("" if self.chat_pin_auto else " · isi otomatis mati"),
         }
 
 

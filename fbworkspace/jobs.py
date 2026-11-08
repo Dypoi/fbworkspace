@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -27,9 +28,10 @@ def start_job(
     *,
     group_urls: list[str],
     config: dict,
+    kind: str = "browser",
 ) -> tuple[int, subprocess.Popen]:
     """Buat job di database lalu jalankan worker sebagai proses terpisah."""
-    job_id = db.create_job(kind="browser", group_urls=group_urls, config=config)
+    job_id = db.create_job(kind=kind, group_urls=group_urls, config=config)
     settings.ensure_dirs()
     path = log_path(job_id, settings)
 
@@ -39,6 +41,8 @@ def start_job(
     # Pastikan worker memakai settings yang sama
     env["FBW_DB_PATH"] = str(settings.db_path)
     env["FBW_BROWSER_PROFILE_DIR"] = str(settings.browser_profile_dir)
+    env["FBW_WA_PROFILE_DIR"] = str(settings.wa_profile_dir)
+    env["FBW_WA_PHONE"] = settings.wa_phone
 
     creationflags = 0
     if os.name == "nt":
@@ -86,6 +90,8 @@ def start_login_session(settings: Settings) -> tuple[Path, subprocess.Popen]:
     env["PYTHONUNBUFFERED"] = "1"
     env["PYTHONIOENCODING"] = "utf-8"
     env["FBW_BROWSER_PROFILE_DIR"] = str(settings.browser_profile_dir)
+    env["FBW_WA_PROFILE_DIR"] = str(settings.wa_profile_dir)
+    env["FBW_WA_PHONE"] = settings.wa_phone
 
     path = settings.log_dir / "login_helper.log"
     handle = open(path, "a", encoding="utf-8")  # noqa: SIM115 - hidup selama proses
@@ -120,9 +126,154 @@ def request_stop(db: Database, job_id: int) -> None:
     db.request_stop(job_id)
 
 
+def _pid_alive(pid: int) -> bool:
+    """True bila proses dengan PID itu masih berjalan.
+
+    Di Windows ``os.kill(pid, 0)`` BUKAN cara memeriksa proses: ia memanggil
+    TerminateProcess dan melempar ``SystemError: [WinError 87]``. Karena itu
+    Windows memakai OpenProcess lewat ctypes, dan pengecekannya tidak pernah
+    melempar exception ke pemanggil.
+    """
+    pid = int(pid or 0)
+    if pid <= 0:
+        return False
+    if sys.platform == "win32":
+        try:
+            import ctypes
+
+            process_query_limited_information = 0x1000
+            still_active = 259
+            kernel32 = ctypes.windll.kernel32
+            handle = kernel32.OpenProcess(process_query_limited_information, False, pid)
+            if not handle:
+                return False
+            try:
+                code = ctypes.c_ulong()
+                if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+                    return False
+                return code.value == still_active
+            finally:
+                kernel32.CloseHandle(handle)
+        except Exception:  # noqa: BLE001 - jangan pernah menjatuhkan dashboard
+            return False
+    try:
+        os.kill(pid, 0)
+    except (OSError, PermissionError, ValueError, SystemError):
+        return False
+    except Exception:  # noqa: BLE001
+        return False
+    return True
+
+
+def _terminate_pid(pid: int) -> tuple[bool, str]:
+    """Minta proses berhenti. Kembalikan (berhasil, keterangan)."""
+    pid = int(pid or 0)
+    if pid <= 0:
+        return False, "PID tidak valid"
+    if sys.platform == "win32":
+        try:
+            import ctypes
+
+            process_terminate = 0x0001
+            kernel32 = ctypes.windll.kernel32
+            handle = kernel32.OpenProcess(process_terminate, False, pid)
+            if not handle:
+                return False, f"tidak bisa membuka proses {pid} (sudah berhenti?)"
+            try:
+                if kernel32.TerminateProcess(handle, 1):
+                    return True, "dihentikan"
+                return False, "TerminateProcess ditolak Windows"
+            finally:
+                kernel32.CloseHandle(handle)
+        except Exception as exc:  # noqa: BLE001
+            return False, f"gagal menghentikan proses: {exc}"
+    try:
+        os.kill(pid, 15)
+        return True, "dihentikan"
+    except Exception as exc:  # noqa: BLE001
+        return False, f"gagal menghentikan proses: {exc}"
+
+
+def _pid_command_line(pid: int) -> str:
+    """Baris perintah proses; kosong bila tidak bisa dibaca."""
+    if not pid:
+        return ""
+    cmdline_path = f"/proc/{pid}/cmdline"
+    try:
+        with open(cmdline_path, "rb") as handle:
+            return handle.read().decode("utf-8", "replace").replace("\x00", " ")
+    except OSError:
+        pass
+    if sys.platform == "win32":
+        powershell = shutil.which("powershell") or shutil.which("pwsh")
+        if not powershell:
+            return ""
+        try:
+            result = subprocess.run(  # noqa: S603 - argumen tetap, tanpa shell
+                [
+                    powershell,
+                    "-NoProfile",
+                    "-Command",
+                    f'(Get-CimInstance Win32_Process -Filter "ProcessId={int(pid)}")'
+                    ".CommandLine",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=15,
+                check=False,
+            )
+        except Exception:  # noqa: BLE001
+            return ""
+        return (result.stdout or "").strip()
+    return ""
+
+
+def _pid_is_our_worker(pid: int) -> bool:
+    """Benar hanya bila PID itu benar-benar worker fbworkspace.
+
+    PID bisa dipakai ulang proses lain setelah worker mati; karena itu kita
+    membaca baris perintahnya dulu. Bila tidak bisa dipastikan, jangan dibunuh.
+    """
+    if not _pid_alive(pid):
+        return False
+    cmdline = _pid_command_line(pid).lower()
+    if not cmdline:
+        return False
+    return "fbworkspace" in cmdline and (
+        "dispatcher" in cmdline or "messenger_worker" in cmdline or "feed_worker" in cmdline
+    )
+
+
 def force_stop(db: Database, job_id: int, proc: subprocess.Popen | None) -> str:
-    """Hentikan paksa. Dipakai hanya jika 'minta berhenti' tidak bekerja."""
+    """Hentikan paksa. Dipakai hanya jika 'minta berhenti' tidak bekerja.
+
+    ``proc`` hanya ada di sesi dashboard yang menjalankan worker. Setelah dashboard
+    di-restart, worker tetap hidup sebagai proses terpisah, jadi PID dari database
+    dipakai sebagai cadangan agar tombol ini benar-benar menghentikannya.
+    """
     db.request_stop(job_id)
+    if proc is None:
+        job = db.get_job(job_id) or {}
+        pid = int(job.get("pid") or 0)
+        if _pid_alive(pid) and _pid_is_our_worker(pid):
+            ok, note = _terminate_pid(pid)
+            if ok:
+                db.update_job(
+                    job_id,
+                    status=JobStatus.STOPPED.value,
+                    message=f"Dihentikan paksa (PID {pid}).",
+                    finished_at=_now(),
+                )
+                db.log_event(job_id, "warning", f"Worker PID {pid} dihentikan paksa.")
+                return f"Worker PID {pid} dihentikan paksa."
+            return f"Gagal menghentikan PID {pid}: {note}"
+        if _pid_alive(pid) and not _pid_is_our_worker(pid):
+            # Jangan membunuh proses yang tidak bisa dipastikan milik kita.
+            db.log_event(
+                job_id,
+                "warning",
+                f"PID {pid} hidup tetapi bukan worker fbworkspace; tidak dibunuh.",
+            )
     if proc is not None and proc.poll() is None:
         try:
             proc.terminate()

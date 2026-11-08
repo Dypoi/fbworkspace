@@ -15,6 +15,7 @@ Logika bisnis tetap di modul inti (db, filters, analyzer, pipeline, export).
 from __future__ import annotations
 
 import json
+import threading
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -39,6 +40,7 @@ from .models import (
     JobStatus,
 )
 from .normalize import group_search_url, parse_group_urls
+from .notify import WhatsAppWebSender
 from .ollama_client import (
     SUGGESTED_MODELS,
     OllamaConfig,
@@ -52,6 +54,7 @@ from .pipeline import (
     preview_filter_counts,
     reapply_filters,
 )
+from .pricelist import PriceEntry, canonical_key, label_for
 
 PROFILE_PATH = PROJECT_ROOT / "data" / "business_profile.json"
 ACTIVE_STATUSES = {JobStatus.QUEUED.value, JobStatus.RUNNING.value}
@@ -374,7 +377,9 @@ def render_login_card(settings: Settings, *, job_active: bool, compact: bool = F
 # Panel job
 # ---------------------------------------------------------------------------
 
-def _render_job_content(settings: Settings, db: Database, job_id: int, live: bool) -> None:
+def _render_job_content(
+    settings: Settings, db: Database, job_id: int, live: bool, key_suffix: str = ""
+) -> None:
     job = db.get_job(job_id)
     if not job:
         st.info("Belum ada sesi pembacaan.")
@@ -387,6 +392,69 @@ def _render_job_content(settings: Settings, db: Database, job_id: int, live: boo
     st.markdown(f"**Status sesi terakhir:** {JOB_STATUS_LABELS.get(status, status)}")
     if job.get("message"):
         st.info(job["message"])
+
+    if job.get("kind") == "messenger":
+        diagnostics = job.get("diagnostics") or {}
+        blocked = job.get("status") == JobStatus.BLOCKED.value
+        if not counters.get("threads") and diagnostics:
+            detail = _diagnostics_line(diagnostics)
+            st.error(
+                "Worker berhenti sebelum ada chat yang terbaca. Ini artinya pembacaan "
+                "gagal, bukan 'tidak ada chat dari pembeli'.\n\n"
+                f"**Yang terlihat di halaman:** {detail}"
+            )
+            st.info(
+                "Urutan pemeriksaan: (1) pastikan Anda sudah login Facebook di jendela "
+                "browser yang sama dengan profil worker (`scripts\\\\login_helper.py`), "
+                "(2) buka `facebook.com/messages` di jendela itu dan lihat apakah daftar "
+                "chat muncul, (3) jalankan pemeriksaan di bawah dan kirim hasilnya."
+            )
+            with st.expander("🩺 Periksa inbox Messenger (tidak mengirim apa pun)"):
+                st.caption(
+                    "Menjalankan pemeriksaan singkat dengan profil browser yang sama: "
+                    "URL, judul halaman, jumlah tautan chat, dan cuplikan teks."
+                )
+                if st.button("Periksa sekarang", key=f"msg_diag_{job_id}{key_suffix}"):
+                    _start_probe(settings)
+                    st.rerun()
+                probe = _poll_probe()
+                if probe is None:
+                    st.info("Pemeriksaan berjalan… halaman ini akan diperbarui.")
+                elif probe:
+                    st.json(probe)
+                    if st.button(
+                        "📋 Salin hasil pemeriksaan", key=f"msg_diag_copy_{job_id}{key_suffix}"
+                    ):
+                        st.code(json.dumps(probe, ensure_ascii=False, indent=2), language="json")
+        if blocked:
+            st.warning(
+                "Status job **diblokir**: worker tidak membaca/mengirim apa pun sampai "
+                "penyebabnya beres."
+            )
+        if counters.get("cycles", 0) > 1:
+            st.caption(
+                f"🔁 Mode pantau aktif · putaran ke-{counters['cycles']} · "
+                "tekan ⛔ Hentikan (di Pengaturan job) untuk berhenti."
+            )
+        m = st.columns(5)
+        m[0].metric("Chat dibaca", counters.get("threads", 0))
+        m[1].metric("Pesan baru", counters.get("messages", 0))
+        m[2].metric("Balasan terkirim", counters.get("replies", 0))
+        m[3].metric("Eskalasi", counters.get("escalations", 0))
+        m[4].metric("Error", counters.get("errors", 0))
+        if counters.get("dry_run"):
+            st.warning(
+                f"{counters['dry_run']} balasan hanya diuji kering (tidak dikirim). "
+                "Matikan uji kering di tab Balas bila perilakunya sudah sesuai."
+            )
+        if counters.get("notify_failed"):
+            st.warning(
+                f"{counters['notify_failed']} notifikasi WhatsApp gagal — cek apakah "
+                "WhatsApp Web masih login di laptop ini."
+            )
+        _render_job_events(db, job_id, active)
+        _render_stop_controls(db, job_id, active, key_suffix)
+        return
 
     m = st.columns(5)
     m[0].metric("Postingan terbaca", counters.get("read", 0))
@@ -408,12 +476,136 @@ def _render_job_content(settings: Settings, db: Database, job_id: int, live: boo
             f"{empty_cards} kartu feed kosong/placeholder dilewati (belum termuat saat dibaca)."
         )
 
+    _render_stop_controls(db, job_id, active, key_suffix)
+
+    _render_job_events(db, job_id, active)
+    with st.expander("Diagnostik (hanya bila ada masalah)"):
+        _render_job_diagnostics(settings, db, job_id, live, key_suffix)
+
+
+def _diagnostics_line(diagnostics: dict) -> str:
+    """Ringkasan pendek apa yang terlihat di halaman Messenger."""
+    parts = []
+    url = str(diagnostics.get("url") or "")[:100]
+    if url:
+        parts.append(f"url `{url}`")
+    title = str(diagnostics.get("title") or "")[:60]
+    if title:
+        parts.append(f"judul “{title}”")
+    parts.append(f"tautan chat: {diagnostics.get('thread_links', 0)}")
+    parts.append(f"baris: {diagnostics.get('rows', 0)}")
+    parts.append("kotak tulis: " + ("ada" if diagnostics.get("composer") else "tidak ada"))
+    if diagnostics.get("login_form"):
+        parts.append("**form login terlihat**")
+    if diagnostics.get("error"):
+        parts.append(f"error: {diagnostics['error']}")
+    text = str(diagnostics.get("text") or "")[:120]
+    if text:
+        parts.append(f"teks halaman: “{text}”")
+    return " · ".join(parts)
+
+
+class _ProbeRunner(threading.Thread):
+    """Jalankan pemeriksaan inbox di latar belakang agar UI tidak membeku."""
+
+    def __init__(self, settings: Settings) -> None:
+        super().__init__(daemon=True)
+        self.settings = settings
+        self.result: dict = {"status": "berjalan"}
+
+    def run(self) -> None:  # pragma: no cover - diuji lewat pemakaian nyata
+        self.result = _run_messenger_probe(self.settings)
+
+
+def _start_probe(settings: Settings) -> None:
+    runner = _ProbeRunner(settings)
+    runner.start()
+    st.session_state["fbw_msg_probe_thread"] = runner
+    st.session_state["fbw_msg_diag"] = {"status": "berjalan"}
+
+
+def _poll_probe() -> dict | None:
+    """Ambil hasil pemeriksaan bila sudah selesai (tanpa blocking)."""
+    runner = st.session_state.get("fbw_msg_probe_thread")
+    if runner is None:
+        return st.session_state.get("fbw_msg_diag")
+    if runner.is_alive():
+        return None
+    result = runner.result
+    st.session_state["fbw_msg_diag"] = result
+    st.session_state["fbw_msg_probe_thread"] = None
+    return result
+
+
+def _run_messenger_probe(settings: Settings) -> dict:
+    """Buka inbox sebentar dan laporkan apa yang terlihat (tanpa mengirim)."""
+    from .browser.messenger import MessengerAdapter
+
+    adapter = MessengerAdapter(
+        profile_dir=settings.browser_profile_dir,
+        headless=True,
+        slow_mo_ms=0,
+        timeout_ms=30_000,
+    )
+    ok, why = adapter.is_available()
+    if not ok:
+        return {"ok": False, "error": why}
+    result = adapter.list_threads_detailed(limit=5)
+    payload = dict(result.diagnostics)
+    payload["status"] = result.status
+    payload["profile"] = str(settings.browser_profile_dir)
+    payload["threads"] = [
+        {"name": item.name, "unread": item.unread} for item in result.threads
+    ]
+    return payload
+
+
+def _safe_force_stop(db: Database, job_id: int) -> str:
+    """Hentikan paksa tanpa pernah menjatuhkan dashboard (mis. WinError 87)."""
+    try:
+        return jobs.force_stop(db, job_id, st.session_state.get("worker_proc"))
+    except Exception as exc:  # noqa: BLE001
+        return f"Gagal menghentikan paksa: {exc.__class__.__name__}: {exc}"
+
+
+def _render_stop_controls(db: Database, job_id: int, active: bool, key_suffix: str = "") -> None:
+    """Tombol berhenti yang selalu terlihat, termasuk saat worker macet."""
+    job = db.get_job(job_id) or {}
+    stop_pending = bool(job.get("stop_requested"))
+
+    if stop_pending:
+        st.warning(
+            "Permintaan berhenti sudah dikirim. Worker menghentikan putaran yang sedang "
+            "berjalan (paling lama beberapa detik sampai satu menit)."
+        )
+        cols = st.columns(2)
+        if cols[0].button(
+            "🔁 Batalkan berhenti", key=f"cancel_stop_{job_id}{key_suffix}"
+        ):
+            db.clear_stop_request(job_id)
+            st.rerun()
+        if cols[1].button(
+            "⛔ Hentikan paksa",
+            key=f"force_stop_pending_{job_id}{key_suffix}",
+            help="Hentikan paksa bila worker tampak tidak merespons.",
+        ):
+            st.toast(_safe_force_stop(db, job_id))
+            st.rerun()
+        return
+
     if active:
-        if st.button("🛑 Hentikan proses", type="primary", key=f"stop_{job_id}"):
+        if st.button(
+            "⛔ Hentikan worker", type="primary", key=f"stop_{job_id}{key_suffix}"
+        ):
             db.request_stop(job_id)
             st.toast("Permintaan berhenti dikirim. Worker akan berhenti dengan rapi.")
-        st.caption("Proses akan berhenti di batas aman. Tidak ada pengulangan otomatis.")
+        st.caption(
+            "Mode pantau berhenti di batas aman (setelah putaran berjalan selesai). "
+            "Tombol ini ada di panel job, di bawah angka-angka."
+        )
 
+
+def _render_job_events(db: Database, job_id: int, active: bool) -> None:
     events = db.get_events(job_id, limit=200)
     if events:
         with st.expander("Aktivitas terakhir", expanded=active):
@@ -428,35 +620,44 @@ def _render_job_content(settings: Settings, db: Database, job_id: int, live: boo
                     unsafe_allow_html=True,
                 )
 
-    with st.expander("Diagnostik (hanya bila ada masalah)"):
-        age = _age_seconds(job.get("heartbeat_at"))
-        if active and age is not None and age > 120:
-            st.warning(
-                f"Tidak ada pembaruan dari worker selama {int(age)} detik. "
-                "Proses mungkin macet."
-            )
-        dcols = st.columns(2)
-        if active and dcols[0].button("⛔ Hentikan paksa", key=f"force_{job_id}"):
-            st.toast(jobs.force_stop(db, job_id, st.session_state.get("worker_proc")))
-            st.rerun()
-        if active and dcols[1].button("🩺 Tandai gagal", key=f"fail_{job_id}"):
-            jobs.mark_failed(db, job_id, "Ditandai gagal manual karena proses macet.")
-            st.rerun()
-        log_text = jobs.tail_log(job_id, settings, max_lines=120)
-        if log_text:
-            st.code(log_text, language="text")
-        st.caption(f"Job #{job_id} · konfigurasi: " + jobs.config_preview(job.get("config") or {}))
 
+def _render_job_diagnostics(
+    settings: Settings, db: Database, job_id: int, live: bool, key_suffix: str = ""
+) -> None:
+    job = db.get_job(job_id) or {}
+    active = (job.get("status") or "") in ACTIVE_STATUSES
+    age = _age_seconds(job.get("heartbeat_at"))
+    if active and age is not None and age > 120:
+        st.warning(
+            f"Tidak ada pembaruan dari worker selama {int(age)} detik. "
+            "Proses mungkin macet."
+        )
+    dcols = st.columns(2)
+    if active and dcols[0].button("⛔ Hentikan paksa", key=f"force_{job_id}{key_suffix}"):
+        st.toast(_safe_force_stop(db, job_id))
+        st.rerun()
+    if active and dcols[1].button("🩺 Tandai gagal", key=f"fail_{job_id}{key_suffix}"):
+        jobs.mark_failed(db, job_id, "Ditandai gagal manual karena proses macet.")
+        st.rerun()
+    log_text = jobs.tail_log(job_id, settings, max_lines=120)
+    if log_text:
+        st.code(log_text, language="text")
+    st.caption(f"Job #{job_id} · konfigurasi: " + jobs.config_preview(job.get("config") or {}))
     if live:
         st.caption("Panel ini diperbarui otomatis setiap 2 detik.")
 
 
 @st.fragment(run_every="2s")
-def job_live_panel(settings: Settings, db: Database, job_id: int) -> None:
-    _render_job_content(settings, db, job_id, live=True)
+def job_live_panel(settings: Settings, db: Database, job_id: int, key_suffix: str = "_live") -> None:
+    _render_job_content(settings, db, job_id, live=True, key_suffix=key_suffix)
 
 
-def render_job_panel(settings: Settings, db: Database) -> None:
+def render_job_panel(settings: Settings, db: Database, *, scope: str = "") -> None:
+    """Tampilkan status job. ``scope`` membuat widget unik per tab.
+
+    Panel ini muncul di tab Mulai dan tab Balas. Tanpa ``scope``, Streamlit
+    menolak karena dua widget memakai key yang sama (bug yang dilaporkan pengguna).
+    """
     job_id = st.session_state.get("job_id")
     if job_id is None:
         latest = db.latest_job()
@@ -464,11 +665,12 @@ def render_job_panel(settings: Settings, db: Database) -> None:
     if job_id is None:
         return
 
+    suffix = f"_{scope}" if scope else ""
     job = db.get_job(job_id)
     if job and job.get("status") in ACTIVE_STATUSES:
-        job_live_panel(settings, db, job_id)
+        job_live_panel(settings, db, job_id, key_suffix=f"_live{suffix}")
     else:
-        _render_job_content(settings, db, job_id, live=False)
+        _render_job_content(settings, db, job_id, live=False, key_suffix=suffix)
 
 
 # ---------------------------------------------------------------------------
@@ -1401,3 +1603,303 @@ def render_pengaturan(settings: Settings, db: Database) -> None:
     _data_section(settings, db)
     st.divider()
     _help_section(settings)
+
+
+# ---------------------------------------------------------------------------
+# Tab 4: balas chat DM
+# ---------------------------------------------------------------------------
+
+def _price_frame(db: Database):
+    import pandas as pd
+
+    rows = db.price_rows()
+    return pd.DataFrame(
+        [
+            {
+                "model": row["label"],
+                "storage": row["storage"] or 0,
+                "harga": row["price"],
+                "ready": bool(row["ready"]),
+            }
+            for row in rows
+        ],
+        columns=["model", "storage", "harga", "ready"],
+    )
+
+
+def _is_blank(value) -> bool:
+    try:
+        import pandas as pd
+
+        return bool(pd.isna(value))
+    except Exception:  # noqa: BLE001
+        return value in (None, "")
+
+
+def _save_price_frame(db: Database, edited) -> tuple[int, list[str]]:
+    errors: list[str] = []
+    entries: list[PriceEntry] = []
+    for _, row in edited.iterrows():
+        model = str(row.get("model") or "").strip()
+        price = row.get("harga")
+        if not model:
+            continue
+        try:
+            amount = int(float(price))
+        except (TypeError, ValueError):
+            errors.append(f"Harga untuk {model} tidak berupa angka: {price!r}")
+            continue
+        if amount <= 0:
+            errors.append(f"Harga untuk {model} harus lebih dari 0.")
+            continue
+        storage_raw = row.get("storage")
+        storage: int | None = None
+        if storage_raw not in (None, "", 0) and not _is_blank(storage_raw):
+            try:
+                storage = int(float(storage_raw))
+            except (TypeError, ValueError):
+                errors.append(f"Storage untuk {model} tidak berupa angka: {storage_raw!r}")
+                continue
+            if storage <= 0:
+                storage = None
+        key = canonical_key(model)
+        entries.append(
+            PriceEntry(
+                model_key=key,
+                label=label_for(key),
+                storage=storage,
+                price=amount,
+                ready=bool(row.get("ready", True)),
+            )
+        )
+    if not entries:
+        errors.append("Daftar harga kosong; simpan dibatalkan.")
+        return 0, errors
+    db.replace_prices(entries)
+    return len(entries), errors
+
+
+def _wa_login_hint(settings: Settings) -> None:
+    st.code(
+        f'.venv\\Scripts\\python.exe scripts\\wa_login.py --profile "{settings.wa_profile_dir}"',
+        language="powershell",
+    )
+
+
+def render_balas(settings: Settings, db: Database) -> None:
+    st.subheader("💬 Balas chat DM")
+    st.caption(
+        "Worker membaca chat **yang masuk**, menjawab pertanyaan yang ada di template "
+        "(harga dari daftar Anda, ready, lokasi, nomor WA), lalu mengirim notifikasi "
+        "WhatsApp untuk chat yang di luar template. Kata **\"nego\"** (juga kurang/"
+        "diskon/tukar tambah) **selalu** memicu notifikasi WhatsApp ke Anda."
+    )
+
+    if getattr(settings, "chat_pin", ""):
+        st.caption(
+            f"PIN pemulihan chat: terisi ({len(settings.chat_pin)} angka) · "
+            + ("diisi otomatis hanya di layar permintaan PIN" if settings.chat_pin_auto else "isi otomatis DIMATIKAN")
+            + " · rahasianya hanya di `.env`, tidak pernah di log/WA."
+        )
+    else:
+        st.caption(
+            "PIN pemulihan chat belum diisi. Kalau Facebook meminta PIN saat membuka chat, "
+            "worker akan **berhenti** dan memberi tahu Anda (isi `FBW_CHAT_PIN` di `.env` "
+            "bila ingin diisi otomatis)."
+        )
+
+    stats = db.chat_stats()
+    prices = db.list_prices()
+    cols = st.columns(4)
+    cols[0].metric("Baris harga", len(prices))
+    cols[1].metric("Chat tercatat", stats["chats"])
+    cols[2].metric("Balasan terkirim", stats["outgoing"])
+    cols[3].metric("Eskalasi menunggu", stats["pending_escalations"])
+    if stats["pending_escalations"]:
+        st.warning(
+            f"{stats['pending_escalations']} chat menunggu Anda. Lihat daftar di bagian "
+            "**Eskalasi** di bawah."
+        )
+
+    # --- Daftar harga ------------------------------------------------------
+    with st.expander("💵 Daftar harga & stok (sumber satu-satunya harga)", expanded=not prices):
+        st.caption(
+            "Harga dijawab apa adanya dari tabel ini. Model/storage yang tidak ada "
+            "di sini **tidak akan dikarang** — pertanyaannya dieskalasi ke WhatsApp Anda."
+        )
+        edited = st.data_editor(
+            _price_frame(db),
+            num_rows="dynamic",
+            width="stretch",
+            key="fbw_price_editor",
+            column_config={
+                "model": st.column_config.TextColumn("Model", help="mis. iPhone 11"),
+                "storage": st.column_config.NumberColumn(
+                    "Storage (GB)", min_value=0, step=1, help="0 = tanpa storage / satu harga"
+                ),
+                "harga": st.column_config.NumberColumn("Harga (Rp)", min_value=0, step=50_000),
+                "ready": st.column_config.CheckboxColumn("Ready"),
+            },
+        )
+        if st.button("💾 Simpan daftar harga", key="fbw_save_prices"):
+            saved, errors = _save_price_frame(db, edited)
+            for error in errors:
+                st.error(error)
+            if saved:
+                st.session_state["fbw_price_saved"] = f"{saved} baris harga disimpan."
+                st.rerun()
+        if st.session_state.get("fbw_price_saved"):
+            st.success(st.session_state["fbw_price_saved"])
+
+    # --- Jalankan ----------------------------------------------------------
+    st.markdown("**Jalankan balas DM**")
+    active = db.active_job()
+    c1, c2, c3 = st.columns(3)
+    dry_run = c1.checkbox(
+        "Uji kering (tidak mengirim pesan/WA)",
+        value=True,
+        key="fbw_msg_dry",
+        help="Biarkan aktif sampai Anda yakin dengan balasannya.",
+    )
+    max_threads = c2.slider(
+        "Maksimum chat dibaca", 1, 20, min(20, max(1, settings.messenger_max_threads))
+    )
+    max_replies = c3.slider(
+        "Maksimum balasan dikirim", 0, 30, min(30, max(0, settings.messenger_max_replies))
+    )
+    notify = st.checkbox(
+        "Kirim notifikasi WhatsApp untuk chat di luar template",
+        value=True,
+        key="fbw_msg_notify",
+    )
+    watch = st.checkbox(
+        "Pantau terus (worker tidak berhenti sendiri)",
+        value=bool(getattr(settings, "messenger_watch", True)),
+        key="fbw_msg_watch",
+        help=(
+            "Worker memeriksa DM baru berulang kali sampai Anda menekan ⛔ Hentikan. "
+            "Matikan untuk satu putaran saja."
+        ),
+    )
+    interval = st.slider(
+        "Jeda antar pemeriksaan (detik)",
+        10,
+        180,
+        min(180, max(10, int(getattr(settings, "messenger_interval_seconds", 30)))),
+        step=5,
+        help="Jangan terlalu cepat: 30–60 detik sudah cukup dan lebih aman untuk akun Anda.",
+    )
+    ai_style = st.checkbox(
+        "Variasikan gaya bahasa dengan Ollama (fakta tidak diubah)",
+        value=bool(settings.messenger_ai_style),
+        key="fbw_msg_ai_style",
+        help=(
+            "Hanya mengubah gaya kalimat. Harga, lokasi, dan nomor WA diverifikasi "
+            "ulang; kalau AI mengubah fakta, teks template yang dipakai. "
+            "Perlu Ollama aktif (Pengaturan → Ollama)."
+        ),
+    )
+    consent = st.checkbox(
+        "Saya paham membalas otomatis bisa memicu pembatasan akun dan saya mengirim "
+        "hanya dari akun milik sendiri.",
+        value=False,
+        key="fbw_msg_consent",
+    )
+
+    blocked: list[str] = []
+    if not consent:
+        blocked.append("centang pernyataan")
+    if active:
+        blocked.append(f"masih ada sesi aktif (#{active['id']})")
+    if dry_run:
+        pass
+    if st.button(
+        "▶️ Jalankan balas DM",
+        type="primary",
+        disabled=bool(blocked),
+        key="fbw_start_messenger",
+    ):
+        config = {
+            "mode": "messenger",
+            "dry_run": dry_run,
+            "max_threads": max_threads,
+            "max_replies": max_replies,
+            "gap_seconds": settings.messenger_gap_seconds,
+            "cooldown_seconds": settings.messenger_cooldown_seconds,
+            "notify": notify,
+            "ai_style": ai_style,
+            "watch": watch,
+            "interval_seconds": interval,
+        }
+        job_id, proc = jobs.start_job(
+            db, settings, group_urls=[], config=config, kind="messenger"
+        )
+        st.session_state["job_id"] = job_id
+        st.session_state["worker_proc"] = proc
+        st.rerun()
+    if blocked:
+        st.caption("Tombol aktif bila tidak ada sesi lain dan pernyataan sudah dicentang.")
+
+    render_job_panel(settings, db, scope="balas")
+
+    # --- Notifikasi WhatsApp ----------------------------------------------
+    with st.expander("📲 Notifikasi WhatsApp ke pemilik"):
+        st.caption(
+            f"Tujuan: **{settings.wa_phone}** · profil browser: `{settings.wa_profile_dir}`"
+        )
+        st.markdown(
+            "Scan QR sekali lewat skrip ini (jendela browser terbuka, login seperti biasa):"
+        )
+        _wa_login_hint(settings)
+        if st.button("Kirim tes WhatsApp", key="fbw_wa_test"):
+            sender = WhatsAppWebSender(
+                profile_dir=settings.wa_profile_dir, phone=settings.wa_phone, headless=True
+            )
+            # Non-blocking: dashboard tidak membeku; hasil pasti dilihat lewat CLI.
+            ok, message = sender.send("tes notifikasi fbworkspace", blocking=False)
+            st.session_state["fbw_wa_result"] = (ok, message)
+        result = st.session_state.get("fbw_wa_result")
+        if result:
+            ok, message = result
+            (st.success if ok else st.error)(message)
+            if not ok and "QR" in str(message):
+                st.info("WhatsApp Web belum login. Jalankan skrip di atas, scan QR, lalu ulangi.")
+        st.caption(
+            "Bila pesan tidak masuk, jalankan perintah ini di PowerShell — hasilnya jelas "
+            "tanpa perlu membuka dashboard:"
+        )
+        st.code(
+            ".\\.venv\\Scripts\\python.exe -m fbworkspace.notify --test --show",
+            language="powershell",
+        )
+
+    # --- Eskalasi ----------------------------------------------------------
+    st.markdown("**Eskalasi (chat yang bukan ranah worker)**")
+    rows = db.list_escalations(limit=50)
+    if not rows:
+        st.caption("Belum ada chat yang perlu perhatian Anda.")
+        return
+
+    import pandas as pd
+
+    frame = pd.DataFrame(
+        [
+            {
+                "waktu": human_time(row["created_at"]),
+                "chat": row["chat_name"] or "(tanpa nama)",
+                "pesan": (row["message"] or "")[:120],
+                "alasan": row["reason"],
+                "status": row["status"],
+            }
+            for row in rows
+        ]
+    )
+    st.dataframe(frame, width="stretch", hide_index=True)
+    labels = {
+        f"#{row['id']} · {row['chat_name'] or 'chat'} · {row['status']}": row["id"] for row in rows
+    }
+    pick = st.selectbox("Pilih eskalasi", list(labels), key="fbw_escalation_pick")
+    if st.button("✅ Tandai sudah dicek", key="fbw_escalation_done"):
+        db.mark_escalation(labels[pick], "ditinjau")
+        st.success("Ditandai sudah dicek.")
+        st.rerun()
