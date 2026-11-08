@@ -1210,3 +1210,58 @@ class TestSenderNames:
         messages, _, _ = filter_text_nodes(self.payload(), chat_name="Pak Bagus")
         assert messages[-1]["direction"] == "in"
         assert messages[-1]["sender"] == "Pak Bagus"
+
+
+class TestScreenOrder:
+    """Regresi dari tangkapan layar pengguna (8 Nov 20:34).
+
+    Urutan asli di layar:
+      … 2.600.000 kak → Iphone 8 ready?   (pesan terbaru, belum dijawab)
+    Worker membaca "terakhir [in]: 128 kak" karena layout pesan terbaru kosong.
+    """
+
+    LAPORAN = [
+        ("coba", "You"),
+        ("Iphone 11 ready?", "Pak Bagus"),
+        ("Ready kak", "You"),
+        ("Berapa ya", "Pak Bagus"),
+        ("Storage-nya 64GB, 128GB, atau 256GB kak?", "You"),
+        ("128 kak", "Pak Bagus"),
+        ("Storage-nya 64GB, 128GB, atau 256GB kak?", "You"),
+        ("128 kak", "Pak Bagus"),
+        ("2.600.000 kak", "You"),
+        ("Iphone 8 ready?", "Pak Bagus"),
+    ]
+
+    def payload(self):
+        return {
+            "composer": {"x": 420, "y": 690, "w": 620, "h": 40},
+            "container": {"x": 360, "y": 110, "w": 640, "h": 570},
+            "found_container": True,
+            "vw": 1280,
+            "nodes": [],
+            "labels": [{"author": a, "text": t} for t, a in self.LAPORAN],
+        }
+
+    def test_dom_order_used(self):
+        from fbworkspace.browser.messenger import filter_text_nodes
+
+        _, _, meta = filter_text_nodes(self.payload(), chat_name="Pak Bagus Sunaryo")
+        assert meta["urutan"] == "dom"
+
+    def test_last_incoming_is_newest_message(self):
+        from fbworkspace.browser.messenger import filter_text_nodes
+
+        messages, _, _ = filter_text_nodes(self.payload(), chat_name="Pak Bagus Sunaryo")
+        assert messages[-1]["text"] == "Iphone 8 ready?"
+        assert messages[-1]["direction"] == "in"
+
+    def test_duplicate_labels_kept_as_two_messages(self):
+        from fbworkspace.browser.messenger import filter_text_nodes
+
+        messages, _, _ = filter_text_nodes(self.payload(), chat_name="Pak Bagus Sunaryo")
+        storage_lines = [
+            m for m in messages if m["text"].startswith("Storage-nya") and m["direction"] == "out"
+        ]
+        assert len(storage_lines) == 2
+        assert len(messages) == 10

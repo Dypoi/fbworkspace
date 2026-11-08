@@ -992,7 +992,15 @@ def filter_text_nodes(
                 if msg.get("y") is None:
                     tail += 1
                     msg["y"] = tail
-    messages.sort(key=lambda m: (m["y"] is None, m["y"] or 0))
+    with_order = [msg for msg in messages if msg.get("order") is not None]
+    if with_order and len(with_order) >= max(2, int(len(messages) * 0.6)):
+        # Urutan elemen di halaman = urutan waktu sebenarnya. Ini lebih dapat
+        # dipercaya daripada koordinat y yang bisa kosong/bertumpuk.
+        messages.sort(key=lambda m: (m.get("order") is None, m.get("order") or 0))
+        meta["urutan"] = "dom"
+    else:
+        messages.sort(key=lambda m: (m["y"] is None, m["y"] or 0))
+        meta["urutan"] = "y"
     meta["labels"] = len(payload.get("labels") or [])
     meta["used"] = len(messages)
     meta["lines"] = [
@@ -1099,7 +1107,7 @@ def _merge_labels(messages: list[dict], labels: list[dict], *, our_name: str = "
         by_text.setdefault(" ".join(msg["text"].lower().split())[:40], msg)
 
     used: set[int] = set()
-    for label in labels:
+    for order, label in enumerate(labels):
         author = str(label.get("author") or "").strip()
         text = str(label.get("text") or "").strip()
         if not text:
@@ -1119,6 +1127,7 @@ def _merge_labels(messages: list[dict], labels: list[dict], *, our_name: str = "
             if not match.get("unread"):
                 match["direction"] = "out" if ours else "in"
             match["from_label"] = True
+            match.setdefault("order", order)
             continue
         messages.append(
             {
@@ -1130,8 +1139,12 @@ def _merge_labels(messages: list[dict], labels: list[dict], *, our_name: str = "
                 "known": False,
                 "no_box": True,
                 "from_label": True,
+                "order": order,
             }
         )
+        # Tandai sebagai terpakai: label kembar ("Storage-nya …" dua kali) harus
+        # menjadi dua pesan, bukan satu.
+        used.add(len(messages) - 1)
     return messages
 
 

@@ -172,7 +172,7 @@ fbworkspace/
 │   └── check_extraction_dom.cjs # uji logika ekstraksi DOM (Node + jsdom, opsional)
 ├── data/demo_posts_DEMO.json   # data sintetis berlabel DEMO
 ├── docs/                       # instalasi, POC, batasan, Git, testing
-├── tests/                      # 693 tes otomatis
+├── tests/                      # 699 tes otomatis
 ├── requirements.txt
 ├── .env.example
 └── .gitignore
@@ -348,6 +348,10 @@ periksa sendiri, bukan dipercaya begitu saja. Perintah `--show` juga membaca
 tidak perlu menebak dari posisi gelembung — dan pesan yang elemennya tidak terlihat
 tetap terbaca. Penanda "belum dibaca" tetap yang paling diutamakan.
 
+**Urutan pesan mengikuti urutan di layar.** Pesan diurutkan menurut urutan elemen
+(`${...}`) yang dikirim Facebook, bukan menurut koordinat layar — sehingga pesan
+terbaru (yang kadang belum punya ukuran/posisi) tetap dianggap terbaru.
+
 **Tidak menanyakan hal yang sama dua kali.** Pesan masuk yang sudah kita tanggapi
 (ada balasan kita sesudahnya) ditandai selesai, sehingga worker tidak mengulang
 pertanyaan lama dan justru mengabaikan jawaban pembeli. Pesan masuk **terbaru**
@@ -473,7 +477,7 @@ Penghapusan data tersedia di tab **Pengaturan → 💾 Data** (postingan, log, p
 .\.venv\Scripts\python.exe -m pytest
 ```
 
-Hasil terakhir di lingkungan pengembangan: **693 tes lulus** (termasuk smoke test
+Hasil terakhir di lingkungan pengembangan: **699 tes lulus** (termasuk smoke test
 dashboard Streamlit untuk 4 tab, segmentasi hasil, filter ulang, daftar harga,
 penyusun balasan, worker balas DM dengan adapter palsu, format notifikasi
 WhatsApp, dan variasi AI yang menolak perubahan fakta), `ruff check` bersih. Detail: **[docs/TESTING.md](docs/TESTING.md)**.

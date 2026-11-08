@@ -1000,3 +1000,66 @@ def test_incoming_after_our_reply_is_not_closed(tmp_path):
     closed = _close_answered_by_reply(db, THREAD_KEY, read, ["coba"])
     assert closed == 1  # hanya pesan SEBELUM balasan (di sini tidak ada yang lain)
     assert db.unanswered_incoming(THREAD_KEY) == []
+
+
+def test_context_ignores_unanswered_later_question(tmp_path):
+    """'128 kak' harus memakai model 11, bukan 'Iphone 8 ready?' yang belum dijawab."""
+    from fbworkspace.browser.messenger import ChatMessage as CM
+    from fbworkspace.browser.messenger import ThreadRead
+    from fbworkspace.messenger_worker import _context_before
+
+    read = ThreadRead(
+        [
+            CM("a", "in", "Iphone 11 ready?"),
+            CM("b", "out", "Ready kak"),
+            CM("c", "in", "Berapa ya"),
+            CM("d", "out", "Storage-nya 64GB, 128GB, atau 256GB kak?"),
+            CM("e", "in", "128 kak"),
+            CM("f", "out", "2.600.000 kak"),
+            CM("g", "in", "Iphone 8 ready?"),
+        ],
+        "ok",
+    )
+    context = _context_before(read, "128 kak")
+    assert "Iphone 11 ready?" in context
+    assert "Iphone 8 ready?" not in context
+
+
+def test_unread_message_not_yet_parsed_is_recorded(tmp_path):
+    """'Iphone 8 ready?' bertanda belum dibaca tetapi belum tercatat -> disimpan."""
+    from fbworkspace.browser.messenger import ChatMessage as CM
+    from fbworkspace.browser.messenger import ThreadRead
+    from fbworkspace.messenger_worker import _record_unread_messages
+
+    db = Database(tmp_path / "chat.db")
+    db.upsert_chat(THREAD_KEY, name="Pak Bagus Sunaryo", url=THREAD_URL)
+    thread = Thread(THREAD_KEY, "Pak Bagus Sunaryo", THREAD_URL)
+    read = ThreadRead([CM("g", "in", "Iphone 8 ready?", unread=True)], "ok")
+
+    saved = _record_unread_messages(db, thread, read, log=lambda *a, **k: None)
+    assert saved == 1
+    assert [row["text"] for row in db.unanswered_incoming(THREAD_KEY)] == ["Iphone 8 ready?"]
+
+
+def test_latest_question_answered_after_gap(tmp_path):
+    """Alur lengkap: setelah 2.600.000, pembeli tanya 'Iphone 8 ready?' -> dijawab."""
+    db = Database(tmp_path / "chat.db")
+    adapter = _MetaMessenger(
+        [Thread(THREAD_KEY, "Pak Bagus Sunaryo", THREAD_URL)],
+        {
+            THREAD_URL: [
+                ChatMessage("m1", "in", "Iphone 11 ready?"),
+                ChatMessage("o1", "out", "Ready kak"),
+                ChatMessage("m2", "in", "Berapa ya"),
+                ChatMessage("o2", "out", "Storage-nya 64GB, 128GB, atau 256GB kak?"),
+                ChatMessage("m3", "in", "128 kak"),
+                ChatMessage("o3", "out", "2.600.000 kak"),
+                ChatMessage("m4", "in", "Iphone 8 ready?", unread=True),
+            ]
+        },
+    )
+    job_id = _job(db, dry_run=False)
+    run(job_id, adapter=adapter, sender=MemorySender(), database=db,
+        settings=_settings(tmp_path), sleep=lambda s: None)
+
+    assert adapter.sent == [(THREAD_URL, "Ready kak")]

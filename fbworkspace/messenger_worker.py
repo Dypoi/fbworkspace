@@ -472,6 +472,8 @@ def _handle_thread(
             "(sebelumnya teranggap pesan kita)",
         )
 
+    _record_unread_messages(db, thread, read, log)
+
     # Rapikan lebih dulu: pesan yang sudah ditanggapi balasan kita bukan "belum dijawab".
     closed = _close_answered_by_reply(db, thread.key, read, _replied_texts(db, thread.key))
     if closed:
@@ -603,6 +605,29 @@ _QUESTION_HINTS = (
 )
 
 
+def _record_unread_messages(db, thread, read, log) -> int:
+    """Simpan pesan yang ditandai belum dibaca meski belum ada di database.
+
+    Kejadian nyata 8 Nov 20:34: "Iphone 8 ready?" tampak di layar dan bertanda
+    belum dibaca, tetapi tidak masuk daftar pesan yang dibaca (layout belum siap).
+    Pesan itu tidak boleh hilang tanpa jejak.
+    """
+    saved = 0
+    for msg in getattr(read, "messages", []) or []:
+        if not getattr(msg, "unread", False):
+            continue
+        if db.record_message(
+            thread.key, msg.key, direction="in", text=str(msg.text or "")[:2000]
+        ):
+            saved += 1
+    if saved:
+        log(
+            "info",
+            f"[{thread.name}] {saved} pesan bertanda belum dibaca disimpan untuk dijawab",
+        )
+    return saved
+
+
 def _heal_unanswered(db, job_id, thread, read, counters, sender, dry_run, log) -> None:
     """Pulihkan pesan yang dulu salah ditandai 'terjawab' walau tidak pernah dibalas.
 
@@ -681,19 +706,33 @@ def _same_conversation_text(left: str, right: str) -> bool:
     return a == b or a.startswith(b[:50]) or b.startswith(a[:50])
 
 
-def _context_before(read, text: str, limit: int = 6) -> list[str]:
-    """Pesan-pesan sebelum pesan target, untuk memahami rujukan ("Berapa ya?")."""
+def _context_before(read, text: str, limit: int = 8) -> list[str]:
+    """Konteks untuk memahami rujukan ("Berapa ya?" / "128 kak").
+
+    Berisi pesan MASUK sebelum pesan target, ditambah pertanyaan storage yang kita
+    kirim sesudahnya. Tanpa itu, "128 kak" tidak tahu model apa yang dimaksud —
+    kejadian nyata 8 Nov 20:34: worker menebak "iPhone 8" padahal pembicaraannya
+    tentang "iPhone 11".
+    """
     messages = list(getattr(read, "messages", []) or [])
     wanted = " ".join(str(text or "").lower().split())
-    index = None
+    index = len(messages) - 1
     for position, msg in enumerate(messages):
         if " ".join(str(msg.text or "").lower().split()) == wanted:
             index = position
-            break
-    if index is None:
-        index = len(messages)
-    before = messages[:index]
-    return [msg.text for msg in before if getattr(msg, "direction", "") == "in"][-limit:]
+    before = [
+        msg.text for msg in messages[:index] if getattr(msg, "direction", "") == "in"
+    ]
+    try:
+        from .replies import looks_like_our_storage_question
+    except Exception:  # noqa: BLE001
+        looks_like_our_storage_question = lambda _t: False  # noqa: E731
+    after = [
+        msg.text
+        for msg in messages[index + 1 :]
+        if getattr(msg, "direction", "") == "out" and looks_like_our_storage_question(msg.text)
+    ]
+    return (before + after)[-limit:]
 
 
 def _direction_is_reliable(read, msg) -> bool:
