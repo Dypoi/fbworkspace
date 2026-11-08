@@ -148,6 +148,11 @@ class Settings:
     )
 
     # Mode pantau: jeda antar pemeriksaan DM (detik). 30-60 aman; jangan terlalu cepat.
+    # Notifikasi WA: jalankan browser TANPA jendela (lebih tenang) atau terlihat.
+    # Bila headless gagal di laptop Anda, matikan ini; worker akan memakai jendela
+    # terlihat seperti perintah "notify --test --show" yang terbukti berhasil.
+    wa_headless: bool = field(default_factory=lambda: _env_bool("FBW_WA_HEADLESS", True))
+
     messenger_interval_seconds: int = field(
         default_factory=lambda: _env_int("FBW_MESSENGER_INTERVAL_SECONDS", 30)
     )

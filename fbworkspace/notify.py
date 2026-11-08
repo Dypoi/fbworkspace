@@ -125,12 +125,18 @@ class WhatsAppWebSender:
     def url_for(self, text: str) -> str:
         return f"https://web.whatsapp.com/send?phone={self.phone}&text={quote(text)}"
 
-    def send(self, text: str, *, blocking: bool = True) -> tuple[bool, str]:
+    def send(
+        self, text: str, *, blocking: bool = True, attempt: int = 1
+    ) -> tuple[bool, str]:
         """Kirim teks lewat WhatsApp Web.
 
         ``blocking=False`` berarti "kirim di latar belakang": yang dilaporkan hanya
         apakah pengiriman berhasil DIMULAI, bukan hasil akhirnya. Dipakai dashboard
         supaya tombol tes tidak membekukan halaman 1 menit.
+
+        ``attempt`` > 1 dipakai worker untuk mengulang: WhatsApp Web kadang belum
+        siap saat dijalankan tanpa jendela (headless), padahal berhasil bila
+        jendela browser ditampilkan.
         """
         try:
             from playwright.sync_api import sync_playwright
@@ -147,9 +153,9 @@ class WhatsAppWebSender:
                 "pengiriman dimulai di latar belakang — cek WhatsApp Anda beberapa detik lagi; "
                 "bila tidak masuk, jalankan: python -m fbworkspace.notify --test"
             )
-        return self._send_blocking(sync_playwright, text)
+        return self._send_blocking(sync_playwright, text, attempt=attempt)
 
-    def _send_blocking(self, sync_playwright, text: str) -> tuple[bool, str]:
+    def _send_blocking(self, sync_playwright, text: str, attempt: int = 1) -> tuple[bool, str]:
         try:
             with sync_playwright() as p:
                 context = p.chromium.launch_persistent_context(
@@ -187,9 +193,17 @@ class WhatsAppWebSender:
                                 "\\.\\venv\\Scripts\\python.exe -m fbworkspace.notify --setup-profile "
                                 f"(lalu scan QR). Detail: {detail}"
                             )
-                        return False, f"kotak tulis WhatsApp tidak ditemukan ({detail})"
+                        return False, (
+                            f"kotak tulis WhatsApp tidak ditemukan "
+                            f"(percobaan {attempt}; {detail})"
+                        )
 
-                    composer.click()
+                    # Pastikan kotak tulis benar-benar siap menerima ketikan.
+                    try:
+                        composer.click()
+                        page.wait_for_timeout(400)
+                    except Exception:  # noqa: BLE001
+                        pass
                     page.keyboard.type(text, delay=12)
                     page.wait_for_timeout(600)
                     page.keyboard.press("Enter")
@@ -273,6 +287,38 @@ class WhatsAppWebSender:
         except Exception:  # noqa: BLE001
             return False
         return any(word in body for word in _WA_BROWSER_BLOCK_WORDS)
+
+    def send_reliable(self, text: str, *, tries: int = 3) -> tuple[bool, str]:
+        """Kirim dengan beberapa percobaan; headless dulu, lalu jendela terlihat.
+
+        Worker memakai ini untuk notifikasi. Pengalaman nyata 8 Nov: perintah
+        ``notify --test --show`` berhasil, sedangkan worker (headless) gagal.
+        Percobaan pertama tetap headless (tidak mengganggu layar); bila gagal,
+        percobaan berikutnya memakai jendela terlihat supaya sama seperti perintah
+        yang terbukti berhasil.
+        """
+        notes: list[str] = []
+        tries = max(1, int(tries))
+        for attempt in range(1, tries + 1):
+            visible = attempt >= 2
+            sender = (
+                self
+                if visible == (not self.headless)
+                else WhatsAppWebSender(
+                    profile_dir=self.profile_dir,
+                    phone=self.phone,
+                    headless=not visible,
+                )
+            )
+            ok, note = sender.send(text, blocking=True, attempt=attempt)
+            if ok:
+                if attempt > 1:
+                    note = f"{note} (berhasil pada percobaan {attempt})"
+                return True, note
+            notes.append(f"coba {attempt}: {note}")
+            if "belum login" in note.lower() or "scan qr" in note.lower():
+                break  # percobaan ulang tidak akan menolong
+        return False, " | ".join(notes)[:600]
 
     @staticmethod
     def _diagnose(page) -> str:
@@ -369,6 +415,14 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Buka WhatsApp Web dan laporkan apa yang terlihat (tidak mengirim)",
     )
+    parser.add_argument(
+        "--compare",
+        action="store_true",
+        help=(
+            "Bandingkan mode worker (headless) vs jendela terlihat: buktikan mana yang "
+            "bisa membuka WhatsApp Web di laptop ini (tidak mengirim apa pun)"
+        ),
+    )
     parser.add_argument("--text", default="tes notifikasi fbworkspace")
     args = parser.parse_args(argv)
 
@@ -382,6 +436,34 @@ def main(argv: list[str] | None = None) -> int:
     )
     print(f"Tujuan : {sender.phone}")
     print(f"Profil : {sender.profile_dir}")
+    if args.compare:
+        results = {}
+        for label, use_headless in (("worker (headless)", True), ("terlihat (--show)", False)):
+            probe = WhatsAppWebSender(
+                profile_dir=settings.wa_profile_dir,
+                phone=settings.wa_phone,
+                headless=use_headless,
+            )
+            ok, note = probe.inspect(headless=use_headless)
+            results[label] = {"ok": ok, "keterangan": note}
+            print(f"{label}: {'OK' if ok else 'GAGAL'}")
+        print(json.dumps(results, ensure_ascii=False, indent=2))
+        siap = results["terlihat (--show)"]["ok"]
+        headless_ok = results["worker (headless)"]["ok"]
+        if siap and not headless_ok:
+            print(
+                "\nKesimpulan: WhatsApp Web bisa dipakai, tetapi TIDAK bisa dari mode "
+                "headless. Tambahkan di .env:\n    FBW_WA_HEADLESS=false"
+            )
+        elif not siap:
+            print(
+                "\nKesimpulan: WhatsApp Web belum siap sama sekali. Jalankan "
+                "scripts\\wa_login.py lalu scan QR."
+            )
+        else:
+            print("\nKesimpulan: kedua mode bisa. Notifikasi worker seharusnya terkirim.")
+        return 0 if siap else 1
+
     if args.diagnose:
         ok, note = sender.inspect(headless=not args.show)
         print(json.dumps({"ok": ok, "keterangan": note}, ensure_ascii=False, indent=2))

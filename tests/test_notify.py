@@ -82,7 +82,12 @@ class TestSendFlow:
     def test_success_when_text_visible(self, monkeypatch):
         sender = WhatsAppWebSender(profile_dir="/tmp/wa", phone="081513839973")
         monkeypatch.setattr(
-            sender, "_send_blocking", lambda pw, text, _p=FakeWaPage(body="cek facebook halo"): (True, "terkirim (terlihat di halaman)")
+            sender,
+            "_send_blocking",
+            lambda pw, text, attempt=1, _p=FakeWaPage(body="cek facebook halo"): (
+                True,
+                "terkirim (terlihat di halaman)",
+            ),
         )
         ok, note = sender.send("cek facebook halo")
         assert ok is True
@@ -101,7 +106,7 @@ class TestSendFlow:
         monkeypatch.setattr(
             sender,
             "_send_blocking",
-            lambda pw, text: started.append(text) or (True, "terkirim"),
+            lambda pw, text, attempt=1: started.append(text) or (True, "terkirim"),
         )
         ok, note = sender.send("halo", blocking=False)
         assert ok is True
@@ -249,3 +254,93 @@ class TestWaComposerSelectors:
                 return "Chats Status Channels Komunitas"
 
         assert WhatsAppWebSender._browser_blocked(Page()) is False
+
+
+class TestSendReliable:
+    """Bug nyata 8 Nov: `notify --test --show` berhasil, worker (headless) gagal.
+
+    Worker kini mencoba beberapa kali dan berpindah ke jendela terlihat.
+    """
+
+    def test_retries_and_reports_attempt(self, monkeypatch):
+        sender = WhatsAppWebSender(profile_dir="/tmp/wa", phone="081513839973")
+        calls: list[tuple[bool, int]] = []
+
+        def fake_send(self, text, *, blocking=True, attempt=1):
+            calls.append((self.headless, attempt))
+            return (attempt >= 2), ("terkirim" if attempt >= 2 else "kotak tulis tidak ditemukan")
+
+        monkeypatch.setattr(WhatsAppWebSender, "send", fake_send)
+
+        ok, note = sender.send_reliable("halo", tries=3)
+        assert ok is True
+        assert "percobaan 2" in note
+        # percobaan 1 headless, percobaan 2 memakai jendela terlihat
+        assert calls[0] == (True, 1)
+        assert calls[1] == (False, 2)
+
+    def test_gives_up_after_all_tries(self, monkeypatch):
+        sender = WhatsAppWebSender(profile_dir="/tmp/wa", phone="081513839973")
+
+        monkeypatch.setattr(
+            WhatsAppWebSender,
+            "send",
+            lambda self, text, *, blocking=True, attempt=1: (False, "gagal"),
+        )
+        ok, note = sender.send_reliable("halo", tries=3)
+        assert ok is False
+        assert "coba 3" in note
+
+    def test_no_retry_when_not_logged_in(self, monkeypatch):
+        sender = WhatsAppWebSender(profile_dir="/tmp/wa", phone="081513839973")
+        attempts: list[int] = []
+
+        def fake_send(self, text, *, blocking=True, attempt=1):
+            attempts.append(attempt)
+            return False, "WhatsApp Web belum login (perlu scan QR lewat scripts/wa_login.py)"
+
+        monkeypatch.setattr(WhatsAppWebSender, "send", fake_send)
+
+        ok, note = sender.send_reliable("halo", tries=3)
+        assert ok is False
+        assert len(attempts) == 1
+        assert "belum login" in note
+
+
+class TestCompareMode:
+    """--compare harus menyimpulkan penyebab dengan jujur (headless vs terlihat)."""
+
+    def test_conclusion_when_headless_fails(self, monkeypatch, capsys):
+        from fbworkspace import notify as mod
+
+        def fake_inspect(self, *, headless=True):
+            return (not headless), ("ok" if not headless else "kotak tulis tidak ada")
+
+        monkeypatch.setattr(mod.WhatsAppWebSender, "inspect", fake_inspect)
+        fake_settings = type("S", (), {
+            "wa_profile_dir": "/tmp/wa", "wa_phone": "081513839973",
+        })()
+        monkeypatch.setattr("fbworkspace.config.get_settings", lambda: fake_settings)
+
+        code = mod.main(["--compare"])
+        out = capsys.readouterr().out
+        assert code == 0
+        assert "FBW_WA_HEADLESS=false" in out
+
+    def test_conclusion_when_not_ready_at_all(self, monkeypatch, capsys):
+        from fbworkspace import notify as mod
+
+        monkeypatch.setattr(
+            mod.WhatsAppWebSender,
+            "inspect",
+            lambda self, *, headless=True: (False, "qr=True"),
+        )
+        fake_settings = type("S", (), {
+            "wa_profile_dir": "/tmp/wa", "wa_phone": "081513839973",
+        })()
+        monkeypatch.setattr("fbworkspace.config.get_settings", lambda: fake_settings)
+
+        code = mod.main(["--compare"])
+        out = capsys.readouterr().out
+        assert code == 1
+        assert "wa_login.py" in out

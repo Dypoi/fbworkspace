@@ -148,7 +148,7 @@ def run(
         sender = WhatsAppWebSender(
             profile_dir=settings.wa_profile_dir,
             phone=settings.wa_phone,
-            headless=True,
+            headless=bool(getattr(settings, "wa_headless", True)),
         )
 
     try:
@@ -216,6 +216,18 @@ def run(
                 f"{counters['escalations']} eskalasi, {counters['errors']} error."
                 + (" (uji kering: tidak ada yang dikirim)" if dry_run else "")
             )
+            if counters.get("notify_failed"):
+                summary += (
+                    f" PERHATIAN: {counters['notify_failed']} notifikasi WhatsApp GAGAL — "
+                    "jalankan: .\\.venv\\Scripts\\python.exe -m fbworkspace.notify --test --show"
+                )
+                log(
+                    "error",
+                    f"{counters['notify_failed']} notifikasi WhatsApp gagal. Ini berarti Anda "
+                    "TIDAK menerima kabar untuk chat di luar template. Jalankan "
+                    "'python -m fbworkspace.notify --test --show'; bila berhasil, matikan "
+                    "FBW_WA_HEADLESS di .env supaya worker memakai jendela terlihat.",
+                )
             # Mode pantau: pertahankan keterangan jumlah putaran, tambahkan ringkasan.
             message = f"{message} {summary}".strip() if message else summary
         elif status == JobStatus.BLOCKED.value and not message:
@@ -699,7 +711,11 @@ def _escalate(db, job_id, thread, escalation: Escalation, counters, sender, dry_
         log("warning", f"Eskalasi disimpan tanpa notifikasi: {escalation.reason}")
         return
 
-    ok, note = sender.send(escalation.text())
+    reliable = getattr(sender, "send_reliable", None)
+    if callable(reliable):
+        ok, note = reliable(escalation.text())
+    else:
+        ok, note = sender.send(escalation.text())
     if ok:
         db.mark_escalation(esc_id, "terkirim")
         counters["notify_sent"] += 1

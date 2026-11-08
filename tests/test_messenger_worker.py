@@ -808,3 +808,53 @@ def test_storage_only_followup_gets_price_from_context(tmp_path):
         settings=_settings(tmp_path), sleep=lambda s: None)
 
     assert adapter.sent == [(THREAD_URL, "2.400.000 kak")]
+
+
+class _FlakySender:
+    """WA gagal pada percobaan pertama (headless), berhasil saat jendela terlihat."""
+
+    name = "flaky-wa"
+
+    def __init__(self):
+        self.calls = 0
+
+    def send(self, text):
+        self.calls += 1
+        return False, "kotak tulis WhatsApp tidak ditemukan"
+
+    def send_reliable(self, text, *, tries=3):
+        self.calls += 1
+        return True, "terkirim (berhasil pada percobaan 2)"
+
+
+def test_worker_uses_send_reliable_for_escalations(tmp_path):
+    db = Database(tmp_path / "chat.db")
+    adapter = FakeMessenger(
+        [Thread(THREAD_KEY, "Bagas", THREAD_URL)],
+        {THREAD_URL: [_incoming("berapa ya")]},
+    )
+    sender = _FlakySender()
+    job_id = _job(db, dry_run=False)
+    run(job_id, adapter=adapter, sender=sender, database=db,
+        settings=_settings(tmp_path), sleep=lambda s: None)
+
+    assert sender.calls == 1
+    assert db.get_job(job_id)["counters"]["notify_sent"] == 1
+    assert db.get_job(job_id)["counters"]["notify_failed"] == 0
+
+
+def test_failed_whatsapp_is_reported_in_summary(tmp_path):
+    db = Database(tmp_path / "chat.db")
+    adapter = FakeMessenger(
+        [Thread(THREAD_KEY, "Bagas", THREAD_URL)],
+        {THREAD_URL: [_incoming("berapa ya")]},
+    )
+    job_id = _job(db, dry_run=False)
+    run(job_id, adapter=adapter, sender=MemorySender(ok=False, message="gagal"),
+        database=db, settings=_settings(tmp_path), sleep=lambda s: None)
+
+    job = db.get_job(job_id)
+    assert job["counters"]["notify_failed"] == 1
+    assert "PERHATIAN" in job["message"]
+    events = [e["message"] for e in db.get_events(job_id)]
+    assert any("TIDAK menerima kabar" in m for m in events)
