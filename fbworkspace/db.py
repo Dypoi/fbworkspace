@@ -743,6 +743,44 @@ class Database:
                     (now, reply_text, now, thread_key),
                 )
 
+    def fix_message_direction(self, thread_key: str, msg_key: str, *, direction: str) -> bool:
+        """Perbaiki arah pesan bila pembacaan ulang menunjukkan hal berbeda."""
+        if direction not in ("in", "out"):
+            return False
+        with self.conn() as conn:
+            cursor = conn.execute(
+                "UPDATE chat_messages SET direction=? "
+                "WHERE thread_key=? AND msg_key=? AND direction<>?",
+                (direction, thread_key, msg_key, direction),
+            )
+        return cursor.rowcount > 0
+
+    def reopen_messages(self, thread_key: str, texts: set[str]) -> int:
+        """Buka kembali pesan masuk yang tertandai terjawab padahal tak pernah dibalas.
+
+        ``texts`` berisi cuplikan teks ternormalisasi (maks 60 karakter) yang
+        ditandai Facebook sebagai belum dibaca. Hanya baris tanpa balasan yang
+        disentuh, sehingga balasan yang benar-benar terkirim tidak terulang.
+        """
+        if not texts:
+            return 0
+        reopened = 0
+        with self.conn() as conn:
+            rows = conn.execute(
+                "SELECT id, text FROM chat_messages "
+                "WHERE thread_key=? AND direction='in' AND answered=1 AND reply_text=''",
+                (thread_key,),
+            ).fetchall()
+            for row in rows:
+                normalized = " ".join(str(row["text"] or "").lower().split())[:60]
+                if normalized in texts:
+                    conn.execute(
+                        "UPDATE chat_messages SET answered=0, replied_at=NULL WHERE id=?",
+                        (row["id"],),
+                    )
+                    reopened += 1
+        return reopened
+
     def reset_unanswered_marks(self) -> int:
         """Perbaiki tanda 'terjawab' yang dibuat tanpa balasan (bug uji kering).
 

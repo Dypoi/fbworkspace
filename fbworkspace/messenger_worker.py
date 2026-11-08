@@ -429,11 +429,27 @@ def _handle_thread(
         return 0
 
     new_messages = 0
+    # Sebagian pesan bisa berubah arah setelah pembacaan ulang (mis. dulu dianggap
+    # pesan kita karena posisi gelembung). Perbaiki, jangan biarkan tertinggal.
+    flipped = 0
     for msg in read.messages:
         if db.record_message(thread.key, msg.key, direction=msg.direction, text=msg.text):
             new_messages += 1
+        elif db.fix_message_direction(thread.key, msg.key, direction=msg.direction):
+            flipped += 1
+    if flipped:
+        log(
+            "info",
+            f"[{thread.name}] {flipped} pesan diperbaiki arahnya "
+            "(sebelumnya teranggap pesan kita)",
+        )
 
     pending = db.unanswered_incoming(thread.key)
+    if not pending:
+        # Jangan percaya buta pada catatan sendiri: bila Facebook menandai pesan
+        # belum dibaca, buka kembali pesan itu untuk dijawab.
+        _heal_unanswered(db, job_id, thread, read, counters, sender, dry_run, log)
+        pending = db.unanswered_incoming(thread.key)
     if not pending:
         counters["silent"] += 1
         preview = ""
@@ -451,16 +467,14 @@ def _handle_thread(
         _maybe_flag_lost_question(db, job_id, thread, counters, sender, dry_run, log)
         return new_messages
 
-    latest = pending[-1]
+    target = _pick_target(read, pending)
+    latest = pending[-1] if target is None else target
     plan = compose_reply(latest["text"], entries)
-    if not plan.should_send and not plan.escalate:
-        # Pesan terakhir hanya sapaan/wilayah tanpa pertanyaan. Jangan buang
-        # pertanyaan sebelumnya (mis. "berapa ya" lalu "permisi kak").
-        for row in reversed(pending[:-1]):
-            earlier = compose_reply(row["text"], entries)
-            if earlier.should_send or earlier.escalate:
-                latest, plan = row, earlier
-                break
+    if target is None and not plan.should_send and not plan.escalate:
+        # Semua pesan hanya sapaan/ucapan terima kasih -> diam tanpa eskalasi.
+        # (Jangan memilih "pesan terakhir" begitu saja: urutan "berapa ya" lalu
+        # "iyaa" membuat pertanyaannya hilang.)
+        pass
     keys = [row["msg_key"] for row in pending]
     sender_desc = "kirim" if plan.should_send else "diam"
     log(
@@ -542,6 +556,63 @@ _QUESTION_HINTS = (
     "berapa", "harganya", "harga", "ready", "cod", "lokasi", "alamat", "stok",
     "masih ada", "bisa", "buka", "wa", "nomor", "?",
 )
+
+
+def _heal_unanswered(db, job_id, thread, read, counters, sender, dry_run, log) -> None:
+    """Pulihkan pesan yang dulu salah ditandai 'terjawab' walau tidak pernah dibalas.
+
+    Hanya dipakai bila Facebook sendiri menandai pesan itu **belum dibaca**: bukti
+    kuat bahwa pembeli belum mendapat tanggapan. Tidak menebak dari posisi.
+    """
+    unread = [msg for msg in getattr(read, "messages", []) or [] if getattr(msg, "unread", False)]
+    if not unread:
+        return
+    texts = {" ".join(msg.text.lower().split())[:60] for msg in unread}
+    healed = db.reopen_messages(thread.key, texts)
+    if healed:
+        db.log_event(
+            job_id,
+            "warning",
+            f"[{thread.name}] {healed} pesan dibuka kembali untuk dijawab "
+            "(ditandai belum dibaca di Facebook, tetapi tercatat sudah dijawab)",
+        )
+
+
+def _pick_target(read, pending: list[dict]):
+    """Pilih pesan lawan bicara yang layak dijawab.
+
+    Utamakan yang ditandai **belum dibaca** Facebook, lalu yang berbunyi seperti
+    permintaan. Fallback: pesan masuk terakhir yang belum ditandai terjawab.
+    """
+    try:
+        from .browser.messenger import pick_answer_target
+    except Exception:  # noqa: BLE001
+        return pending[-1]
+    answered = {
+        " ".join(str(row.get("text") or "").lower().split())[:60]
+        for row in pending
+        if row.get("answered")
+    }
+    messages = [
+        {
+            "text": msg.text,
+            "direction": msg.direction,
+            "unread": getattr(msg, "unread", False),
+        }
+        for msg in getattr(read, "messages", []) or []
+    ]
+    picked = pick_answer_target(messages, answered_texts=answered)
+    if picked is None:
+        return None
+    picked_text = " ".join(str(picked.get("text") or "").lower().split())
+    # Petakan kembali ke baris DB (supaya teksnya persis yang tersimpan).
+    for row in reversed(pending):
+        if " ".join(str(row.get("text") or "").lower().split()) == picked_text:
+            return row
+    for row in pending:
+        if picked_text and picked_text in " ".join(str(row.get("text") or "").lower().split()):
+            return row
+    return pending[-1]
 
 
 def _looks_like_question(text: str) -> bool:

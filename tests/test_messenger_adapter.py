@@ -848,6 +848,8 @@ class TestChatNameFromLabel:
             ("Pak Bagus Sunaryo, Yesterday 09:12", "Pak Bagus Sunaryo"),
             ("Pak Bagus Sunaryo", "Pak Bagus Sunaryo"),
             ("Sat 17:50", ""),
+            ("Find friends", ""),
+            ("Cari teman, 12:00", ""),
             ("", ""),
         ],
     )
@@ -864,3 +866,57 @@ class TestChatNameFromLabel:
         from fbworkspace.browser.messenger import _is_ui_noise
 
         assert _is_ui_noise(text) is True
+
+
+class TestUnreadAndTargetSelection:
+    """Facebook menandai pesan belum dibaca; itu bukti terkuat untuk menjawab."""
+
+    def test_unread_flag_sets_direction_in(self):
+        from fbworkspace.browser.messenger import filter_text_nodes
+
+        payload = {
+            "nodes": [
+                {"text": "berapa ya", "x": 700, "y": 100, "w": 90, "h": 30, "unread": True},
+                {"text": "Ready kak", "x": 240, "y": 60, "w": 90, "h": 30},
+            ],
+            "composer": {"x": 230, "y": 800, "w": 600, "h": 40},
+            "container": {"x": 230, "y": 0, "w": 600, "h": 860},
+            "found_container": True,
+            "vw": 1280,
+        }
+        messages, _, _ = filter_text_nodes(payload, chat_name="Pak Bagus")
+        by_text = {m["text"]: m for m in messages}
+        assert by_text["berapa ya"]["direction"] == "in"
+
+    def test_pick_prefers_unread_question(self):
+        from fbworkspace.browser.messenger import pick_answer_target
+
+        messages = [
+            {"text": "Iphone 11 ready?", "direction": "in", "unread": False},
+            {"text": "Ready kak", "direction": "out", "unread": False},
+            {"text": "berapa ya", "direction": "in", "unread": True},
+        ]
+        picked = pick_answer_target(messages)
+        assert picked["text"] == "berapa ya"
+
+    def test_pick_falls_back_to_request_not_greeting(self):
+        from fbworkspace.browser.messenger import pick_answer_target
+
+        messages = [
+            {"text": "berapa ya", "direction": "in", "unread": False},
+            {"text": "iyaa", "direction": "in", "unread": False},
+        ]
+        assert pick_answer_target(messages)["text"] == "berapa ya"
+
+    def test_pick_returns_none_for_greeting_only(self):
+        from fbworkspace.browser.messenger import pick_answer_target
+
+        assert pick_answer_target([{"text": "halo kak", "direction": "in"}]) is None
+
+    def test_looks_like_request(self):
+        from fbworkspace.browser.messenger import looks_like_request
+
+        assert looks_like_request("berapa ya") is True
+        assert looks_like_request("cod dmn?") is True
+        assert looks_like_request("iyaa") is False
+        assert looks_like_request("ok makasih") is False

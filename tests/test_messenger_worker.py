@@ -667,3 +667,76 @@ def test_lost_question_is_reported_not_silent(tmp_path):
     assert sender.sent, "pemilik harus diberi tahu"
     assert "berapa ya" in sender.sent[0]
     assert "Bagas Sunaryo" in sender.sent[0]
+
+
+class _UnreadMsg:
+    """ChatMessage dengan penanda belum dibaca dari Facebook."""
+
+    def __init__(self, key, direction, text, unread=False):
+        from fbworkspace.browser.messenger import ChatMessage
+
+        self._msg = ChatMessage(key, direction, text, unread=unread)
+
+    def __getattr__(self, item):
+        return getattr(self._msg, item)
+
+
+def test_unread_question_is_answered_even_if_older_pending_answered(tmp_path):
+    """Skenario nyata: 'berapa ya' masuk, tercatat, tetapi tidak pernah dijawab."""
+    db = Database(tmp_path / "chat.db")
+    adapter = FakeMessenger(
+        [Thread(THREAD_KEY, "Pak Bagus Sunaryo", THREAD_URL)],
+        {
+            THREAD_URL: [
+                _UnreadMsg("m1", "in", "Iphone 11 ready?"),
+                _incoming("Ready kak", key="o1"),
+                _UnreadMsg("m2", "in", "berapa ya", unread=True),
+            ]
+        },
+    )
+    job_id = _job(db, dry_run=False)
+    sender = MemorySender()
+    run(job_id, adapter=adapter, sender=sender, database=db,
+        settings=_settings(tmp_path), sleep=lambda s: None)
+
+    # harga tanpa model: tidak dikarang -> WA ke pemilik
+    assert adapter.sent == []
+    assert sender.sent and "berapa ya" in sender.sent[0]
+
+
+def test_unread_question_with_model_is_answered(tmp_path):
+    db = Database(tmp_path / "chat.db")
+    adapter = FakeMessenger(
+        [Thread(THREAD_KEY, "Pak Bagus Sunaryo", THREAD_URL)],
+        {
+            THREAD_URL: [
+                _UnreadMsg("m1", "in", "ip 11 64gb berapa", unread=True),
+            ]
+        },
+    )
+    job_id = _job(db, dry_run=False)
+    run(job_id, adapter=adapter, sender=MemorySender(), database=db,
+        settings=_settings(tmp_path), sleep=lambda s: None)
+
+    assert adapter.sent == [(THREAD_URL, "2.400.000 kak")]
+
+
+def test_answered_but_never_replied_message_is_reopened(tmp_path):
+    """Data lama: pesan ditandai terjawab padahal tak ada balasan -> dibuka lagi."""
+    db = Database(tmp_path / "chat.db")
+    db.upsert_chat(THREAD_KEY, name="Pak Bagus Sunaryo", url=THREAD_URL)
+    db.record_message(THREAD_KEY, "m1", direction="in", text="berapa ya")
+    db.mark_answered_many(THREAD_KEY, ["m1"], "", note="diam")  # tak ada balasan
+
+    adapter = FakeMessenger(
+        [Thread(THREAD_KEY, "Pak Bagus Sunaryo", THREAD_URL)],
+        {THREAD_URL: [_UnreadMsg("m1", "in", "berapa ya", unread=True)]},
+    )
+    job_id = _job(db, dry_run=False)
+    sender = MemorySender()
+    run(job_id, adapter=adapter, sender=sender, database=db,
+        settings=_settings(tmp_path), sleep=lambda s: None)
+
+    assert sender.sent, "pemilik harus diberi tahu soal 'berapa ya'"
+    events = [e["message"] for e in db.get_events(job_id)]
+    assert any("dibuka kembali" in m for m in events)

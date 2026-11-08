@@ -185,10 +185,31 @@ EXTRACT_JS = """
   }
 
   const scope = container || document.body;
+
+  // Facebook menandai pesan yang BELUM dibaca lewat aria-label gelembung/baris
+  // ("Pesan belum dibaca", "Unread message"). Penanda ini yang paling dapat
+  // dipercaya: tidak bergantung pada posisi kiri/kanan atau riwayat database.
+  const unreadFlag = (el) => {
+    let node = el;
+    for (let i = 0; i < 6 && node; i++) {
+      const label = (node.getAttribute && (node.getAttribute('aria-label') || '')) || '';
+      const low = label.toLowerCase();
+      if (low.includes('belum dibaca') || low.includes('unread')) return true;
+      if (low.includes('dibaca oleh') || low.includes('seen by') || low.includes('delivered to')) {
+        return false;
+      }
+      node = node.parentElement;
+    }
+    return false;
+  };
+
   let nodes = Array.from(scope.querySelectorAll(SEL))
     .filter((el) => !(composer && (composer.contains(el) || el.contains(composer))))
     .filter((el) => visible(el) && textOf(el) && leaf(el))
-    .map((el) => Object.assign({text: textOf(el), kind: 'text'}, box(el)));
+    .map((el) => Object.assign(
+      {text: textOf(el), kind: 'text', unread: unreadFlag(el)},
+      box(el)
+    ));
 
   // Placeholder media ("You sent a photo") kadang hanya ada di aria-label.
   const media = Array.from(scope.querySelectorAll('[aria-label*="sent a photo" i], [aria-label*="mengirim foto" i], [aria-label*="sent an attachment" i]'))
@@ -266,6 +287,8 @@ class ChatMessage:
     direction: str  # "in" | "out"
     text: str
     author: str = ""
+    unread: bool = False  # ditandai Facebook sebagai belum dibaca
+    side: str = ""  # "kiri" (lawan bicara) | "kanan" (kita) | "" (tidak diketahui)
 
 
 @dataclass
@@ -361,8 +384,13 @@ def _chat_name_from(label: str) -> str:
         text = match.group("name")
     text = _NAME_TIME_RE.sub("", text)
     text = text.strip(" ,·|:-")
-    # Label yang seluruhnya metadata jam bukan nama orang.
+    # Nama dari elemen pencarian/aksi ("Find friends", "Cari teman") bukan chat.
     if not text or _is_ui_noise(text):
+        return ""
+    if any(
+        marker in text.lower()
+        for marker in ("find friends", "cari teman", "cari orang", "search messages", "cari pesan")
+    ):
         return ""
     return text[:80]
 
@@ -674,6 +702,7 @@ def filter_text_nodes(
     *,
     known_out: list[str] | None = None,
     chat_name: str = "",
+    our_side: str = "",
 ) -> tuple[list[dict], list[str], dict]:
     """Ubah blok teks mentah dari halaman menjadi daftar pesan kandidat.
 
@@ -711,6 +740,7 @@ def filter_text_nodes(
         dropped.append("(kotak tulis tidak ditemukan -> kolom ditebak)")
 
     title = " ".join((chat_name or "").lower().split())
+    known = {" ".join((t or "").lower().split())[:60] for t in (known_out or []) if t}
     media_count = 0
     messages: list[dict] = []
     for node in nodes:
@@ -765,13 +795,98 @@ def filter_text_nodes(
                     break
         else:
             direction = "out" if right_gap < left_gap else "in"
-        messages.append({"text": text, "direction": direction, "y": node.get("y", 0)})
+        # Penanda "belum dibaca" dari Facebook menang atas dugaan dari posisi.
+        if node.get("unread"):
+            direction = "in"
+        messages.append(
+            {
+                "text": text,
+                "direction": direction,
+                "y": node.get("y", 0),
+                "unread": bool(node.get("unread")),
+                "side": _side_of(node, area),
+                "known": text[:60] in known,
+            }
+        )
+
+    # Sisi kita = sisi yang memuat teks balasan yang kita catat pernah terkirim.
+    # Ini jauh lebih andal daripada menebak dari lebar gelembung.
+    counts = {"kiri": 0, "kanan": 0}
+    for msg in messages:
+        if msg.pop("known", False):
+            counts[msg["side"]] += 1
+    our_side = ""
+    if counts["kanan"] != counts["kiri"]:
+        our_side = "kanan" if counts["kanan"] > counts["kiri"] else "kiri"
+    meta["our_side"] = our_side
+    for msg in messages:
+        if our_side:
+            msg["direction"] = "out" if msg["side"] == our_side else "in"
+        if msg.get("unread"):
+            msg["direction"] = "in"
 
     messages.sort(key=lambda m: m["y"])
     meta["used"] = len(messages)
     meta["media"] = media_count
     meta["found_container"] = bool(payload.get("found_container"))
     return messages, dropped, meta
+
+
+def _side_of(node: dict, area: dict) -> str:
+    """Sisi gelembung: 'kiri' (lawan bicara) atau 'kanan' (kita)."""
+    right_gap = area["right"] - (node["x"] + node.get("w", 0))
+    left_gap = node["x"] - area["left"]
+    return "kanan" if right_gap < left_gap else "kiri"
+
+
+# Permintaan eksplisit ("berapa ya") vs sapaan/obrolan ("iyaa", "halo kak").
+_REQUEST_WORDS = (
+    "berapa", "harga", "hrg", "ready", "stok", "stock", "ada gak", "ada ga", "ada nggak",
+    "masih ada", "cod", "lokasi", "alamat", "dimana", "di mana", "minta no", "nomor",
+    "no wa", "wa nya", "wa-nya", "bisa", "boleh", "nego", "kurang", "diskon", "tawar",
+    "tukar", "kirim", "ongkir", "mahal", "murah", "gan", "kak?",
+)
+
+
+def looks_like_request(text: str) -> bool:
+    """True bila teks tampak seperti pertanyaan/permintaan nyata."""
+    lowered = " ".join((text or "").lower().split())
+    if not lowered:
+        return False
+    if "?" in lowered:
+        return True
+    return any(word in lowered for word in _REQUEST_WORDS)
+
+
+def pick_answer_target(messages: list[dict], *, answered_texts: set[str] | None = None) -> dict | None:
+    """Tentukan pesan lawan bicara yang harus dijawab.
+
+    Urutan prioritas (jujur, tanpa menebak urutan waktu antar-sisi):
+    1. pesan yang ditandai **belum dibaca** oleh Facebook;
+    2. pesan lawan bicara yang **bukan** sekadar sapaan/ucapan terima kasih;
+    3. tidak ada -> ``None`` (worker diam).
+    """
+    answered = answered_texts or set()
+
+    def answered_(msg: dict) -> bool:
+        return " ".join(str(msg.get("text") or "").lower().split())[:60] in answered
+
+    lawan = [
+        msg
+        for msg in messages
+        if msg.get("direction") == "in" and not answered_(msg)
+    ]
+    if not lawan:
+        return None
+
+    unread = [msg for msg in lawan if msg.get("unread")]
+    if unread:
+        return unread[-1]
+
+    permintaan = [msg for msg in lawan if looks_like_request(msg.get("text", ""))]
+    if permintaan:
+        return permintaan[-1]
+    return None
 
 
 def _msg_key(thread_key: str, index: int, text: str) -> str:
@@ -1279,6 +1394,8 @@ class MessengerAdapter:
                     key=_msg_key(thread_key, index, item["text"]),
                     direction=item["direction"],
                     text=item["text"][:2000],
+                    unread=bool(item.get("unread")),
+                    side=str(item.get("side") or ""),
                 )
                 for index, item in enumerate(texts)
             ]
