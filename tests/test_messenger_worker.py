@@ -786,3 +786,25 @@ def test_log_shows_what_was_read_not_only_count(tmp_path):
 
     events = [e["message"] for e in db.get_events(job_id)]
     assert any("isi terbaca" in m and "Ready kak" in m for m in events)
+
+
+def test_storage_only_followup_gets_price_from_context(tmp_path):
+    """Alur nyata: 'Iphone 11 ready?' -> kita tanya storage -> pembeli jawab '64gb'."""
+    db = Database(tmp_path / "chat.db")
+    adapter = FakeMessenger(
+        [Thread(THREAD_KEY, "Pak Bagus Sunaryo", THREAD_URL)],
+        {
+            THREAD_URL: [
+                ChatMessage("m1", "in", "Iphone 11 ready?"),
+                ChatMessage("o1", "out", "Ready kak"),
+                ChatMessage("m2", "in", "Berapa ya"),
+                ChatMessage("o2", "out", "Storage-nya 64GB, 128GB, atau 256GB kak?"),
+                ChatMessage("m3", "in", "64gb", unread=True),
+            ]
+        },
+    )
+    job_id = _job(db, dry_run=False)
+    run(job_id, adapter=adapter, sender=MemorySender(), database=db,
+        settings=_settings(tmp_path), sleep=lambda s: None)
+
+    assert adapter.sent == [(THREAD_URL, "2.400.000 kak")]

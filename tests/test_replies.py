@@ -261,3 +261,45 @@ class TestLocationShorthand:
         plan = compose_reply(text, default_entries())
         assert plan.action == ACTION_SEND
         assert plan.body == LOCATION_TEXT
+
+
+class TestStorageOnlyReply:
+    """Pembeli menjawab pertanyaan kita: "64gb" (tanpa menyebut model)."""
+
+    CONTEXT = ["Iphone 11 ready?", "Storage-nya 64GB, 128GB, atau 256GB kak?"]
+
+    @pytest.mark.parametrize(
+        "text,expected",
+        [
+            ("64gb", "2.400.000"),
+            ("64", "2.400.000"),
+            ("yang 64", "2.400.000"),
+            ("64gb kak", "2.400.000"),
+            ("128", "2.600.000"),
+            ("256 gb", "2.800.000"),
+        ],
+    )
+    def test_storage_only_uses_context(self, text, expected):
+        plan = compose_reply(text, default_entries(), context=self.CONTEXT)
+        assert plan.action == ACTION_SEND
+        assert expected in plan.body
+
+    def test_unknown_storage_escalates(self):
+        plan = compose_reply("500gb", default_entries(), context=self.CONTEXT)
+        assert plan.action == ACTION_SILENT
+        assert plan.escalate is True
+
+    def test_without_context_escalates(self):
+        plan = compose_reply("64gb", default_entries(), context=[])
+        assert plan.action == ACTION_SILENT
+        assert plan.escalate is True
+
+    @pytest.mark.parametrize("text", ["iphone 8 64gb", "xr 128gb berapa"])
+    def test_model_in_message_still_wins(self, text):
+        plan = compose_reply(text, default_entries(), context=["iphone 11 ready?"])
+        assert plan.action == ACTION_SEND
+        assert "11" not in plan.body  # harga mengikuti model yang disebut
+
+    def test_nego_still_escalates(self):
+        plan = compose_reply("64gb nego", default_entries(), context=self.CONTEXT)
+        assert plan.escalate is True

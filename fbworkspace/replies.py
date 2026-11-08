@@ -216,6 +216,14 @@ def compose_reply(
     intents = detect_intents(text)
     model = detect_model(text)
     storage = detect_storage(text)
+    # "64gb" saja (tanpa model): ini jawaban atas pertanyaan kita sendiri, mis.
+    # kita tanya storage setelah "Iphone 11 ready?". Warisi model dari konteks,
+    # lalu harga tetap diambil dari daftar harga.
+    if storage is not None and model.model_key is None:
+        inherited, _ = _model_from_context(context, entries, storage)
+        if inherited.model_key:
+            model = inherited
+
     # "Berapa ya?" tanpa model: cari model dari beberapa pesan sebelumnya.
     # Hanya dipakai bila pertanyaannya memang soal harga (bukan pertanyaan lain).
     if model.model_key is None and "harga" in intents:
