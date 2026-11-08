@@ -216,6 +216,38 @@ EXTRACT_JS = """
       box(el)
     ));
 
+  // Facebook menuliskan baris ini di DOM walau elemennya tidak terlihat:
+  //   "Enter, Message sent 18:10 by Pak Bagus: Berapa ya"
+  //   "Enter, Message sent 18:10 by You: Ready kak"
+  // Ini menyebut ARAH dan ISI pesan tanpa perlu menebak posisi sama sekali.
+  const parseSent = (raw) => {
+    const low = raw.toLowerCase();
+    const marker = low.includes('message sent')
+      ? 'message sent'
+      : (low.includes('pesan terkirim') ? 'pesan terkirim' : '');
+    if (!marker) return null;
+    const after = raw.slice(low.indexOf(marker) + marker.length);
+    const byIndex = after.toLowerCase().lastIndexOf(' by ');
+    if (byIndex < 0) return null;
+    const rest = after.slice(byIndex + 4);
+    const colon = rest.indexOf(':');
+    if (colon < 0) return null;
+    const author = rest.slice(0, colon).trim();
+    const text = rest.slice(colon + 1).split(/[ \t\r\n]+/).join(' ').trim();
+    if (!text) return null;
+    return {author: author, text: text};
+  };
+  const labels = [];
+  const seenLabel = {};
+  for (const el of Array.from(document.querySelectorAll('[aria-label]'))) {
+    const parsed = parseSent(el.getAttribute('aria-label') || '');
+    if (!parsed) continue;
+    const key = parsed.author + '|' + parsed.text;
+    if (seenLabel[key]) continue;
+    seenLabel[key] = true;
+    labels.push(Object.assign(parsed, {visible: visible(el)}));
+  }
+
   // Placeholder media ("You sent a photo") kadang hanya ada di aria-label.
   const media = Array.from(scope.querySelectorAll('[aria-label*="sent a photo" i], [aria-label*="mengirim foto" i], [aria-label*="sent an attachment" i]'))
     .filter((el) => visible(el))
@@ -235,6 +267,7 @@ EXTRACT_JS = """
 
   return {
     nodes: nodes,
+    labels: labels,
     composer: composer ? box(composer) : null,
     container: container ? box(container) : null,
     found_container: !!container,
@@ -855,6 +888,8 @@ def filter_text_nodes(
         msg.pop("no_box", None)
 
     messages.sort(key=lambda m: m["y"])
+    messages = _merge_labels(messages, payload.get("labels") or [])
+    meta["labels"] = len(payload.get("labels") or [])
     meta["used"] = len(messages)
     meta["lines"] = [
         f"{msg['direction']}{'(belum dibaca)' if msg.get('unread') else ''}: {msg['text'][:40]}"
@@ -863,6 +898,70 @@ def filter_text_nodes(
     meta["media"] = media_count
     meta["found_container"] = bool(payload.get("found_container"))
     return messages, dropped, meta
+
+
+_LABEL_AUTHOR_RE = re.compile(
+    r"^(?:message\s+sent|pesan\s+terkirim)\b", re.IGNORECASE
+)
+
+
+def _same_text(left: str, right: str) -> bool:
+    """Bandingkan dua teks pesan dengan toleransi cuplikan/emoji."""
+    a = " ".join((left or "").lower().split())[:40]
+    b = " ".join((right or "").lower().split())[:40]
+    if not a or not b:
+        return False
+    return a == b or a.startswith(b) or b.startswith(a)
+
+
+def _merge_labels(messages: list[dict], labels: list[dict], *, our_name: str = "") -> list[dict]:
+    """Pakai aria-label "Message sent ... by X: ..." sebagai bukti arah & isi.
+
+    Label ini berasal dari Facebook sendiri, jadi lebih dapat dipercaya daripada
+    menebak dari posisi gelembung. Pesan yang hanya ada di label (tidak terlihat
+    sebagai blok teks) ditambahkan, karena isinya nyata.
+    """
+    if not labels:
+        return messages
+    by_text: dict[str, dict] = {}
+    for msg in messages:
+        by_text.setdefault(" ".join(msg["text"].lower().split())[:40], msg)
+
+    used: set[int] = set()
+    for label in labels:
+        author = str(label.get("author") or "").strip()
+        text = str(label.get("text") or "").strip()
+        if not text:
+            continue
+        ours = author.lower() in {"you", "anda", "kamu"}
+        match = None
+        for index, msg in enumerate(messages):
+            if index in used:
+                continue
+            if _same_text(msg["text"], text):
+                match = msg
+                used.add(index)
+                break
+        if match is not None:
+            # Penanda "belum dibaca" tetap menang: pesan yang belum dibaca pasti
+            # pesan masuk, apa pun kata label.
+            if not match.get("unread"):
+                match["direction"] = "out" if ours else "in"
+            match["from_label"] = True
+            continue
+        messages.append(
+            {
+                "text": text,
+                "direction": "out" if ours else "in",
+                "y": None,
+                "unread": False,
+                "side": "",
+                "known": False,
+                "no_box": True,
+                "from_label": True,
+            }
+        )
+    return messages
 
 
 def _side_of(node: dict, area: dict) -> str:
@@ -1440,6 +1539,8 @@ class MessengerAdapter:
                 "composer": meta.get("composer", False),
                 "lines": meta.get("lines", []),
                 "our_side": meta.get("our_side", ""),
+                "labels": meta.get("labels", 0),
+                "tanpa_ukuran": meta.get("tanpa_ukuran", 0),
             }
             if not messages:
                 self.last_diagnostics = dict(

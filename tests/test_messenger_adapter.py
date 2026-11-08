@@ -974,3 +974,78 @@ class TestBugBerapaYa:
     def test_no_false_drops_left(self):
         _, dropped, _ = self.read()
         assert not any("Berapa ya" in d for d in dropped)
+
+
+class TestAriaLabelMessages:
+    """aria-label 'Message sent … by X: …' adalah bukti arah & isi dari Facebook.
+
+    Data nyata 8 Nov 19:17 — label inilah yang dulu dibuang sebagai "label UI":
+      "Enter, Message sent 18:10 by Pak Bagus: Berapa ya"
+      "Enter, Message sent 18:10 by You: Ready kak"
+    """
+
+    def payload(self):
+        return {
+            "composer": {"x": 420, "y": 690, "w": 620, "h": 40},
+            "container": {"x": 360, "y": 110, "w": 640, "h": 570},
+            "found_container": True,
+            "vw": 1280,
+            "nodes": [
+                {"text": "coba", "x": 880, "y": 300, "w": 60, "h": 30},
+                {"text": "Iphone 11 ready?", "x": 380, "y": 360, "w": 140, "h": 30},
+                {"text": "Ready kak", "x": 860, "y": 420, "w": 100, "h": 30},
+            ],
+            "labels": [
+                {"author": "You", "text": "coba", "visible": False},
+                {"author": "Pak Bagus", "text": "Iphone 11 ready?", "visible": False},
+                {"author": "You", "text": "Ready kak", "visible": False},
+                {"author": "Pak Bagus", "text": "Berapa ya", "visible": False},
+            ],
+        }
+
+    def test_message_only_in_label_is_recovered(self):
+        from fbworkspace.browser.messenger import filter_text_nodes
+
+        messages, _, meta = filter_text_nodes(self.payload(), chat_name="Pak Bagus Sunaryo")
+        texts = [m["text"] for m in messages]
+        assert "Berapa ya" in texts
+        assert meta["labels"] == 4
+
+    def test_label_decides_direction(self):
+        from fbworkspace.browser.messenger import filter_text_nodes
+
+        messages, _, _ = filter_text_nodes(self.payload(), chat_name="Pak Bagus Sunaryo")
+        by_text = {m["text"]: m["direction"] for m in messages}
+        assert by_text["Berapa ya"] == "in"
+        assert by_text["Ready kak"] == "out"
+        assert by_text["Iphone 11 ready?"] == "in"
+
+    def test_duplicate_text_uses_label_order(self):
+        from fbworkspace.browser.messenger import filter_text_nodes
+
+        payload = {
+            "composer": {"x": 420, "y": 690, "w": 620, "h": 40},
+            "container": {"x": 360, "y": 110, "w": 640, "h": 570},
+            "found_container": True,
+            "vw": 1280,
+            "nodes": [
+                {"text": "Iphone 11 ready?", "x": 380, "y": 360, "w": 140, "h": 30},
+                {"text": "Ready kak", "x": 860, "y": 420, "w": 100, "h": 30},
+                {"text": "Ready kak", "x": 380, "y": 480, "w": 100, "h": 30},
+            ],
+            "labels": [
+                {"author": "Power", "text": "Iphone 11 ready?"},
+                {"author": "You", "text": "Ready kak"},
+                {"author": "Power", "text": "Ready kak"},
+            ],
+        }
+        messages, _, _ = filter_text_nodes(payload, chat_name="Power")
+        assert [m["direction"] for m in messages] == ["in", "out", "in"]
+
+    def test_unread_still_wins_over_label(self):
+        from fbworkspace.browser.messenger import filter_text_nodes
+
+        payload = self.payload()
+        payload["nodes"][0]["unread"] = True  # "coba" ditandai belum dibaca
+        messages, _, _ = filter_text_nodes(payload, chat_name="Pak Bagus Sunaryo")
+        assert [m["direction"] for m in messages if m["text"] == "coba"] == ["in"]
