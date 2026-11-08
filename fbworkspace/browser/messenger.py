@@ -220,6 +220,21 @@ EXTRACT_JS = """
   //   "Enter, Message sent 18:10 by Pak Bagus: Berapa ya"
   //   "Enter, Message sent 18:10 by You: Ready kak"
   // Ini menyebut ARAH dan ISI pesan tanpa perlu menebak posisi sama sekali.
+  // Normalisasi spasi tanpa escape sequence: EXTRACT_JS adalah string Python,
+  // sehingga escape regex spasi/baris baru berubah jadi karakter asli dan
+  // merusak javascript yang dikirim ke browser (bug 8 Nov 19:29).
+  const squash = (value) => {
+    const out = [];
+    for (const ch of value) {
+      const code = ch.charCodeAt(0);
+      if (code === 32 || code === 9 || code === 10 || code === 13 || code === 160) {
+        if (out.length && out[out.length - 1] !== ' ') out.push(' ');
+      } else {
+        out.push(ch);
+      }
+    }
+    return out.join('').trim();
+  };
   const parseSent = (raw) => {
     const low = raw.toLowerCase();
     const marker = low.includes('message sent')
@@ -227,13 +242,20 @@ EXTRACT_JS = """
       : (low.includes('pesan terkirim') ? 'pesan terkirim' : '');
     if (!marker) return null;
     const after = raw.slice(low.indexOf(marker) + marker.length);
-    const byIndex = after.toLowerCase().lastIndexOf(' by ');
+    const lowered = after.toLowerCase();
+    // Bahasa Inggris memakai "by", bahasa Indonesia "oleh".
+    let byIndex = lowered.lastIndexOf(' by ');
+    let skip = 4;
+    if (byIndex < 0) {
+      byIndex = lowered.lastIndexOf(' oleh ');
+      skip = 6;
+    }
     if (byIndex < 0) return null;
-    const rest = after.slice(byIndex + 4);
+    const rest = after.slice(byIndex + skip);
     const colon = rest.indexOf(':');
     if (colon < 0) return null;
-    const author = rest.slice(0, colon).trim();
-    const text = rest.slice(colon + 1).split(/[ \t\r\n]+/).join(' ').trim();
+    const author = squash(rest.slice(0, colon));
+    const text = squash(rest.slice(colon + 1));
     if (!text) return null;
     return {author: author, text: text};
   };
@@ -274,6 +296,39 @@ EXTRACT_JS = """
     variant: variant,
     has_textarea: !!textarea,
     editable_count: document.querySelectorAll('[contenteditable="true"]').length,
+    url: location.href,
+    title: document.title,
+    vw: window.innerWidth,
+  };
+}
+"""
+
+# Pembaca cadangan: sengaja sangat sederhana (tanpa regex, tanpa kelas CSS rumit).
+# Dipakai HANYA bila EXTRACT_JS gagal, supaya worker tidak berhenti total seperti
+# kejadian 8 Nov 19:29 ("gagal membaca blok teks halaman").
+EXTRACT_JS_FALLBACK = """
+() => {
+  const out = [];
+  const nodes = Array.from(document.querySelectorAll('div[dir="auto"], span[dir="auto"]'));
+  for (const el of nodes) {
+    const text = (el.innerText || el.textContent || '').trim();
+    if (!text) continue;
+    if (el.querySelector('div[dir="auto"], span[dir="auto"]')) continue;
+    const r = el.getBoundingClientRect();
+    out.push({text: text, kind: 'text', unread: false, hidden: !(r.width && r.height),
+              x: r.x, y: r.y, w: r.width, h: r.height});
+  }
+  const composer = document.querySelector('div[contenteditable="true"]');
+  const box = composer ? composer.getBoundingClientRect() : null;
+  return {
+    nodes: out,
+    labels: [],
+    composer: box ? {x: box.x, y: box.y, w: box.width, h: box.height} : null,
+    container: null,
+    found_container: false,
+    variant: 'cadangan',
+    has_textarea: false,
+    editable_count: 0,
     url: location.href,
     title: document.title,
     vw: window.innerWidth,
@@ -1511,13 +1566,36 @@ class MessengerAdapter:
             # Ekstraksi berbasis blok teks: role="row" di Messenger dipakai untuk
             # sidebar & panel detail, sedangkan isi pesan ada di elemen dir="auto".
             payload = {}
+            cadangan_note = ""
             try:
                 payload = page.evaluate(EXTRACT_JS) or {}
             except Exception as exc:  # noqa: BLE001
-                self.last_diagnostics = dict(
-                    diagnostics, status="kesalahan", error=self._friendly_error(exc)
-                )
-                return ThreadRead(status="kesalahan", note="gagal membaca blok teks halaman")
+                # JS pembaca pesan bisa rusak karena perubahan tata letak/versi.
+                # Jangan langsung menyerah: coba skrip cadangan yang minimal.
+                fallback_error = self._friendly_error(exc)
+                try:
+                    payload = page.evaluate(EXTRACT_JS_FALLBACK) or {}
+                    cadangan_note = "EXTRACT_JS gagal; memakai pembaca cadangan"
+                    self.last_diagnostics = dict(
+                        diagnostics,
+                        status="ok",
+                        cadangan="EXTRACT_JS gagal, memakai EXTRACT_JS_FALLBACK",
+                        error=fallback_error,
+                    )
+                except Exception as exc2:  # noqa: BLE001
+                    self.last_diagnostics = dict(
+                        diagnostics,
+                        status="kesalahan",
+                        error=fallback_error,
+                        error_cadangan=self._friendly_error(exc2),
+                    )
+                    return ThreadRead(
+                        status="kesalahan",
+                        note=(
+                            "gagal membaca blok teks halaman "
+                            f"({fallback_error}; cadangan juga gagal: {self._friendly_error(exc2)})"
+                        )[:300],
+                    )
             texts, dropped, meta = filter_text_nodes(
                 payload, known_out=known_out, chat_name=thread_name
             )
@@ -1567,6 +1645,7 @@ class MessengerAdapter:
                 messages=len(messages),
                 conversation_selector=selector,
                 debug=self.last_debug,
+                **({"cadangan": cadangan_note} if cadangan_note else {}),
             )
             return ThreadRead(
                 messages=messages, status="ok", note=f"{len(messages)} pesan terbaca"

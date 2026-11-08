@@ -1049,3 +1049,77 @@ class TestAriaLabelMessages:
         payload["nodes"][0]["unread"] = True  # "coba" ditandai belum dibaca
         messages, _, _ = filter_text_nodes(payload, chat_name="Pak Bagus Sunaryo")
         assert [m["direction"] for m in messages if m["text"] == "coba"] == ["in"]
+
+
+class TestExtractScriptsAreValid:
+    """Bug nyata 19:29: JS pembaca pesan rusak -> "gagal membaca blok teks halaman".
+
+    EXTRACT_JS adalah string Python; escape seperti "\\\\s" berubah menjadi karakter
+    asli saat dikirim ke browser. Tes ini menjalankan `node --check` bila Node ada.
+    """
+
+    @staticmethod
+    def _check(script: str, tmp_path) -> None:
+        import shutil
+        import subprocess
+
+        node = shutil.which("node")
+        if not node:
+            pytest.skip("Node tidak tersedia di lingkungan ini")
+        path = tmp_path / "extract.mjs"
+        path.write_text(script.strip() + "\n", encoding="utf-8")
+        result = subprocess.run(  # noqa: S603 - argumen tetap
+            [node, "--check", str(path)], capture_output=True, text=True, timeout=60
+        )
+        assert result.returncode == 0, result.stderr[:500]
+
+    def test_extract_js_valid(self, tmp_path):
+        from fbworkspace.browser.messenger import EXTRACT_JS
+
+        self._check(EXTRACT_JS, tmp_path)
+
+    def test_fallback_valid(self, tmp_path):
+        from fbworkspace.browser.messenger import EXTRACT_JS_FALLBACK
+
+        self._check(EXTRACT_JS_FALLBACK, tmp_path)
+
+    def test_no_raw_escape_in_js_strings(self):
+        """Jangan taruh escape seperti \\s/\\n langsung di string Python JS."""
+        from fbworkspace.browser.messenger import EXTRACT_JS, EXTRACT_JS_FALLBACK
+
+        for script in (EXTRACT_JS, EXTRACT_JS_FALLBACK):
+            assert "\\s" not in script, "gunakan split/charCode, bukan \\s di regex JS"
+
+
+class TestFallbackExtraction:
+    def test_read_thread_uses_fallback_when_main_js_fails(self, monkeypatch):
+        from fbworkspace.browser import messenger as mod
+
+        class Page(FakePage):
+            def __init__(self, payload):
+                super().__init__(payload=payload)
+                self.calls = 0
+
+            def evaluate(self, script):
+                self.calls += 1
+                if script == mod.EXTRACT_JS:
+                    raise RuntimeError("SyntaxError: Invalid regular expression")
+                return {
+                    "nodes": [
+                        {"text": "Iphone 11 ready?", "x": 380, "y": 360, "w": 140, "h": 30},
+                        {"text": "Berapa ya", "x": 0, "y": 0, "w": 0, "h": 0, "hidden": True},
+                    ],
+                    "labels": [],
+                    "composer": {"x": 420, "y": 690, "w": 620, "h": 40},
+                    "container": None,
+                    "found_container": False,
+                    "vw": 1280,
+                }
+
+        page = Page({"nodes": [], "composer": None})
+        adapter = adapter_with_page(page, monkeypatch)
+        read = adapter.read_thread("https://www.facebook.com/messages/t/1/")
+
+        assert read.status == "ok"
+        assert [m.text for m in read.messages][-1] == "Berapa ya"
+        assert "cadangan" in (adapter.last_diagnostics or {})
