@@ -317,3 +317,13 @@ def test_force_stop_reports_failure_without_raising(tmp_path, monkeypatch):
 
     monkeypatch.setattr(jobs, "_terminate_pid", lambda pid: (True, "dihentikan"))
     assert "dihentikan paksa" in jobs.force_stop(db, job_id, None).lower()
+
+
+def test_code_version_is_reported(tmp_path):
+    """Versi kode harus terlihat, supaya jelas apakah worker memakai versi terbaru."""
+    from fbworkspace.dashboard import _code_version
+    from fbworkspace.messenger_worker import _code_version as worker_version
+
+    for value in (_code_version(), worker_version()):
+        assert isinstance(value, str)
+        assert value

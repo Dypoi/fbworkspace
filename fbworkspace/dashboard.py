@@ -392,6 +392,10 @@ def _render_job_content(
     st.markdown(f"**Status sesi terakhir:** {JOB_STATUS_LABELS.get(status, status)}")
     if job.get("message"):
         st.info(job["message"])
+    st.caption(
+        f"Kode yang berjalan: versi `{_code_version()}` · setelah `git pull`, "
+        "tutup jendela dashboard lalu jalankan ulang agar versi baru dipakai."
+    )
 
     if job.get("kind") == "messenger":
         diagnostics = job.get("diagnostics") or {}
@@ -566,6 +570,18 @@ def _safe_force_stop(db: Database, job_id: int) -> str:
         return jobs.force_stop(db, job_id, st.session_state.get("worker_proc"))
     except Exception as exc:  # noqa: BLE001
         return f"Gagal menghentikan paksa: {exc.__class__.__name__}: {exc}"
+
+
+def _code_version() -> str:
+    """Penanda singkat kode yang sedang berjalan (untuk memastikan versi terbaru)."""
+    try:
+        head = (PROJECT_ROOT / ".git" / "HEAD").read_text(encoding="utf-8").strip()
+        if head.startswith("ref: "):
+            ref = PROJECT_ROOT / ".git" / head[5:]
+            return ref.read_text(encoding="utf-8").strip()[:7]
+        return head[:7]
+    except OSError:
+        return "?"
 
 
 def _render_stop_controls(db: Database, job_id: int, active: bool, key_suffix: str = "") -> None:

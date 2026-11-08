@@ -172,7 +172,7 @@ fbworkspace/
 │   └── check_extraction_dom.cjs # uji logika ekstraksi DOM (Node + jsdom, opsional)
 ├── data/demo_posts_DEMO.json   # data sintetis berlabel DEMO
 ├── docs/                       # instalasi, POC, batasan, Git, testing
-├── tests/                      # 699 tes otomatis
+├── tests/                      # 702 tes otomatis
 ├── requirements.txt
 ├── .env.example
 └── .gitignore
@@ -352,6 +352,16 @@ tetap terbaca. Penanda "belum dibaca" tetap yang paling diutamakan.
 (`${...}`) yang dikirim Facebook, bukan menurut koordinat layar — sehingga pesan
 terbaru (yang kadang belum punya ukuran/posisi) tetap dianggap terbaru.
 
+**Satu balasan menanggapi satu pesan.** Balasan dianggap menanggapi pesan masuk
+yang **tepat mendahuluinya**, bukan semua pesan sebelumnya — sehingga pertanyaan
+lain ("Iphone 8 ready?") tidak ikut dianggap selesai. Bila urutan pesan tidak
+diketahui dari halaman, worker tidak menutup apa pun (lebih baik bertanya ulang
+daripada menghilangkan pertanyaan).
+
+**Versi kode terlihat di panel job** (`Kode yang berjalan: versi abc1234`), dan
+log worker mencatatnya saat mulai. Dengan begitu Anda bisa memastikan worker
+memakai kode terbaru setelah `git pull` tanpa menebak.
+
 **Tidak menanyakan hal yang sama dua kali.** Pesan masuk yang sudah kita tanggapi
 (ada balasan kita sesudahnya) ditandai selesai, sehingga worker tidak mengulang
 pertanyaan lama dan justru mengabaikan jawaban pembeli. Pesan masuk **terbaru**
@@ -477,7 +487,7 @@ Penghapusan data tersedia di tab **Pengaturan → 💾 Data** (postingan, log, p
 .\.venv\Scripts\python.exe -m pytest
 ```
 
-Hasil terakhir di lingkungan pengembangan: **699 tes lulus** (termasuk smoke test
+Hasil terakhir di lingkungan pengembangan: **702 tes lulus** (termasuk smoke test
 dashboard Streamlit untuk 4 tab, segmentasi hasil, filter ulang, daftar harga,
 penyusun balasan, worker balas DM dengan adapter palsu, format notifikasi
 WhatsApp, dan variasi AI yang menolak perubahan fakta), `ruff check` bersih. Detail: **[docs/TESTING.md](docs/TESTING.md)**.

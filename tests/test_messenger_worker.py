@@ -886,7 +886,7 @@ def test_old_question_is_not_asked_twice(tmp_path):
     """Bug 19:37-19:44: worker menanyakan storage lagi padahal jawabannya '128 kak'."""
     db = Database(tmp_path / "chat.db")
     _seed_stale_question(db)
-    adapter = FakeMessenger(
+    adapter = _MetaMessenger(
         [Thread(THREAD_KEY, "Pak Bagus Sunaryo", THREAD_URL)], {THREAD_URL: _FULL_CHAT}
     )
     job_id = _job(db, dry_run=False)
@@ -917,6 +917,7 @@ def test_reply_closes_older_incoming_messages(tmp_path):
             CM("m2", "in", "128 kak"),
         ],
         "ok",
+        meta={"urutan": "dom"},
     )
     closed = _close_answered_by_reply(db, THREAD_KEY, read, ["Storage-nya 64 atau 128 kak?"])
     assert closed == 1
@@ -951,11 +952,15 @@ _REAL_ORDER_20_19 = [
 
 
 class _MetaMessenger(FakeMessenger):
+    """Adapter yang melaporkan bukti urutan (seperti hasil bacaan halaman nyata)."""
+
     def read_thread(self, url, *, known_out=None, thread_name=""):
         from fbworkspace.browser.messenger import ThreadRead
 
         return ThreadRead(
-            messages=self.messages.get(url, []), status="ok", meta={"our_side": "kanan"}
+            messages=self.messages.get(url, []),
+            status="ok",
+            meta={"our_side": "kanan", "urutan": "dom"},
         )
 
 
@@ -995,6 +1000,7 @@ def test_incoming_after_our_reply_is_not_closed(tmp_path):
             CM("o1", "out", "coba"),
         ],
         "ok",
+        meta={"urutan": "dom"},
     )
     # "coba" bukan balasan template -> pesan pembeli tidak dianggap terjawab
     closed = _close_answered_by_reply(db, THREAD_KEY, read, ["coba"])
@@ -1063,3 +1069,49 @@ def test_latest_question_answered_after_gap(tmp_path):
         settings=_settings(tmp_path), sleep=lambda s: None)
 
     assert adapter.sent == [(THREAD_URL, "Ready kak")]
+
+
+class _ReadMeta:
+    def __init__(self, messages, meta=None):
+        self.messages = messages
+        self.meta = meta or {}
+
+
+def test_closing_covers_only_the_answered_message(tmp_path):
+    """Laporan 20:55: 'Iphone 8 ready?' ikut tertutup oleh balasan untuk 'Berapa ya?'."""
+    from fbworkspace.browser.messenger import ChatMessage as CM
+    from fbworkspace.messenger_worker import _close_answered_by_reply
+
+    db = Database(tmp_path / "chat.db")
+    db.upsert_chat(THREAD_KEY, name="x", url=THREAD_URL)
+    for key, text in (("a", "Iphone 8 ready?"), ("b", "Berapa ya?")):
+        db.record_message(THREAD_KEY, key, direction="in", text=text)
+
+    read = _ReadMeta(
+        [
+            CM("a", "in", "Iphone 8 ready?"),
+            CM("b", "in", "Berapa ya?"),
+            CM("o", "out", "Storage-nya 64GB, 128GB, atau 256GB kak?"),
+        ],
+        {"urutan": "dom"},
+    )
+    closed = _close_answered_by_reply(db, THREAD_KEY, read, ["Storage-nya 64GB, 128GB, atau 256GB kak?"])
+
+    assert closed == 1  # hanya "Berapa ya?" yang ditanggapi balasan itu
+    assert [row["text"] for row in db.unanswered_incoming(THREAD_KEY)] == ["Iphone 8 ready?"]
+
+
+def test_closing_does_not_guess_when_messages_have_no_order(tmp_path):
+    """Tanpa bukti urutan, jangan menutup apa pun (lebih baik bertanya ulang)."""
+    from fbworkspace.browser.messenger import ChatMessage as CM
+    from fbworkspace.messenger_worker import _close_answered_by_reply
+
+    db = Database(tmp_path / "chat.db")
+    db.upsert_chat(THREAD_KEY, name="x", url=THREAD_URL)
+    db.record_message(THREAD_KEY, "a", direction="in", text="Iphone 8 ready?")
+
+    read = _ReadMeta(
+        [CM("a", "in", "Iphone 8 ready?"), CM("o", "out", "Storage-nya 64 atau 128 kak?")]
+    )
+    assert _close_answered_by_reply(db, THREAD_KEY, read, ["Storage-nya 64 atau 128 kak?"]) == 0
+    assert len(db.unanswered_incoming(THREAD_KEY)) == 1

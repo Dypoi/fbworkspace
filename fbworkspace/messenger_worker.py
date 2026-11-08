@@ -110,7 +110,8 @@ def run(
     db.log_event(
         job_id,
         "info",
-        f"Balas DM mulai. Uji kering={dry_run}, maks {max_threads} chat / {max_replies} balasan.",
+        f"Balas DM mulai. Uji kering={dry_run}, maks {max_threads} chat / {max_replies} balasan"
+        f" · kode {_code_version()}.",
     )
 
     def push() -> None:
@@ -380,6 +381,19 @@ def _watch_cycle(
         counters["messages"] += incoming_count
         push()
     return "ok", ""
+
+
+def _code_version() -> str:
+    """Versi kode yang dijalankan worker (agar mudah memastikan sudah git pull)."""
+    try:
+        from .config import PROJECT_ROOT
+
+        head = (PROJECT_ROOT / ".git" / "HEAD").read_text(encoding="utf-8").strip()
+        if head.startswith("ref: "):
+            return (PROJECT_ROOT / ".git" / head[5:]).read_text(encoding="utf-8").strip()[:7]
+        return head[:7]
+    except Exception:  # noqa: BLE001
+        return "?"
 
 
 def _list_threads(adapter, limit: int):
@@ -683,12 +697,20 @@ def _close_answered_by_reply(db, thread_key: str, read, replies: list[str]) -> i
                 break
     if last_reply_index <= 0:
         return 0
-    # Hanya pesan yang benar-benar berada SEBELUM balasan terakhir yang ditutup.
-    # Pesan sesudahnya (mis. "Iphone 8 ready?" yang muncul belakangan) tetap
-    # menunggu jawaban; jangan tertutup karena ada balasan kita dengan teks sama.
-    keys = [
-        msg.key for msg in messages[:last_reply_index] if getattr(msg, "direction", "") == "in"
-    ]
+    # Tanpa bukti urutan dari halaman, urutan pesan hanyalah tebakan: jangan menutup
+    # apa pun. Lebih baik bertanya ulang daripada pertanyaan pembeli hilang.
+    order_known = (dict(getattr(read, "meta", {}) or {})).get("urutan") == "dom"
+    if not order_known:
+        return 0
+    # Satu balasan hanya menanggapi SATU pesan: pesan masuk yang tepat mendahuluinya.
+    # Menutup semua pesan sebelumnya membuat pertanyaan lain ikut hilang
+    # (kejadian nyata 8 Nov 20:55: "Iphone 8 ready?" ikut tertutup oleh balasan
+    # untuk "Berapa ya?").
+    keys = []
+    for msg in reversed(messages[:last_reply_index]):
+        if getattr(msg, "direction", "") == "in":
+            keys.append(msg.key)
+        break
     if not keys:
         return 0
     closer = getattr(db, "mark_answered_many", None)
