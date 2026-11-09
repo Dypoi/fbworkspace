@@ -172,7 +172,7 @@ fbworkspace/
 │   └── check_extraction_dom.cjs # uji logika ekstraksi DOM (Node + jsdom, opsional)
 ├── data/demo_posts_DEMO.json   # data sintetis berlabel DEMO
 ├── docs/                       # instalasi, POC, batasan, Git, testing
-├── tests/                      # 746 tes otomatis
+├── tests/                      # 752 tes otomatis
 ├── requirements.txt
 ├── .env.example
 └── .gitignore
@@ -361,6 +361,12 @@ diberi tahu lewat WhatsApp (`FBW_MESSENGER_AI_FALLBACK_TEMPLATE=true` untuk
 memakai template). Catatan jujur: harga **tidak** dicocokkan ke daftar di mode
 ini, jadi AI bisa menyebut harga keliru.
 
+**Pesan kita sendiri tidak pernah dijawab.** Arah pesan ditentukan dari label
+pengirim Facebook (`(author)`), dicocokkan **persis** — bukan dari potongan teks.
+Sebelumnya label panjang seperti `hai Dypoi, Iphone 8 64GB Rp 1.100.000 …`
+dianggap sama dengan pesan pembeli `Hai dypoi`, sehingga balasan terkirim
+berulang. Paragraf panjang juga tidak lagi dianggap pertanyaan.
+
 **Berjalan di belakang layar.** Chromium dijalankan dengan jendela **di luar area
 layar** (bukan headless), jadi tidak merebut fokus dan tidak ditolak WhatsApp Web.
 Jendela hanya **dimunculkan otomatis** ketika memang butuh Anda: Facebook meminta
@@ -526,7 +532,7 @@ Penghapusan data tersedia di tab **Pengaturan → 💾 Data** (postingan, log, p
 .\.venv\Scripts\python.exe -m pytest
 ```
 
-Hasil terakhir di lingkungan pengembangan: **746 tes lulus** (termasuk smoke test
+Hasil terakhir di lingkungan pengembangan: **752 tes lulus** (termasuk smoke test
 dashboard Streamlit untuk 4 tab, segmentasi hasil, filter ulang, daftar harga,
 penyusun balasan, worker balas DM dengan adapter palsu, format notifikasi
 WhatsApp, dan variasi AI yang menolak perubahan fakta), `ruff check` bersih. Detail: **[docs/TESTING.md](docs/TESTING.md)**.

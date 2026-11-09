@@ -968,6 +968,11 @@ def filter_text_nodes(
     if counts["kanan"] != counts["kiri"]:
         our_side = "kanan" if counts["kanan"] > counts["kiri"] else "kiri"
     meta["our_side"] = our_side
+    # Bukti cadangan: label pengirim dari Facebook (dipakai bila posisi tak yakin).
+    sender_hint = _sender_label_pairs(payload.get("senders") or [], chat_name)
+    if sender_hint:
+        _pair_by_sender(messages, sender_hint)
+        meta["senders"] = len(sender_hint)
     for msg in messages:
         if our_side and not msg.get("no_box"):
             msg["direction"] = "out" if msg["side"] == our_side else "in"
@@ -1026,7 +1031,7 @@ def _is_our_author(author: str) -> bool:
     return " ".join((author or "").lower().split()) in _OUR_AUTHORS
 
 
-def _sender_label_pairs(labels: list[dict], chat_name: str) -> dict[int, list[str]]:
+def _sender_label_pairs(labels: list[dict], chat_name: str) -> list[dict]:
     """Pasangkan label "Message sent" dengan nama pengirim dari aria-label lain.
 
     Facebook juga menulis ``"Enter, 18:10 by Pak Bagus: 128 kak"`` (tanpa
@@ -1037,7 +1042,10 @@ def _sender_label_pairs(labels: list[dict], chat_name: str) -> dict[int, list[st
     names = {" ".join((chat_name or "").lower().split())}
     senders: list[dict] = []
     for item in labels:
-        name = " ".join(str(item.get("sender") or "").lower().split())
+        # EXTRACT_JS mengirim kunci "author"; "sender" diterima agar kompatibel.
+        name = " ".join(
+            str(item.get("author") or item.get("sender") or "").lower().split()
+        )
         text = " ".join(str(item.get("text") or "").split())
         if not name or not text:
             continue
@@ -1056,7 +1064,8 @@ def _pair_by_sender(messages: list[dict], senders: list[dict]) -> None:
     """Tetapkan arah dari nama pengirim, mencocokkan tiap pesan satu per satu."""
     used: set[int] = set()
     for sender in senders:
-        name = str(sender.get("sender") or "").strip()
+        # EXTRACT_JS mengirim kunci "author" (bukan "sender").
+        name = str(sender.get("author") or sender.get("sender") or "").strip()
         text = " ".join(str(sender.get("text") or "").split())
         if not text:
             continue
@@ -1086,12 +1095,26 @@ def _pair_by_sender(messages: list[dict], senders: list[dict]) -> None:
 
 
 def _same_text(left: str, right: str) -> bool:
-    """Bandingkan dua teks pesan dengan toleransi cuplikan/emoji."""
-    a = " ".join((left or "").lower().split())[:40]
-    b = " ".join((right or "").lower().split())[:40]
+    """Apakah dua cuplikan teks merujuk pesan yang sama.
+
+    Dulu dipakai ``startswith`` pada 40 karakter pertama. Itu berbahaya: label
+    pesan panjang kita ("hai Dypoi, Iphone 8 64GB Rp 1.100.000 …") dianggap sama
+    dengan pesan pembeli yang pendek ("Hai dypoi"), sehingga arah pesan tertukar
+    dan worker menjawab pesannya sendiri (kejadian nyata 9 Nov 12:55-12:59).
+    Sekarang: harus sama persis setelah dinormalkan; cuplikan hanya boleh
+    dipotong di akhir dan hanya bila keduanya panjang (>= 30 karakter).
+    """
+    a = " ".join((left or "").lower().split())
+    b = " ".join((right or "").lower().split())
     if not a or not b:
         return False
-    return a == b or a.startswith(b) or b.startswith(a)
+    if a == b:
+        return True
+    shorter, longer = (a, b) if len(a) <= len(b) else (b, a)
+    if len(shorter) < 30:
+        return False
+    # Cuplikan dipotong di tengah kata: bandingkan hanya bila batasnya sama.
+    return longer.startswith(shorter) or longer.startswith(shorter.rstrip(".,…"))
 
 
 def _merge_labels(messages: list[dict], labels: list[dict], *, our_name: str = "") -> list[dict]:
@@ -1115,18 +1138,24 @@ def _merge_labels(messages: list[dict], labels: list[dict], *, our_name: str = "
             continue
         ours = _is_our_author(author)
         match = None
+        match_index = -1
+        best = -1
         for index, msg in enumerate(messages):
-            if index in used:
+            if index in used or not _same_text(msg["text"], text):
                 continue
-            if _same_text(msg["text"], text):
+            # Ambil kandidat dengan teks terpanjang yang cocok: mencegah label
+            # panjang menempel ke pesan pendek yang kebetulan seawal.
+            if len(msg["text"]) > best:
+                best = len(msg["text"])
                 match = msg
-                used.add(index)
-                break
+                match_index = index
         if match is not None:
             # Penanda "belum dibaca" tetap menang: pesan yang belum dibaca pasti
             # pesan masuk, apa pun kata label.
             if not match.get("unread"):
                 match["direction"] = "out" if ours else "in"
+            if match_index >= 0:
+                used.add(match_index)
             match["from_label"] = True
             match.setdefault("order", order)
             continue
@@ -1211,6 +1240,20 @@ def is_small_talk(text: str) -> bool:
     return all(word in _SMALL_TALK_WORDS for word in words)
 
 
+def _looks_like_paragraph(text: str) -> bool:
+    """Teks panjang berkalimat banyak bukan pertanyaan pembeli.
+
+    Mencegah pesan kita sendiri (yang kadang salah arah) dianggap pertanyaan dan
+    dijawab berulang — mis. "hai Dypoi, Iphone 8 64GB Rp 1.100.000 terimakasih
+    dypoi" pernah memicu 11 "pertanyaan" palsu (9 Nov 12:56).
+    """
+    clean = " ".join((text or "").split())
+    if len(clean) < 160:
+        return False
+    sentences = clean.count(".") + clean.count("?") + clean.count("!") + clean.count(",")
+    return sentences >= 3
+
+
 def pick_answer_target(messages: list[dict], *, answered_texts: set[str] | None = None) -> dict | None:
     """Tentukan pesan lawan bicara yang harus dijawab.
 
@@ -1239,7 +1282,8 @@ def pick_answer_target(messages: list[dict], *, answered_texts: set[str] | None 
     # Pesan masuk terbaru yang bukan sekadar sapaan. Urutan waktu penting: "128 kak"
     # (jawaban pembeli) harus menang atas "Berapa ya" yang sudah kita tanggapi.
     for msg in reversed(lawan):
-        if is_small_talk(msg.get("text", "")):
+        text = msg.get("text", "")
+        if is_small_talk(text) or _looks_like_paragraph(text):
             continue
         return msg
     return None

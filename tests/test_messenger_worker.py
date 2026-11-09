@@ -1434,3 +1434,27 @@ def test_wrap_can_be_disabled():
     from fbworkspace.messenger_worker import _apply_wrap
 
     assert _apply_wrap("Ready kak", ("", "")) == "Ready kak"
+
+
+def test_worker_does_not_reply_to_its_own_message(tmp_path):
+    """Log 9 Nov 12:57 & 12:59: worker mengirim ulang balasan AI berkali-kali.
+
+    Pesan kita sendiri terbaca sebagai pesan masuk, sehingga dianggap pertanyaan
+    baru. Setelah perbaikan arah, putaran berikutnya harus diam.
+    """
+    ai_text = "hai Dypoi, Iphone 8 64GB Rp 1.100.000 terimakasih dypoi"
+    db = Database(tmp_path / "chat.db")
+    adapter = _AiAdapter(
+        [Thread(THREAD_KEY, "Pak Bagus", THREAD_URL)],
+        {
+            THREAD_URL: [
+                _UnreadMsg("m1", "in", "Berapa", unread=True),
+                ChatMessage("o1", "out", ai_text),
+            ]
+        },
+    )
+    job_id = _job(db, dry_run=False, cooldown_seconds=0)
+    run(job_id, adapter=adapter, sender=MemorySender(), database=db,
+        settings=_settings(tmp_path), sleep=lambda s: None)
+
+    assert adapter.sent == [], "pesan kita sendiri tidak boleh dibalas"

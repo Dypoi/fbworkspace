@@ -1332,3 +1332,95 @@ class TestBackgroundWindow:
         hidden = MessengerAdapter(profile_dir="/tmp/prof", headless=True)
         assert hidden.reveal_for_action(object(), "perlu_login") is False
         assert hidden.revealed_reason == ""
+
+
+class TestOurOwnMessages:
+    """Regresi 9 Nov 12:55-12:59: worker menjawab pesannya sendiri berulang kali.
+
+    Log:
+      12:55 balasan terkirim: "hai Dypoi, Iphone 8 64GB …"
+      12:57 kirim: template | 'hai Dypoi, Iphone 8 64GB …'   <- pesan KITA dianggap masuk
+      12:59 kirim: template | 'hai Dypoi, Iphone 8 64GB …'
+    """
+
+    AI_TEXT = "hai Dypoi, Iphone 8 64GB Rp 1.100.000 terimakasih dypoi"
+    COL_L, COL_R = 360, 950
+
+    def _node(self, text, y, mine):
+        width = 40 + 6.6 * len(text)
+        x = self.COL_R - width if mine else self.COL_L
+        return {"text": text, "x": x, "y": y, "w": width, "h": 34}
+
+    def _payload(self, *, labels=True, senders=False):
+        nodes = [
+            self._node("Berapa", 120, False),
+            self._node("Storage-nya 64GB atau 256GB kak?", 300, True),
+            self._node("Ada apa aja emang?", 400, False),
+            self._node("coba balas nego mas", 560, True),
+            self._node("Nego", 700, False),
+            self._node("Hai dypoi", 780, False),
+            self._node(self.AI_TEXT, 770, True),
+        ]
+        mine = {nodes[1]["text"], nodes[3]["text"], self.AI_TEXT}
+        entries = [
+            {
+                "author": "You" if node["text"] in mine else "Pak Bagus Sunaryo",
+                "text": node["text"],
+            }
+            for node in nodes
+        ]
+        return {
+            "composer": {"x": 360, "y": 830, "w": 590, "h": 50},
+            "container": {"x": 300, "y": 80, "w": 700, "h": 720},
+            "found_container": True,
+            "vw": 1280,
+            "nodes": nodes,
+            "labels": entries if labels else [],
+            "senders": entries if senders else [],
+        }
+
+    def test_ai_reply_is_marked_out(self):
+        from fbworkspace.browser.messenger import filter_text_nodes
+
+        messages, _, _ = filter_text_nodes(self._payload(), chat_name="Pak Bagus Sunaryo")
+        ai_rows = [m for m in messages if m["text"] == self.AI_TEXT]
+        assert len(ai_rows) == 1
+        assert ai_rows[0]["direction"] == "out"
+
+    def test_buyer_greeting_stays_in(self):
+        from fbworkspace.browser.messenger import filter_text_nodes
+
+        messages, _, _ = filter_text_nodes(self._payload(), chat_name="Pak Bagus Sunaryo")
+        greeting = [m for m in messages if m["text"] == "Hai dypoi"]
+        assert greeting and greeting[0]["direction"] == "in"
+
+    def test_senders_key_is_read(self):
+        """EXTRACT_JS mengirim kunci 'author'; dulu dibaca 'sender' (tidak pernah ada)."""
+        from fbworkspace.browser.messenger import _sender_label_pairs
+
+        pairs = _sender_label_pairs(
+            [
+                {"author": "You", "text": self.AI_TEXT},
+                {"author": "Pak Bagus Sunaryo", "text": "Hai dypoi"},
+            ],
+            "Pak Bagus Sunaryo",
+        )
+        assert [item["text"] for item in pairs] == [self.AI_TEXT, "Hai dypoi"]
+
+    def test_long_our_message_is_not_treated_as_question(self):
+        from fbworkspace.browser.messenger import pick_answer_target
+
+        picked = pick_answer_target(
+            [
+                {"text": "Berapa", "direction": "in", "unread": True},
+                {"text": self.AI_TEXT, "direction": "out"},
+            ]
+        )
+        assert picked["text"] == "Berapa"
+
+    def test_similar_text_is_not_the_same_message(self):
+        from fbworkspace.browser.messenger import _same_text
+
+        assert _same_text("Hai dypoi", self.AI_TEXT) is False
+        assert _same_text("2600000", "2.600.000 kak") is False
+        assert _same_text("Ready kak", "ready kak") is True
