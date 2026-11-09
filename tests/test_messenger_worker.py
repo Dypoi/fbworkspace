@@ -280,7 +280,7 @@ def test_default_counters_complete():
     expected = {
         "threads", "messages", "replies", "silent", "dry_run", "escalations",
         "notify_sent", "notify_failed", "skipped_cooldown", "skipped_limit", "errors",
-        "cycles",
+        "cycles", "ai_failed",
     }
     assert set(default_counters()) == expected
 
@@ -1302,3 +1302,135 @@ def test_reply_not_duplicated_when_new_message_arrives(tmp_path):
     assert sum("sudah ditanggapi balasan kita" in m for m in events) == 1
     # ...dan pertanyaan di luar template dilaporkan lewat WA, bukan diabaikan.
     assert [row["message"] for row in db.list_escalations()] == ["Ada apa aja emang?"]
+
+
+class _AiAdapter(FakeMessenger):
+    """Adapter dengan konteks cukup untuk menguji jalur AI."""
+
+    def read_thread(self, url, *, known_out=None, thread_name=""):
+        from fbworkspace.browser.messenger import ThreadRead
+
+        return ThreadRead(
+            messages=list(self.messages.get(url, [])),
+            status="ok",
+            meta={"our_side": "kanan", "urutan": "dom"},
+        )
+
+
+def _ai_settings(tmp_path, *, fallback_template=False):
+    """Settings tidak bisa diubah di tempat (frozen): pakai replace()."""
+    return replace(
+        _settings(tmp_path),
+        ollama_enabled=True,
+        messenger_ai_freeform=True,
+        messenger_ai_fallback_template=fallback_template,
+        ai_prefix="hai Dypoi",
+        ai_suffix="terimakasih dypoi",
+        messenger_ai_style=False,
+    )
+
+
+def test_ai_writes_reply_with_required_greeting(tmp_path, monkeypatch):
+    import fbworkspace.reply_ai as ai
+
+    calls = []
+
+    def fake_generate(*, incoming, context=None, entries=None, config=None, **kw):
+        calls.append(incoming)
+        return ai.AiReply(ai.wrap("Ready kak, Iphone 11 masih ada"), True, "balasan AI")
+
+    monkeypatch.setattr(ai, "generate_reply", fake_generate)
+    db = Database(tmp_path / "chat.db")
+    adapter = _AiAdapter(
+        [Thread(THREAD_KEY, "Pak Bagus", THREAD_URL)],
+        {THREAD_URL: [_UnreadMsg("m1", "in", "Iphone 11 ready?", unread=True)]},
+    )
+    job_id = _job(db, dry_run=False, cooldown_seconds=0)
+    run(job_id, adapter=adapter, sender=MemorySender(), database=db,
+        settings=_ai_settings(tmp_path), sleep=lambda s: None)
+
+    assert calls == ["Iphone 11 ready?"]
+    body = adapter.sent[0][1]
+    assert body.startswith("hai Dypoi")
+    assert body.endswith("terimakasih dypoi")
+    assert "Ready kak" in body
+
+
+def test_ai_failure_stays_silent_and_reports(tmp_path, monkeypatch):
+    """Pilihan pengguna: AI gagal -> diam, tetapi diberitahukan lewat WA."""
+    import fbworkspace.reply_ai as ai
+
+    monkeypatch.setattr(
+        ai,
+        "generate_reply",
+        lambda **kw: ai.AiReply("", False, "Ollama gagal: TimeoutError"),
+    )
+    db = Database(tmp_path / "chat.db")
+    adapter = _AiAdapter(
+        [Thread(THREAD_KEY, "Pak Bagus", THREAD_URL)],
+        {THREAD_URL: [_UnreadMsg("m1", "in", "Iphone 11 ready?", unread=True)]},
+    )
+    sender = MemorySender()
+    job_id = _job(db, dry_run=False, cooldown_seconds=0)
+    run(job_id, adapter=adapter, sender=sender, database=db,
+        settings=_ai_settings(tmp_path), sleep=lambda s: None)
+
+    assert adapter.sent == [], "AI gagal: jangan kirim balasan template"
+    assert len(sender.sent) == 1, "pemilik harus diberi tahu lewat WA"
+    assert db.get_job(job_id)["counters"]["ai_failed"] == 1
+    events = [e["message"] for e in db.get_events(job_id)]
+    assert any("AI gagal" in m and "TIDAK dikirim" in m for m in events)
+
+
+def test_ai_failure_can_use_template_when_asked(tmp_path, monkeypatch):
+    import fbworkspace.reply_ai as ai
+
+    monkeypatch.setattr(ai, "generate_reply", lambda **kw: ai.AiReply("", False, "mati"))
+    db = Database(tmp_path / "chat.db")
+    adapter = _AiAdapter(
+        [Thread(THREAD_KEY, "Pak Bagus", THREAD_URL)],
+        {THREAD_URL: [_UnreadMsg("m1", "in", "Iphone 11 ready?", unread=True)]},
+    )
+    job_id = _job(db, dry_run=False, cooldown_seconds=0)
+    run(job_id, adapter=adapter, sender=MemorySender(), database=db,
+        settings=_ai_settings(tmp_path, fallback_template=True), sleep=lambda s: None)
+    assert adapter.sent == [(THREAD_URL, "Ready kak")]
+
+
+def test_out_of_scope_question_never_reaches_ai(tmp_path, monkeypatch):
+    """'nego' = diam + WA; AI tidak boleh dipakai sama sekali."""
+    import fbworkspace.reply_ai as ai
+
+    called = []
+    monkeypatch.setattr(
+        ai, "generate_reply", lambda **kw: called.append(1) or ai.AiReply("x", True)
+    )
+    db = Database(tmp_path / "chat.db")
+    adapter = _AiAdapter(
+        [Thread(THREAD_KEY, "Pak Bagus", THREAD_URL)],
+        {THREAD_URL: [_UnreadMsg("m1", "in", "Nego", unread=True)]},
+    )
+    sender = MemorySender()
+    job_id = _job(db, dry_run=False, cooldown_seconds=0)
+    run(job_id, adapter=adapter, sender=sender, database=db,
+        settings=_ai_settings(tmp_path), sleep=lambda s: None)
+
+    assert called == []
+    assert adapter.sent == []
+    assert len(sender.sent) == 1
+
+
+def test_wrap_never_doubles_prefix():
+    from fbworkspace.messenger_worker import _apply_wrap
+
+    text = _apply_wrap(
+        "hai Dypoi ready kak terimakasih dypoi", ("hai Dypoi", "terimakasih dypoi")
+    )
+    assert text.lower().count("hai dypoi") == 1
+    assert text.lower().count("terimakasih dypoi") == 1
+
+
+def test_wrap_can_be_disabled():
+    from fbworkspace.messenger_worker import _apply_wrap
+
+    assert _apply_wrap("Ready kak", ("", "")) == "Ready kak"

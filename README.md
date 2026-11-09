@@ -172,7 +172,7 @@ fbworkspace/
 │   └── check_extraction_dom.cjs # uji logika ekstraksi DOM (Node + jsdom, opsional)
 ├── data/demo_posts_DEMO.json   # data sintetis berlabel DEMO
 ├── docs/                       # instalasi, POC, batasan, Git, testing
-├── tests/                      # 728 tes otomatis
+├── tests/                      # 746 tes otomatis
 ├── requirements.txt
 ├── .env.example
 └── .gitignore
@@ -352,6 +352,15 @@ tetap terbaca. Penanda "belum dibaca" tetap yang paling diutamakan.
 (`${...}`) yang dikirim Facebook, bukan menurut koordinat layar — sehingga pesan
 terbaru (yang kadang belum punya ukuran/posisi) tetap dianggap terbaru.
 
+**Ollama bisa menulis sendiri balasan (opsional, ada risiko).** Dengan
+`FBW_MESSENGER_AI_FREEFORM=true`, AI menyusun isi balasan untuk pertanyaan yang
+memang dijawab worker; kode menambahkan pembuka `hai Dypoi` dan penutup
+`terimakasih dypoi`. Pertanyaan di luar ranah (`nego`, dll.) tetap tidak pernah
+sampai ke AI. Bila AI gagal/melanggar aturan: balasan **tidak dikirim** dan Anda
+diberi tahu lewat WhatsApp (`FBW_MESSENGER_AI_FALLBACK_TEMPLATE=true` untuk
+memakai template). Catatan jujur: harga **tidak** dicocokkan ke daftar di mode
+ini, jadi AI bisa menyebut harga keliru.
+
 **Berjalan di belakang layar.** Chromium dijalankan dengan jendela **di luar area
 layar** (bukan headless), jadi tidak merebut fokus dan tidak ditolak WhatsApp Web.
 Jendela hanya **dimunculkan otomatis** ketika memang butuh Anda: Facebook meminta
@@ -517,7 +526,7 @@ Penghapusan data tersedia di tab **Pengaturan → 💾 Data** (postingan, log, p
 .\.venv\Scripts\python.exe -m pytest
 ```
 
-Hasil terakhir di lingkungan pengembangan: **728 tes lulus** (termasuk smoke test
+Hasil terakhir di lingkungan pengembangan: **746 tes lulus** (termasuk smoke test
 dashboard Streamlit untuk 4 tab, segmentasi hasil, filter ulang, daftar harga,
 penyusun balasan, worker balas DM dengan adapter palsu, format notifikasi
 WhatsApp, dan variasi AI yang menolak perubahan fakta), `ruff check` bersih. Detail: **[docs/TESTING.md](docs/TESTING.md)**.

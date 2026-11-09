@@ -168,6 +168,23 @@ class Settings:
     messenger_ai_style: bool = field(
         default_factory=lambda: _env_bool("FBW_MESSENGER_AI_STYLE", True)
     )
+    # Biarkan AI MENULIS SENDIRI balasan (bukan hanya mengubah gaya template).
+    # PERINGATAN: harga bisa keliru karena model menulis angka sendiri. Aktifkan
+    # hanya bila Anda menerima risiko itu.
+    messenger_ai_freeform: bool = field(
+        default_factory=lambda: _env_bool("FBW_MESSENGER_AI_FREEFORM", False)
+    )
+    # Pembuka/penutup balasan AI. Kosongkan untuk mematikan.
+    ai_prefix: str = field(
+        default_factory=lambda: os.getenv("FBW_AI_PREFIX", "hai Dypoi").strip()
+    )
+    ai_suffix: str = field(
+        default_factory=lambda: os.getenv("FBW_AI_SUFFIX", "terimakasih dypoi").strip()
+    )
+    # Saat AI gagal: hening (beri tahu pemilik) atau pakai balasan template.
+    messenger_ai_fallback_template: bool = field(
+        default_factory=lambda: _env_bool("FBW_MESSENGER_AI_FALLBACK_TEMPLATE", False)
+    )
 
     # --- Folder ---
     data_dir: Path = field(default_factory=lambda: PROJECT_ROOT / "data")

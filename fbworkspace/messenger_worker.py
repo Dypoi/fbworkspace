@@ -54,6 +54,7 @@ def default_counters() -> dict[str, int]:
         "skipped_cooldown": 0,
         "skipped_limit": 0,
         "errors": 0,
+        "ai_failed": 0,
         "cycles": 0,
     }
 
@@ -91,10 +92,16 @@ def run(
         int(config.get("interval_seconds") or settings.messenger_interval_seconds),
     )
     max_cycles = max(0, int(config.get("max_cycles") or 0))  # 0 = tanpa batas
+    # Mode "AI menulis sendiri": hanya bila diminta lewat job atau .env.
+    ai_freeform = bool(config.get("ai_freeform", settings.messenger_ai_freeform))
     style_config = (
         OllamaConfig.from_settings(settings)
-        if ai_style and getattr(settings, "ollama_enabled", False)
+        if (ai_style or ai_freeform) and getattr(settings, "ollama_enabled", False)
         else None
+    )
+    ai_wrap = (settings.ai_prefix, settings.ai_suffix)
+    ai_fallback_template = bool(
+        config.get("ai_fallback_template", settings.messenger_ai_fallback_template)
     )
 
     counters = default_counters()
@@ -189,6 +196,9 @@ def run(
                 gap=gap,
                 cooldown=cooldown,
                 style_config=style_config,
+                ai_freeform=ai_freeform,
+                ai_wrap=ai_wrap,
+                ai_fallback_template=ai_fallback_template,
                 log=log,
                 sleep=sleep,
                 push=push,
@@ -296,6 +306,9 @@ def _watch_cycle(
     log,
     sleep,
     push,
+    ai_freeform: bool = False,
+    ai_wrap: tuple[str, str] = ("", ""),
+    ai_fallback_template: bool = False,
 ) -> tuple[str, str]:
     """Satu putaran pemantauan. Kembalikan (hasil, keterangan).
 
@@ -388,6 +401,9 @@ def _watch_cycle(
             entries=entries,
             style_config=style_config,
             cooldown=cooldown,
+            ai_freeform=ai_freeform,
+            ai_wrap=ai_wrap,
+            ai_fallback_template=ai_fallback_template,
         )
         counters["messages"] += incoming_count
         push()
@@ -457,6 +473,9 @@ def _handle_thread(
     entries,
     style_config=None,
     cooldown: int = 0,
+    ai_freeform: bool = False,
+    ai_wrap: tuple[str, str] = ("", ""),
+    ai_fallback_template: bool = False,
 ) -> int:
     """Baca & tanggapi satu percakapan. Kembalikan jumlah pesan masuk baru."""
     known_out = db.outgoing_texts(thread.key)
@@ -561,7 +580,47 @@ def _handle_thread(
 
     sent_text = ""
     body = plan.body
-    if plan.should_send and style_config is not None:
+    ai_context = _context_before(read, latest["text"])
+
+    if plan.should_send and ai_freeform and style_config is not None:
+        # AI menulis sendiri isi balasan (pembuka/penutup ditambahkan kode).
+        from .reply_ai import OPENING, generate_reply
+
+        result = generate_reply(
+            incoming=latest["text"],
+            context=ai_context,
+            entries=entries,
+            config=style_config,
+        )
+        if result.ok:
+            body = _apply_wrap(
+                result.text, ai_wrap, opening=OPENING, closing="terimakasih dypoi"
+            )
+            log("info", f"[{thread.name}] balasan AI: {body[:140]}")
+        elif ai_fallback_template:
+            log(
+                "info",
+                f"[{thread.name}] AI gagal ({result.reason}); memakai balasan template.",
+            )
+        else:
+            # Pilihan pengguna: AI gagal -> DIAM, tetapi jangan diam-diam.
+            plan = type(plan)(
+                action="diam",
+                body="",
+                reason=f"AI gagal: {result.reason}",
+                intents=plan.intents,
+                model_key=plan.model_key,
+                storage=plan.storage,
+                escalate=True,
+            )
+            counters["ai_failed"] = int(counters.get("ai_failed") or 0) + 1
+            log(
+                "warning",
+                f"[{thread.name}] AI gagal ({result.reason}). Balasan TIDAK dikirim; "
+                "chat dilaporkan lewat WhatsApp ke Anda.",
+            )
+
+    if plan.should_send and style_config is not None and not ai_freeform:
         styled = polish(body, config=style_config)
         if styled.changed:
             log("info", f"[{thread.name}] variasi AI: {styled.text[:120]}")
@@ -672,6 +731,27 @@ def _handle_thread(
     note = "dibalas" if sent_text else ("diam" if not plan.should_send else "gagal_kirim")
     db.mark_answered_many(thread.key, keys, sent_text, note=note)
     return new_messages
+
+
+def _apply_wrap(
+    body: str, wrap_pair: tuple[str, str], *, opening: str = "", closing: str = ""
+) -> str:
+    """Pasang pembuka & penutup yang diminta, tanpa pernah dobel.
+
+    ``wrap_pair`` berasal dari pengaturan (bawaan "hai Dypoi" / "terimakasih
+    dypoi"); kalau salah satunya dikosongkan, bagian itu tidak dipakai.
+    """
+    prefix = (wrap_pair[0] if wrap_pair else "").strip() or ""
+    suffix = (wrap_pair[1] if wrap_pair else "").strip() or ""
+    text = " ".join(str(body or "").split()).strip()
+    if not text:
+        return ""
+    low = text.lower()
+    if prefix and not low.startswith(prefix.lower()):
+        text = f"{prefix}, {text}"
+    if suffix and not text.lower().endswith(suffix.lower()):
+        text = f"{text} {suffix}"
+    return text
 
 
 def _small_talk(row: dict) -> bool:

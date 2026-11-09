@@ -1815,6 +1815,17 @@ def render_balas(settings: Settings, db: Database) -> None:
             "Perlu Ollama aktif (Pengaturan → Ollama)."
         ),
     )
+    ai_freeform = st.checkbox(
+        "Biarkan Ollama MENULIS SENDIRI balasan (bukan cuma mengubah gaya)",
+        value=bool(settings.messenger_ai_freeform),
+        key="fbw_msg_ai_freeform",
+        help=(
+            "Pembuka dan penutup ditambahkan otomatis. PERINGATAN: harga bisa keliru "
+            "karena AI menulis angka sendiri; harga tidak dicocokkan ke daftar. "
+            "Perlu Ollama aktif. Bila AI gagal, balasan tidak dikirim dan Anda "
+            "diberi tahu lewat WhatsApp."
+        ),
+    )
     consent = st.checkbox(
         "Saya paham membalas otomatis bisa memicu pembatasan akun dan saya mengirim "
         "hanya dari akun milik sendiri.",
@@ -1844,6 +1855,7 @@ def render_balas(settings: Settings, db: Database) -> None:
             "cooldown_seconds": settings.messenger_cooldown_seconds,
             "notify": notify,
             "ai_style": ai_style,
+            "ai_freeform": ai_freeform,
             "watch": watch,
             "interval_seconds": interval,
         }
