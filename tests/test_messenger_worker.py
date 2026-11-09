@@ -1528,3 +1528,38 @@ def test_ambiguous_pending_model_questions_asks_clarification(tmp_path, monkeypa
 
     assert adapter.sent == [(THREAD_URL, "iPhone yang mana kak?")]
     assert calls == [], "model ambigu harus diklarifikasi, bukan ditebak Ollama"
+
+
+def test_question_starting_with_greeting_word_is_escalated_not_silently_closed(tmp_path, monkeypatch):
+    """'Hai dypoi, ...?' bukan sapaan; di luar ranah harus masuk WhatsApp."""
+    import fbworkspace.reply_ai as ai
+
+    called = []
+    monkeypatch.setattr(
+        ai,
+        "generate_reply",
+        lambda **kw: called.append(kw) or ai.AiReply("jawaban", True),
+    )
+    db = Database(tmp_path / "chat.db")
+    adapter = _AiAdapter(
+        [Thread(THREAD_KEY, "Pak Bagus", THREAD_URL)],
+        {
+            THREAD_URL: [
+                _UnreadMsg(
+                    "m1",
+                    "in",
+                    "Hai dypoi, kalau jembut dimakan apakah berbahaya?",
+                    unread=True,
+                )
+            ]
+        },
+    )
+    sender = MemorySender()
+    job_id = _job(db, dry_run=False, cooldown_seconds=0)
+    run(job_id, adapter=adapter, sender=sender, database=db,
+        settings=_ai_settings(tmp_path), sleep=lambda s: None)
+
+    assert adapter.sent == [], "topik di luar ranah tidak dibalas ke pembeli"
+    assert called == [], "Ollama hanya dipakai untuk template yang boleh dijawab"
+    assert len(sender.sent) == 1
+    assert "kalau jembut dimakan" in sender.sent[0]

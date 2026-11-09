@@ -230,6 +230,14 @@ class TestGreetings:
         assert plan.action == ACTION_SILENT
         assert plan.escalate is False
 
+    def test_greeting_word_inside_real_question_is_not_an_acknowledgement(self):
+        plan = compose_reply(
+            "Hai dypoi, kalau jembut dimakan apakah berbahaya?", default_entries()
+        )
+        assert plan.action == ACTION_SILENT
+        assert plan.escalate is True
+        assert plan.reason == "di luar template"
+
     @pytest.mark.parametrize("text", ["berapa ya", "ini berapa", "harganya?"])
     def test_short_question_escalates(self, text):
         plan = compose_reply(text, default_entries())

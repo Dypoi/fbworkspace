@@ -75,10 +75,10 @@ _INTENT_PATTERNS: dict[str, re.Pattern[str]] = {
     ),
 }
 
-_ACK_RE = re.compile(
-    r"\b(ok|oke|okay|okey|sip|siap|makasih|terima\s*kasih|thanks|thank\s*you|p|ping|"
-    r"halo|hai|hi|hallo|hallo|assalamualaikum|salam|permisi|pagi|siang|malam|sore|"
-    r"kak|gan|bang|bg|bro|sis|min)\b",
+_ACK_ONLY_RE = re.compile(
+    r"^(?:(?:ok|oke|okay|okey|sip|siap|makasih|terima\s*kasih|thanks|thank\s+you|p|ping|"
+    r"halo|hai|hi|hallo|assalamualaikum|salam|permisi|pagi|siang|malam|sore|"
+    r"kak|gan|bang|bg|bro|sis|min)\b[\s,!.?]*)+$",
     re.I,
 )
 # Sapaan murni: seluruh kalimat hanya sapaan (boleh diulang), tanpa pertanyaan.
@@ -405,7 +405,7 @@ def compose_reply(
             intents=intents,
         )
 
-    if _ACK_RE.search(text):
+    if _ACK_ONLY_RE.fullmatch(" ".join(text.split())):
         return ReplyPlan(reason="hanya sapaan/ucapan terima kasih", intents=intents)
 
     return ReplyPlan(

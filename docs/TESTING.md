@@ -33,7 +33,7 @@ Lint (opsional, butuh `ruff`):
 pytest 8.x. Windows belum dijalankan dari lingkungan ini.
 
 ```
-759 passed in ~8s
+761 passed in ~8s
 ruff check . --select E,F,W,I  ->  All checks passed!
 ```
 
@@ -55,7 +55,7 @@ ruff check . --select E,F,W,I  ->  All checks passed!
 | `tests/test_text_quality.py` | 26 | pola komentar/reply (contoh asli dari ekspor), postingan sah tidak ikut terbuang, adapter melewati komentar, `skipped_comment`, pembersihan data lama |
 | `tests/test_ui_data.py` | 12 | hitungan per status filter, hapus per sumber (DEMO), pratinjau filter, "terapkan ulang filter" tanpa duplikasi |
 | `tests/test_pricelist.py` | 29 | nama model baku (`iphone se 2020` → `iphone se gen2`), format rupiah, parsing baris harga (`iphone 11 64gb 2,4jt`), pencarian per model/storage, stok |
-| `tests/test_replies.py` | 45 | harga hanya dari daftar, tanya storage bila lebih dari satu varian, ready/lokasi/WA, "nego" → eskalasi, model tak dikenal & nomor pembeli → diam + eskalasi, sapaan → balasan singkat, model ambigu → klarifikasi, batas 400 karakter |
+| `tests/test_replies.py` | 46 | harga hanya dari daftar, tanya storage bila lebih dari satu varian, ready/lokasi/WA, "nego" → eskalasi, model tak dikenal & nomor pembeli → diam + eskalasi, sapaan → balasan singkat, model ambigu → klarifikasi, batas 400 karakter |
 | `tests/test_notify.py` | 19 | baris pertama pesan WA, isi Chat/Isi/Alasan/Link, pemotongan 900 karakter, normalisasi nomor `08…`/`+62…` → `62…`, URL `web.whatsapp.com/send`, status QR/kotak tulis tidak ditemukan, mode latar belakang, pesan error Playwright diterjemahkan |
 | `tests/test_reply_style.py` | 22 | prompt variasi, gaya diterima, **angka berubah/lokasi hilang/nomor WA hilang/klaim terlarang → ditolak**, Ollama mati tetap memakai teks template |
 | `tests/test_chat_pin.py` | 30 | PIN hanya diisi di layar permintaan PIN, **ditolak di checkpoint/verifikasi/2FA/password**, PIN tidak bocor ke diagnostik/log/pesan WA, batas 2 percobaan |
