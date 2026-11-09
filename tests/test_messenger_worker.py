@@ -1050,6 +1050,26 @@ def test_context_ignores_unanswered_later_question(tmp_path):
     assert "Iphone 8 ready?" not in context
 
 
+def test_context_uses_latest_model_topic_not_older_history():
+    from fbworkspace.browser.messenger import ChatMessage as CM
+    from fbworkspace.browser.messenger import ThreadRead
+    from fbworkspace.messenger_worker import _context_before
+
+    read = ThreadRead(
+        [
+            CM("a", "in", "Iphone 8 ready?"),
+            CM("b", "out", "Ready kak"),
+            CM("c", "in", "Iphone 11 ready?"),
+            CM("d", "out", "Ready kak"),
+            CM("e", "in", "Berapa ya?"),
+        ],
+        "ok",
+    )
+    context = _context_before(read, "Berapa ya?")
+    assert context == ["Iphone 11 ready?"]
+    assert "Iphone 8 ready?" not in context
+
+
 def test_unread_message_not_yet_parsed_is_recorded(tmp_path):
     """'Iphone 8 ready?' bertanda belum dibaca tetapi belum tercatat -> disimpan."""
     from fbworkspace.browser.messenger import ChatMessage as CM
@@ -1458,3 +1478,53 @@ def test_worker_does_not_reply_to_its_own_message(tmp_path):
         settings=_settings(tmp_path), sleep=lambda s: None)
 
     assert adapter.sent == [], "pesan kita sendiri tidak boleh dibalas"
+
+
+def test_greeting_gets_short_template_and_bypasses_freeform_ai(tmp_path, monkeypatch):
+    import fbworkspace.reply_ai as ai
+
+    calls = []
+    monkeypatch.setattr(
+        ai,
+        "generate_reply",
+        lambda **kw: calls.append(kw) or ai.AiReply("oops price", True, "test"),
+    )
+    db = Database(tmp_path / "chat.db")
+    adapter = _AiAdapter(
+        [Thread(THREAD_KEY, "Pak Bagus", THREAD_URL)],
+        {THREAD_URL: [_UnreadMsg("m1", "in", "Hai Dypoi", unread=True)]},
+    )
+    job_id = _job(db, dry_run=False, cooldown_seconds=0)
+    run(job_id, adapter=adapter, sender=MemorySender(), database=db,
+        settings=_ai_settings(tmp_path), sleep=lambda s: None)
+
+    assert adapter.sent == [(THREAD_URL, "Hai kak, ada yang bisa dibantu?")]
+    assert calls == [], "sapaan harus dijawab pendek tanpa AI menambah harga/model"
+
+
+def test_ambiguous_pending_model_questions_asks_clarification(tmp_path, monkeypatch):
+    import fbworkspace.reply_ai as ai
+
+    calls = []
+    monkeypatch.setattr(
+        ai,
+        "generate_reply",
+        lambda **kw: calls.append(kw) or ai.AiReply("harga iPhone 11 2.400.000", True),
+    )
+    db = Database(tmp_path / "chat.db")
+    adapter = _AiAdapter(
+        [Thread(THREAD_KEY, "Pak Bagus", THREAD_URL)],
+        {
+            THREAD_URL: [
+                _UnreadMsg("m1", "in", "Iphone 8 ready?", unread=True),
+                _UnreadMsg("m2", "in", "Iphone 11 ready?", unread=True),
+                _UnreadMsg("m3", "in", "Berapa ya?", unread=True),
+            ]
+        },
+    )
+    job_id = _job(db, dry_run=False, cooldown_seconds=0)
+    run(job_id, adapter=adapter, sender=MemorySender(), database=db,
+        settings=_ai_settings(tmp_path), sleep=lambda s: None)
+
+    assert adapter.sent == [(THREAD_URL, "iPhone yang mana kak?")]
+    assert calls == [], "model ambigu harus diklarifikasi, bukan ditebak Ollama"

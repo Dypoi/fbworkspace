@@ -532,8 +532,9 @@ class TestProfileLock:
 
         from fbworkspace.browser.messenger import LOCK_NAME, acquire_profile_lock
 
+        live_pid = _os.getpid()
         monkeypatch.setattr(_os, "getpid", lambda: 424242)
-        (tmp_path / LOCK_NAME).write_text(str(_os.getppid()), encoding="utf-8")
+        (tmp_path / LOCK_NAME).write_text(str(live_pid), encoding="utf-8")
         note = acquire_profile_lock(tmp_path)
         assert "masih dipakai" in note
 
@@ -915,10 +916,10 @@ class TestUnreadAndTargetSelection:
         ]
         assert pick_answer_target(messages)["text"] == "berapa ya"
 
-    def test_pick_returns_none_for_greeting_only(self):
+    def test_pick_selects_greeting_when_it_is_the_only_message(self):
         from fbworkspace.browser.messenger import pick_answer_target
 
-        assert pick_answer_target([{"text": "halo kak", "direction": "in"}]) is None
+        assert pick_answer_target([{"text": "halo kak", "direction": "in"}])["text"] == "halo kak"
 
     def test_looks_like_request(self):
         from fbworkspace.browser.messenger import looks_like_request

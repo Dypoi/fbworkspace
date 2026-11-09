@@ -175,11 +175,15 @@ class TestEscalation:
         assert result.escalate is True
         assert result.reason == "di luar template"
 
-    def test_greeting_is_silent_without_escalation(self):
-        for text in ("ok makasih", "sip", "p", "halo kak"):
+    def test_acknowledgement_is_silent_but_greeting_gets_short_reply(self):
+        for text in ("ok makasih", "sip", "p"):
             result = plan(text)
             assert result.action == ACTION_SILENT
             assert result.escalate is False
+        greeting = plan("halo kak")
+        assert greeting.action == ACTION_SEND
+        assert greeting.body == "Hai kak, ada yang bisa dibantu?"
+        assert greeting.escalate is False
 
     def test_buyer_phone_number_is_escalated(self):
         result = plan("wa saya 081234567890")
@@ -209,15 +213,21 @@ class TestSafety:
 
 
 class TestGreetings:
-    """Sapaan murni tidak boleh memicu WA; pertanyaan pendek tetap dieskalasi."""
+    """Sapaan dibalas pendek; ucapan terima kasih tetap tidak perlu dibalas."""
 
     @pytest.mark.parametrize(
         "text",
-        ["permisi kak", "halo kak", "assalamualaikum", "malam kak", "permisi", "oke makasih"],
+        ["permisi kak", "halo kak", "assalamualaikum", "malam kak", "permisi", "Hai Dypoi"],
     )
-    def test_greeting_is_silent(self, text):
+    def test_greeting_gets_short_reply(self, text):
         plan = compose_reply(text, default_entries())
-        assert plan.action == "diam"
+        assert plan.action == ACTION_SEND
+        assert plan.body == "Hai kak, ada yang bisa dibantu?"
+        assert plan.escalate is False
+
+    def test_acknowledgement_stays_silent(self):
+        plan = compose_reply("oke makasih", default_entries())
+        assert plan.action == ACTION_SILENT
         assert plan.escalate is False
 
     @pytest.mark.parametrize("text", ["berapa ya", "ini berapa", "harganya?"])
@@ -244,6 +254,17 @@ class TestContextFollowUp:
         plan = compose_reply("Berapa ya", default_entries(), context=[])
         assert plan.action == ACTION_SILENT
         assert plan.escalate is True
+
+    def test_ambiguous_pending_models_asks_which_iphone(self):
+        plan = compose_reply(
+            "Berapa ya?",
+            default_entries(),
+            context=["Iphone 11 ready?"],
+            ambiguous_models=["iPhone 8", "iPhone 11"],
+        )
+        assert plan.action == ACTION_SEND
+        assert plan.body == "iPhone yang mana kak?"
+        assert plan.escalate is False
 
     def test_context_does_not_override_other_model_in_message(self):
         plan = compose_reply("iphone 8 berapa", default_entries(), context=["iphone 11 ready?"])

@@ -48,6 +48,20 @@ def test_prompt_contains_prices_locked_to_list():
     assert "081513839973" in prompt
 
 
+def test_prompt_summarizes_active_model_instead_of_full_history():
+    prompt = build_prompt(
+        incoming="Berapa ya?",
+        context=["iPhone 8 ready?", "obrolan lama yang tidak relevan", "iPhone 11 ready?"],
+        entries=default_entries(),
+    )
+    assert "RINGKASAN TOPIK AKTIF" in prompt
+    assert "Model aktif: iPhone 11" in prompt
+    assert "64GB Rp 2.400.000" in prompt
+    assert "iPhone 8 ready?" not in prompt
+    assert "obrolan lama yang tidak relevan" not in prompt
+    assert "PESAN SEBELUMNYA:" not in prompt
+
+
 def test_reply_is_wrapped_and_marked_ok():
     result = generate_reply(
         incoming="Iphone 11 ready?",

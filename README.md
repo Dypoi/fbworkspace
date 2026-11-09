@@ -172,7 +172,7 @@ fbworkspace/
 │   └── check_extraction_dom.cjs # uji logika ekstraksi DOM (Node + jsdom, opsional)
 ├── data/demo_posts_DEMO.json   # data sintetis berlabel DEMO
 ├── docs/                       # instalasi, POC, batasan, Git, testing
-├── tests/                      # 752 tes otomatis
+├── tests/                      # 758 tes otomatis
 ├── requirements.txt
 ├── .env.example
 └── .gitignore
@@ -367,6 +367,20 @@ Sebelumnya label panjang seperti `hai Dypoi, Iphone 8 64GB Rp 1.100.000 …`
 dianggap sama dengan pesan pembeli `Hai dypoi`, sehingga balasan terkirim
 berulang. Paragraf panjang juga tidak lagi dianggap pertanyaan.
 
+**Model tidak diambil dari topik lama.** Konteks dibatasi mulai penyebutan model
+pembeli yang paling baru. Jika ada beberapa model berbeda yang sama-sama menunggu
+lalu pembeli hanya bertanya `Berapa?`, worker bertanya `iPhone yang mana kak?`
+(dan tidak membiarkan Ollama menebak harga). Balasan `128 kak` tetap dikaitkan ke
+pertanyaan storage yang sedang berjalan.
+
+**Sapaan murni mendapat jawaban pendek.** `Hai Dypoi` / `halo kak` dibalas
+`Hai kak, ada yang bisa dibantu?` tanpa Ollama dan tanpa harga. Ucapan seperti
+`oke makasih` tetap tidak dibalas.
+
+**Prompt Ollama merangkum topik aktif.** AI menerima model, varian/harga model
+tersebut, storage yang dibicarakan, dan paling banyak satu pesan relevan — bukan
+seluruh delapan pesan riwayat.
+
 **Berjalan di belakang layar.** Chromium dijalankan dengan jendela **di luar area
 layar** (bukan headless), jadi tidak merebut fokus dan tidak ditolak WhatsApp Web.
 Jendela hanya **dimunculkan otomatis** ketika memang butuh Anda: Facebook meminta
@@ -408,7 +422,7 @@ memakai kode terbaru setelah `git pull` tanpa menebak.
 **Tidak menanyakan hal yang sama dua kali.** Pesan masuk yang sudah kita tanggapi
 (ada balasan kita sesudahnya) ditandai selesai, sehingga worker tidak mengulang
 pertanyaan lama dan justru mengabaikan jawaban pembeli. Pesan masuk **terbaru**
-selalu didahulukan; ucapan terima kasih/sapaan dilewati.
+selalu didahulukan; ucapan terima kasih dilewati, sapaan murni dibalas singkat.
 
 **Jawaban pendek juga dipahami.** Setelah worker menanyakan storage, pembeli cukup
 menulis `64gb` / `64` / `yang 128` — model diwarisi dari percakapan, harga diambil
@@ -532,7 +546,7 @@ Penghapusan data tersedia di tab **Pengaturan → 💾 Data** (postingan, log, p
 .\.venv\Scripts\python.exe -m pytest
 ```
 
-Hasil terakhir di lingkungan pengembangan: **752 tes lulus** (termasuk smoke test
+Hasil terakhir di lingkungan pengembangan: **758 tes lulus** (termasuk smoke test
 dashboard Streamlit untuk 4 tab, segmentasi hasil, filter ulang, daftar harga,
 penyusun balasan, worker balas DM dengan adapter palsu, format notifikasi
 WhatsApp, dan variasi AI yang menolak perubahan fakta), `ruff check` bersih. Detail: **[docs/TESTING.md](docs/TESTING.md)**.

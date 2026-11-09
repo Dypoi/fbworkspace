@@ -27,7 +27,7 @@ from .db import Database
 from .models import JobStatus
 from .notify import STOP_HEADER, Escalation, WhatsAppWebSender, build_login_escalation
 from .ollama_client import OllamaConfig
-from .replies import compose_reply
+from .replies import compose_reply, is_greeting_only
 from .reply_style import polish
 
 _LOG_LEVELS = {"info", "warning", "error"}
@@ -561,9 +561,27 @@ def _handle_thread(
 
     target = _pick_target(read, pending)
     latest = pending[-1] if target is None else target
-    plan = compose_reply(latest["text"], entries, context=_context_before(read, latest["text"]))
+    from .pricelist import label_for
+    from .replies import detect_model
+
+    pending_models = list(
+        dict.fromkeys(
+            label_for(found.model_key)
+            for row in pending
+            if (found := detect_model(str(row.get("text") or ""))).model_key
+        )
+    )
+    explicit_target_model = detect_model(latest["text"])
+    ambiguity = pending_models if len(pending_models) > 1 and not explicit_target_model.model_key else None
+    plan = compose_reply(
+        latest["text"],
+        entries,
+        context=_context_before(read, latest["text"]),
+        ambiguous_models=ambiguity,
+    )
     if target is None and not plan.should_send and not plan.escalate:
-        # Semua pesan hanya sapaan/ucapan terima kasih -> diam tanpa eskalasi.
+        # Hanya ucapan terima kasih/acknowledgement -> diam tanpa eskalasi.
+        # Sapaan murni sekarang dipilih sebagai target dan dibalas pendek.
         # (Jangan memilih "pesan terakhir" begitu saja: urutan "berapa ya" lalu
         # "iyaa" membuat pertanyaannya hilang.)
         pass
@@ -582,7 +600,15 @@ def _handle_thread(
     body = plan.body
     ai_context = _context_before(read, latest["text"])
 
-    if plan.should_send and ai_freeform and style_config is not None:
+    greeting_only = is_greeting_only(latest["text"])
+    controlled_clarification = plan.reason.startswith("model ambigu")
+    if (
+        plan.should_send
+        and ai_freeform
+        and style_config is not None
+        and not greeting_only
+        and not controlled_clarification
+    ):
         # AI menulis sendiri isi balasan (pembuka/penutup ditambahkan kode).
         from .reply_ai import OPENING, generate_reply
 
@@ -620,7 +646,13 @@ def _handle_thread(
                 "chat dilaporkan lewat WhatsApp ke Anda.",
             )
 
-    if plan.should_send and style_config is not None and not ai_freeform:
+    if (
+        plan.should_send
+        and style_config is not None
+        and not ai_freeform
+        and not greeting_only
+        and not controlled_clarification
+    ):
         styled = polish(body, config=style_config)
         if styled.changed:
             log("info", f"[{thread.name}] variasi AI: {styled.text[:120]}")
@@ -880,8 +912,9 @@ def _same_conversation_text(left: str, right: str) -> bool:
 def _context_before(read, text: str, limit: int = 8) -> list[str]:
     """Konteks untuk memahami rujukan ("Berapa ya?" / "128 kak").
 
-    Berisi pesan MASUK sebelum pesan target, ditambah pertanyaan storage yang kita
-    kirim sesudahnya. Tanpa itu, "128 kak" tidak tahu model apa yang dimaksud —
+    Berisi konteks dari penyebutan model pembeli paling baru sebelum target,
+    ditambah pertanyaan storage yang kita kirim sesudahnya. Tanpa itu, "128 kak"
+    tidak tahu model apa yang dimaksud —
     kejadian nyata 8 Nov 20:34: worker menebak "iPhone 8" padahal pembicaraannya
     tentang "iPhone 11".
     """
@@ -894,10 +927,24 @@ def _context_before(read, text: str, limit: int = 8) -> list[str]:
     before = [
         msg.text for msg in messages[:index] if getattr(msg, "direction", "") == "in"
     ]
+    # Konteks topic = dari penyebutan model pembeli yang PALING BARU saja.
+    # Jangan biarkan model lama dari topik yang sudah lewat dipakai untuk menebak
+    # harga pertanyaan baru (mis. iPhone 8 lama lalu percakapan pindah ke iPhone 11).
     try:
-        from .replies import looks_like_our_storage_question
+        from .replies import detect_model, looks_like_our_storage_question
     except Exception:  # noqa: BLE001
+        detect_model = None
         looks_like_our_storage_question = lambda _t: False  # noqa: E731
+    if detect_model is not None:
+        last_model_index = None
+        for position, line in enumerate(before):
+            found = detect_model(line)
+            # Mention model yang tidak ada di daftar juga mengakhiri topik lama:
+            # tidak boleh diam-diam fallback ke model sebelumnya yang dikenal.
+            if found.model_key or found.mention:
+                last_model_index = position
+        if last_model_index is not None:
+            before = before[last_model_index:]
     after = [
         msg.text
         for msg in messages[index + 1 :]

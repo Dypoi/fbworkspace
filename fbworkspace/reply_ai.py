@@ -27,8 +27,14 @@ from typing import Callable
 
 from .drafts import contains_forbidden_claim
 from .normalize import collapse_ws
-from .pricelist import PriceEntry
-from .replies import LOCATION_TEXT, MAX_REPLY_CHARS, WHATSAPP_TEXT
+from .pricelist import PriceEntry, label_for
+from .replies import (
+    LOCATION_TEXT,
+    MAX_REPLY_CHARS,
+    WHATSAPP_TEXT,
+    detect_model,
+    detect_storage,
+)
 from .reply_style import _default_generate, _parse
 
 OPENING = "hai Dypoi"
@@ -82,22 +88,72 @@ def price_lines(entries: list[PriceEntry]) -> str:
     return "\n".join(lines)
 
 
+def _context_summary(
+    incoming: str, context: list[str] | None, entries: list[PriceEntry]
+) -> list[str]:
+    """Ringkas topik aktif untuk model, tanpa mengirim seluruh riwayat chat."""
+    model = detect_model(incoming)
+    model_line = ""
+    if not model.model_key:
+        for line in reversed(context or []):
+            candidate = detect_model(line)
+            if candidate.model_key or candidate.mention:
+                model = candidate
+                model_line = line
+                break
+
+    summary: list[str] = []
+    if model.model_key:
+        label = next(
+            (entry.label for entry in entries if entry.model_key == model.model_key),
+            label_for(model.model_key),
+        )
+        summary.append(f"Model aktif: {label}.")
+        variants = [entry for entry in entries if entry.model_key == model.model_key]
+        if variants:
+            prices = "; ".join(
+                f"{entry.storage}GB Rp {entry.price_text}"
+                for entry in variants
+                if entry.storage is not None
+            )
+            if prices:
+                summary.append(f"Harga/varian model ini: {prices}.")
+        storage = detect_storage(incoming)
+        if storage is None:
+            for line in reversed(context or []):
+                storage = detect_storage(line)
+                if storage is not None:
+                    break
+        if storage is not None:
+            summary.append(f"Storage yang sedang ditanyakan: {storage}GB.")
+    elif model.mention:
+        summary.append(f"Model disebut tetapi tidak ada di daftar: {model.mention}.")
+
+    # Hanya satu baris sebelumnya yang paling relevan, misalnya pertanyaan
+    # storage kita; jangan kirim delapan pesan mentah ke Ollama.
+    if context:
+        relevant = model_line or context[-1]
+        summary.append(f"Pesan relevan sebelumnya: {collapse_ws(relevant)[:160]}")
+    return summary
+
+
 def build_prompt(
     *,
     incoming: str,
     context: list[str] | None = None,
     entries: list[PriceEntry] | None = None,
 ) -> str:
+    price_entries = entries or []
     parts = [_SYSTEM, "", "DAFTAR HARGA (satu-satunya sumber harga):"]
-    parts.append(price_lines(entries or []) or "- (kosong)")
+    parts.append(price_lines(price_entries) or "- (kosong)")
     parts.append("")
     parts.append(f"LOKASI: {LOCATION_TEXT}")
     parts.append(f"WHATSAPP: {WHATSAPP_TEXT}")
-    if context:
+    summary = _context_summary(incoming, context, price_entries)
+    if summary:
         parts.append("")
-        parts.append("PESAN SEBELUMNYA:")
-        for line in context[-6:]:
-            parts.append(f"- {collapse_ws(line)[:160]}")
+        parts.append("RINGKASAN TOPIK AKTIF (gunakan hanya jika relevan):")
+        parts.extend(f"- {line}" for line in summary)
     parts.append("")
     parts.append(f"<<<PESAN PEMBELI>>>\n{collapse_ws(incoming)[:400]}\n<<<END>>>")
     parts.append("JSON:")

@@ -84,9 +84,14 @@ _ACK_RE = re.compile(
 # Sapaan murni: seluruh kalimat hanya sapaan (boleh diulang), tanpa pertanyaan.
 _GREETING_ONLY_RE = re.compile(
     r"^(?:(?:halo|hai|hi|hallo|assalamualaikum|salam|permisi|pagi|siang|malam|sore|"
-    r"kak|gan|bang|bg|bro|sis|min|semuanya)\b[\s,!.?]*)+$",
+    r"kak|gan|bang|bg|bro|sis|min|semuanya|dypoi)\b[\s,!.?]*)+$",
     re.I,
 )
+
+
+def is_greeting_only(text: str) -> bool:
+    """True bila pesan hanya sapaan (termasuk 'Hai Dypoi'), tanpa pertanyaan."""
+    return bool(_GREETING_ONLY_RE.fullmatch(" ".join((text or "").split())))
 
 _PHONE_RE = re.compile(r"\b(0|\+62|62)8\d{7,12}\b")
 _ASK_OUR_NUMBER_RE = re.compile(
@@ -201,6 +206,7 @@ def compose_reply(
     entries: list[PriceEntry],
     *,
     context: list[str] | None = None,
+    ambiguous_models: list[str] | None = None,
 ) -> ReplyPlan:
     """Ubah satu pesan masuk menjadi rencana balasan (tanpa mengirim).
 
@@ -221,6 +227,23 @@ def compose_reply(
     # pembeli cuma bertanya ketersediaan ("Iphone 11 ready?" -> "Ready kak").
     if storage is not None and "harga" not in intents:
         intents = tuple(sorted(set(intents) | {"harga"}))
+    # Bila ada beberapa model yang sama-sama menunggu dan pembeli bertanya tanpa
+    # menyebut model, jangan pilih salah satu dari riwayat: minta diperjelas.
+    if (
+        not model.model_key
+        and not model.mention
+        and ambiguous_models
+        and storage is None
+        and "harga" in intents
+    ):
+        names = ", ".join(dict.fromkeys(ambiguous_models))
+        return ReplyPlan(
+            action=ACTION_SEND,
+            body="iPhone yang mana kak?",
+            reason=f"model ambigu ({names})",
+            intents=intents,
+            storage=storage,
+        )
     # "64gb" saja (tanpa model): ini jawaban atas pertanyaan kita sendiri, mis.
     # kita tanya storage setelah "Iphone 11 ready?". Warisi model dari konteks,
     # lalu harga tetap diambil dari daftar harga.
@@ -374,11 +397,16 @@ def compose_reply(
                 storage=storage,
             )
 
+    if is_greeting_only(text):
+        return ReplyPlan(
+            action=ACTION_SEND,
+            body="Hai kak, ada yang bisa dibantu?",
+            reason="sapaan singkat",
+            intents=intents,
+        )
+
     if _ACK_RE.search(text):
         return ReplyPlan(reason="hanya sapaan/ucapan terima kasih", intents=intents)
-
-    if _GREETING_ONLY_RE.match(" ".join(text.split())):
-        return ReplyPlan(reason="hanya sapaan", intents=intents)
 
     return ReplyPlan(
         reason="di luar template",

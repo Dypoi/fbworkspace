@@ -1275,17 +1275,34 @@ def pick_answer_target(messages: list[dict], *, answered_texts: set[str] | None 
     if not lawan:
         return None
 
-    unread = [msg for msg in lawan if msg.get("unread")]
-    if unread:
-        return unread[-1]
+    try:
+        from ..replies import is_greeting_only
+    except Exception:  # noqa: BLE001
+        is_greeting_only = lambda _text: False  # noqa: E731
 
-    # Pesan masuk terbaru yang bukan sekadar sapaan. Urutan waktu penting: "128 kak"
-    # (jawaban pembeli) harus menang atas "Berapa ya" yang sudah kita tanggapi.
+    def answerable(msg: dict) -> bool:
+        text = str(msg.get("text") or "")
+        return (not is_small_talk(text) or is_greeting_only(text)) and not _looks_like_paragraph(text)
+
+    # Jika ada pertanyaan dan sapaan sekaligus, pertanyaan yang menang. Sapaan
+    # dipilih hanya bila memang tidak ada pesan substantif yang menunggu.
+    unread = [msg for msg in lawan if msg.get("unread")]
+    unread_substantive = [msg for msg in unread if answerable(msg) and not is_small_talk(str(msg.get("text") or ""))]
+    if unread_substantive:
+        return unread_substantive[-1]
+    unread_greetings = [msg for msg in unread if is_greeting_only(str(msg.get("text") or ""))]
+    if unread_greetings:
+        return unread_greetings[-1]
+
+    # Jika ada pertanyaan dan sapaan sekaligus, pertanyaan yang menang walau
+    # sapaan datang lebih belakangan. Sapaan dipilih hanya bila berdiri sendiri.
     for msg in reversed(lawan):
-        text = msg.get("text", "")
-        if is_small_talk(text) or _looks_like_paragraph(text):
-            continue
-        return msg
+        text = str(msg.get("text") or "")
+        if not is_small_talk(text) and not is_greeting_only(text) and not _looks_like_paragraph(text):
+            return msg
+    for msg in reversed(lawan):
+        if is_greeting_only(str(msg.get("text") or "")):
+            return msg
     return None
 
 
