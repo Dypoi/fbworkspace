@@ -561,3 +561,71 @@ class TestSingleMessage:
         page = _FakePageForTyping()
         WhatsAppWebSender._type_message(page, "cek facebook ada chat yang bukan ranah saya")
         assert [v for k, v in page.keyboard.events if k == "press"] == []
+
+
+class TestSilentWindow:
+    """WA berjalan di belakang layar; jendela hanya tampil saat perlu scan QR."""
+
+    def test_offscreen_context_when_not_headless(self, tmp_path):
+        sender = WhatsAppWebSender(profile_dir=tmp_path, phone="081513839973")
+        sender.headless = False
+        calls = {}
+
+        class Chromium:
+            def launch_persistent_context(self, profile, **kwargs):
+                calls.update(kwargs)
+                return object()
+
+        class Playwright:
+            chromium = Chromium()
+
+        sender._open_context(Playwright())
+        assert calls["headless"] is False
+        assert any("window-position=-2400" in a for a in calls["args"])
+
+    def test_headless_context_has_no_window(self, tmp_path):
+        sender = WhatsAppWebSender(profile_dir=tmp_path, phone="081513839973")
+        calls = {}
+
+        class Chromium:
+            def launch_persistent_context(self, profile, **kwargs):
+                calls.update(kwargs)
+                return object()
+
+        class Playwright:
+            chromium = Chromium()
+
+        sender._open_context(Playwright())
+        assert calls["headless"] is True
+
+    def test_login_page_is_detected(self):
+        from fbworkspace.notify import _wa_needs_login
+
+        class Page:
+            def query_selector(self, _sel):
+                return None
+
+            def inner_text(self, _sel):
+                return "Pindai kode QR untuk masuk ke WhatsApp"
+
+        assert _wa_needs_login(Page()) is True
+
+    def test_normal_page_needs_no_login(self):
+        from fbworkspace.notify import _wa_needs_login
+
+        class Page:
+            def query_selector(self, _sel):
+                return None
+
+            def inner_text(self, _sel):
+                return "Chat  Pak Bagus Sunaryo  halo"
+
+        assert _wa_needs_login(Page()) is False
+
+
+def test_default_mode_is_offscreen_not_headless(tmp_path, monkeypatch):
+    """Bawaan harus jendela luar layar: tidak mengganggu dan tidak ditolak WA."""
+    from fbworkspace.config import get_settings
+
+    monkeypatch.delenv("FBW_WA_HEADLESS", raising=False)
+    assert get_settings().wa_headless is False

@@ -1284,3 +1284,51 @@ def test_pick_target_prefers_unread_question_over_older():
     ]
     picked = pick_answer_target(messages)
     assert picked["text"] == "Berapa"
+
+
+class TestBackgroundWindow:
+    """Permintaan pengguna: semuanya di belakang layar, Chrome muncul hanya bila perlu."""
+
+    def test_background_uses_offscreen_window_not_headless(self):
+        from fbworkspace.browser.messenger import MessengerAdapter
+
+        adapter = MessengerAdapter(profile_dir="/tmp/prof", headless=False)
+        calls = {}
+
+        class Chromium:
+            def launch_persistent_context(self, profile, **kwargs):
+                calls.update(kwargs)
+                calls["profile"] = profile
+                return object()
+
+        class Playwright:
+            chromium = Chromium()
+
+        adapter._context(Playwright())
+        assert calls["headless"] is False
+        assert any("window-position=-2400" in a for a in calls["args"])
+
+    def test_headless_mode_stays_headless(self):
+        from fbworkspace.browser.messenger import MessengerAdapter
+
+        adapter = MessengerAdapter(profile_dir="/tmp/prof", headless=True)
+        calls = {}
+
+        class Chromium:
+            def launch_persistent_context(self, profile, **kwargs):
+                calls.update(kwargs)
+                return object()
+
+        class Playwright:
+            chromium = Chromium()
+
+        adapter._context(Playwright())
+        assert calls["headless"] is True
+        assert "args" not in calls
+
+    def test_reveal_only_in_window_mode(self):
+        from fbworkspace.browser.messenger import MessengerAdapter
+
+        hidden = MessengerAdapter(profile_dir="/tmp/prof", headless=True)
+        assert hidden.reveal_for_action(object(), "perlu_login") is False
+        assert hidden.revealed_reason == ""

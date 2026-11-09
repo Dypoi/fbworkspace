@@ -50,6 +50,24 @@ def _is_headless_rejection(note: str) -> bool:
     return "perbarui chrome" in text or "chrome 100" in text or "versi chrome" in text
 
 
+# Penanda bahwa WhatsApp Web meminta login/scan QR.
+_WA_LOGIN_WORDS = ("scan qr", "scan the qr", "pindai", "qr code", "log in", "masuk ke whatsapp")
+
+
+def _wa_needs_login(page) -> bool:
+    """True bila halaman menampilkan permintaan scan QR / login."""
+    try:
+        if page.query_selector(_WA_QR):
+            return True
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        body = " ".join(page.inner_text("body").split()).lower()
+    except Exception:  # noqa: BLE001
+        return False
+    return any(word in body for word in _WA_LOGIN_WORDS)
+
+
 _WA_BROWSER_BLOCK_WORDS = (
     "perbarui chrome",
     "whatsapp dapat digunakan di google chrome",
@@ -163,12 +181,37 @@ class WhatsAppWebSender:
             )
         return self._send_blocking(sync_playwright, text, attempt=attempt)
 
+    def _open_context(self, playwright):
+        """Buka profil WhatsApp.
+
+        - ``headless``: tanpa jendela sama sekali.
+        - selain itu: jendela **di luar layar** (tidak mengganggu, tidak ditolak
+          WhatsApp) — hanya dimunculkan bila ternyata perlu scan QR.
+        """
+        if self.headless:
+            return playwright.chromium.launch_persistent_context(
+                str(self.profile_dir), headless=True
+            )
+        return playwright.chromium.launch_persistent_context(
+            str(self.profile_dir),
+            headless=False,
+            args=["--window-position=-2400,-2400", "--window-size=1280,900"],
+        )
+
+    def _reveal(self, page) -> None:
+        """Tampilkan jendela ke tengah layar (dipakai hanya saat perlu scan QR)."""
+        try:
+            page.evaluate(
+                "() => { try { window.moveTo(80, 80); window.resizeTo(900, 760);"
+                " window.focus(); } catch (e) {} }"
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
     def _send_blocking(self, sync_playwright, text: str, attempt: int = 1) -> tuple[bool, str]:
         try:
             with sync_playwright() as p:
-                context = p.chromium.launch_persistent_context(
-                    str(self.profile_dir), headless=self.headless
-                )
+                context = self._open_context(p)
                 try:
                     page = context.pages[0] if context.pages else context.new_page()
                     page.goto(
@@ -181,8 +224,13 @@ class WhatsAppWebSender:
                         page.wait_for_load_state("networkidle", timeout=min(20_000, self.timeout_ms))
                     except Exception:  # noqa: BLE001
                         pass
-                    if page.query_selector(_WA_QR):
-                        return False, "WhatsApp Web belum login (perlu scan QR lewat scripts/wa_login.py)"
+                    if _wa_needs_login(page):
+                        # Sesi habis: INI saat jendela perlu terlihat.
+                        self._reveal(page)
+                        return False, (
+                            "WhatsApp Web meminta scan QR dan jendelanya sudah "
+                            "ditampilkan. Scan lewat scripts\\wa_login.py atau jendela itu."
+                        )
 
                     # WhatsApp kadang baru menyiapkan kotak tulis setelah sesi siap.
                     composer = None

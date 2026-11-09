@@ -126,9 +126,11 @@ def run(
     if adapter is None:
         adapter = MessengerAdapter(
             profile_dir=settings.browser_profile_dir,
-            # Worker balas DM berjalan TANPA jendela: tidak mengganggu Chrome Anda
-            # dan tidak berebut fokus. Untuk melihat halaman, pakai --show.
-            headless=True,
+            # Berjalan di belakang layar, TANPA mode headless: jendela Chromium
+            # diletakkan di luar area layar sehingga tidak mengganggu kerja Anda,
+            # dan hanya DIMUNCULKAN bila Facebook meminta login atau menampilkan
+            # halaman pembatasan (perlu scan/anti-bot).
+            headless=False,
             slow_mo_ms=1,
             chat_pin=getattr(settings, "chat_pin", ""),
             pin_auto=getattr(settings, "chat_pin_auto", True),
@@ -304,6 +306,15 @@ def _watch_cycle(
     message = ""
     if diagnostics:
         db.update_job(job_id, diagnostics_json=json.dumps(diagnostics, ensure_ascii=False))
+
+    if list_status in {"perlu_login", "pemblokiran"}:
+        if diagnostics.get("jendela"):
+            log(
+                "warning",
+                "Jendela Chromium DIMUNCULKAN karena Facebook meminta login/"
+                "verifikasi. Selesaikan di jendela itu; worker berhenti sampai "
+                "Anda menjalankannya lagi.",
+            )
 
     if list_status == "perlu_login":
         esc = build_login_escalation()

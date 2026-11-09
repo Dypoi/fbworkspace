@@ -31,6 +31,7 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 
 from ..chat_pin import decide as decide_pin
@@ -1356,6 +1357,9 @@ class MessengerAdapter:
         self.pin_status = "tidak diminta"
         # Peringatan bila profil tampaknya masih dipakai proses lain.
         self.lock_warning = ""
+        # Jendela dimunculkan untuk tindakan manusia: alasannya & waktunya.
+        self.revealed_reason = ""
+        self.last_revealed_at = ""
         # Cuplikan kandidat pesan yang dibuang/terpakai — untuk diagnosa.
         self.last_debug: dict = {}
         self.last_diagnostics: dict = {}
@@ -1440,11 +1444,49 @@ class MessengerAdapter:
         )
 
     def _context(self, playwright):
+        """Buka profil browser.
+
+        - ``headless=True``: tanpa jendela sama sekali.
+        - selain itu: jendela diletakkan **di luar layar** supaya tidak mengganggu
+          (permintaan pengguna: berjalan di belakang layar). Jendela hanya
+          dimunculkan bila Facebook meminta login / menampilkan halaman
+          pembatasan — lihat :meth:`reveal_for_action`.
+        """
+        if self.headless:
+            return playwright.chromium.launch_persistent_context(
+                str(self.profile_dir),
+                headless=True,
+                slow_mo=self.slow_mo_ms,
+            )
         return playwright.chromium.launch_persistent_context(
             str(self.profile_dir),
-            headless=self.headless,
+            headless=False,
             slow_mo=self.slow_mo_ms,
+            args=["--window-position=-2400,-2400", "--window-size=1280,900"],
         )
+
+    def reveal_for_action(self, page, reason: str = "") -> bool:
+        """Munculkan jendela karena perlu tindakan manusia (login/anti-bot).
+
+        Hanya dipanggil pada keadaan yang MEMANG butuh mata manusia — bukan pada
+        pembacaan rutin — supaya pekerjaan tetap berjalan di belakang layar.
+        """
+        if self.headless:
+            return False
+        try:
+            page.bring_to_front()
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            page.evaluate(
+                "() => { try { window.moveTo(60, 60); window.resizeTo(1000, 800);"
+                " window.focus(); } catch (e) {} }"
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        self.revealed_reason = reason
+        self.last_revealed_at = datetime.now().strftime("%H:%M:%S")
+        return True
 
     # --------------------------------------------------------------- penanda
     def _login_required(self, page) -> bool:
@@ -1636,6 +1678,7 @@ class MessengerAdapter:
 
             if self._login_required(page):
                 diagnostics["status"] = "perlu_login"
+                diagnostics["jendela"] = self.reveal_for_action(page, "perlu_login")
                 self.last_diagnostics = diagnostics
                 return ThreadList(status="perlu_login", diagnostics=diagnostics)
 
@@ -1643,6 +1686,7 @@ class MessengerAdapter:
             if word or self._blocked(page, diagnostics):
                 diagnostics["status"] = "pemblokiran"
                 diagnostics["reason"] = word or "halaman pembatasan"
+                diagnostics["jendela"] = self.reveal_for_action(page, "pemblokiran")
                 self.last_diagnostics = diagnostics
                 return ThreadList(status="pemblokiran", diagnostics=diagnostics)
 
