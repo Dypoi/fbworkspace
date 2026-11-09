@@ -346,7 +346,11 @@ periksa sendiri, bukan dipercaya begitu saja. Perintah `--show` juga membaca
 `aria-label` seperti `"Message sent 18:10 by Pak Bagus: Berapa ya"` dan
 `"… by You: Ready kak"`. Label itu menyebut pengirim dan isinya, sehingga worker
 tidak perlu menebak dari posisi gelembung — dan pesan yang elemennya tidak terlihat
-tetap terbaca. Penanda "belum dibaca" tetap yang paling diutamakan.
+tetap terbaca. Penanda "belum dibaca" tetap yang paling diutamakan. Worker memang
+membaca pesan terlihat untuk mengenali arah, deduplikasi, dan konteks; **membaca
+riwayat bukan pemicu balasan**. Tanpa pesan masuk yang belum ditangani, worker
+hanya lanjut memantau. Label UI seperti `Pak Bagus replied to you` juga dibuang,
+bukan dianggap sebagai teks pembeli.
 
 **Urutan pesan mengikuti urutan di layar.** Pesan diurutkan menurut urutan elemen
 (`${...}`) yang dikirim Facebook, bukan menurut koordinat layar — sehingga pesan

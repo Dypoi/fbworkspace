@@ -1609,6 +1609,12 @@ def test_general_chat_session_keeps_only_its_own_context_and_closes_on_buyer_mar
         ChatMessage("out1", "out", "jawaban 1"),
         _UnreadMsg("turn2", "in", "Ceritakan soal luar angkasa", unread=True),
     ]
+    # Simulasikan cursor ID yang tidak sejalan dengan urutan layar Facebook:
+    # sesi aktif harus tetap mengambil pesan baru, bukan kembali ke mode jualan.
+    current_session = db.get_ollama_chat_session(THREAD_KEY)
+    db.save_ollama_chat_session(
+        THREAD_KEY, start_message_id=999999, history=current_session["history"]
+    )
     run(job_id, adapter=adapter, sender=sender, database=db,
         settings=settings, sleep=lambda s: None)
     assert adapter.sent[-1] == (THREAD_URL, "jawaban 2")

@@ -748,8 +748,16 @@ class TestRealPageReport:
     def test_time_and_date_noise(self):
         from fbworkspace.browser.messenger import _is_ui_noise
 
-        for noise in ("16:50", "8/11/2026 16.50", "Enter, Conversation details",
-                      "Message sent 16:50 by You: coba", "kemarin 21.04", "· 1h"):
+        for noise in (
+            "16:50",
+            "8/11/2026 16.50",
+            "Enter, Conversation details",
+            "Message sent 16:50 by You: coba",
+            "Pak Bagus replied to you",
+            "Pak Bagus membalas Anda",
+            "kemarin 21.04",
+            "· 1h",
+        ):
             assert _is_ui_noise(noise) is True, noise
 
     def test_real_messages_are_not_noise(self):

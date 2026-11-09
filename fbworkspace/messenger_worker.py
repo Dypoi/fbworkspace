@@ -567,10 +567,10 @@ def _handle_thread(
     session = db.get_ollama_chat_session(thread.key)
     general_target = None
     if session.get("active"):
-        start_id = int(session.get("start_message_id") or 0)
-        general_pending = [row for row in pending if int(row.get("id") or 0) > start_id]
-        if general_pending:
-            general_target = general_pending[0]
+        # Selama sesi umum aktif, semua pesan masuk yang belum ditangani adalah
+        # bagian sesi itu. Jangan jatuh kembali ke mode jualan hanya karena ID DB
+        # atau urutan pesan lama tidak berurutan setelah pembacaan ulang Facebook.
+        general_target = pending[0]
     else:
         general_target = next(
             (row for row in pending if _starts_ollama_chat(str(row.get("text") or ""))),
@@ -848,7 +848,7 @@ def _handle_ollama_chat(
     incoming = _without_ollama_chat_end(original) if closing else original
     history = list(session.get("history") or []) if not starting else []
     start_message_id = int(
-        target.get("id") or session.get("start_message_id") or 0
+        session.get("start_message_id") or target.get("id") or 0
     )
     message_key = str(target.get("msg_key") or "")
 

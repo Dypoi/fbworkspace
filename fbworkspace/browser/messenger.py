@@ -464,6 +464,8 @@ _NOISE_PATTERNS = (
     re.compile(r"^(enter|masuk|tekan enter)[,\s].*$"),          # "Enter, Conversation details"
     re.compile(r"^message sent\b.*$"),
     re.compile(r"^pesan terkirim\b.*$"),
+    # Label kutipan/reply Messenger, bukan teks yang ditulis pembeli.
+    re.compile(r"^.{1,80}\s+(?:replied to you|membalas anda|membalas pesan anda)$", re.I),
     re.compile(r"\bend-to-end encryption\b"),
     re.compile(r"\bterenkripsi\b.*\bpanggilan\b"),
     re.compile(r"\bonly people in this chat can read\b"),
