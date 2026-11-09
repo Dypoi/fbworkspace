@@ -172,7 +172,7 @@ fbworkspace/
 │   └── check_extraction_dom.cjs # uji logika ekstraksi DOM (Node + jsdom, opsional)
 ├── data/demo_posts_DEMO.json   # data sintetis berlabel DEMO
 ├── docs/                       # instalasi, POC, batasan, Git, testing
-├── tests/                      # 711 tes otomatis
+├── tests/                      # 717 tes otomatis
 ├── requirements.txt
 ├── .env.example
 └── .gitignore
@@ -352,6 +352,11 @@ tetap terbaca. Penanda "belum dibaca" tetap yang paling diutamakan.
 (`${...}`) yang dikirim Facebook, bukan menurut koordinat layar — sehingga pesan
 terbaru (yang kadang belum punya ukuran/posisi) tetap dianggap terbaru.
 
+**WhatsApp mengingat cara yang berhasil.** Setelah `notify --test --show` berhasil,
+`data/wa_mode.json` mencatat `preferred: visible`, sehingga worker langsung
+memakai jendela terlihat — tidak lagi mencoba mode tanpa jendela yang sudah
+terbukti ditolak. Log tidak lagi memuat nomor telepon/isi pesan dalam URL.
+
 **Balasan tidak terkirim dua kali.** Identitas pesan diturunkan dari isi dan
 arahnya, bukan dari nomor urutnya di halaman — sehingga munculnya pesan baru
 tidak membuat balasan lama dianggap pesan baru.
@@ -502,7 +507,7 @@ Penghapusan data tersedia di tab **Pengaturan → 💾 Data** (postingan, log, p
 .\.venv\Scripts\python.exe -m pytest
 ```
 
-Hasil terakhir di lingkungan pengembangan: **711 tes lulus** (termasuk smoke test
+Hasil terakhir di lingkungan pengembangan: **717 tes lulus** (termasuk smoke test
 dashboard Streamlit untuk 4 tab, segmentasi hasil, filter ulang, daftar harga,
 penyusun balasan, worker balas DM dengan adapter palsu, format notifikasi
 WhatsApp, dan variasi AI yang menolak perubahan fakta), `ruff check` bersih. Detail: **[docs/TESTING.md](docs/TESTING.md)**.

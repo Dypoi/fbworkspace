@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 from fbworkspace.notify import (
     HEADER,
     STOP_HEADER,
@@ -418,3 +420,85 @@ class TestRemedyFor:
         from fbworkspace.notify import remedy_for
 
         assert "scan QR" in remedy_for("perlu scan QR")
+
+
+class TestPreferredMode:
+    """Bukti 9 Nov: `--test --show` berhasil, worker tetap mencoba headless dulu."""
+
+    def _sender(self, tmp_path, probe=None):
+        from fbworkspace.notify import WhatsAppWebSender
+
+        profile = tmp_path / "wa_profile"
+        profile.mkdir(parents=True, exist_ok=True)
+        if probe is not None:
+            (tmp_path / "wa_mode.json").write_text(json.dumps(probe), encoding="utf-8")
+        return WhatsAppWebSender(profile_dir=profile, phone="081513839973")
+
+    def test_visible_remembered_after_success(self, tmp_path, monkeypatch):
+        sender = self._sender(tmp_path)
+        monkeypatch.setattr(
+            sender, "_send_blocking", lambda pw, text, attempt=1: (True, "terkirim")
+        )
+        sender.headless = False
+        ok, _ = sender.send_reliable("halo")
+        assert ok is True
+
+        data = json.loads((tmp_path / "wa_mode.json").read_text(encoding="utf-8"))
+        assert data["preferred"] == "visible"
+        assert data["headless_ok"] is False
+        assert data["probe_times"] == 1
+        # pengiriman berikutnya langsung memakai jendela terlihat
+        assert sender.prefer_visible() is True
+
+    def test_headless_preferred_when_it_works(self, tmp_path, monkeypatch):
+        sender = self._sender(tmp_path, {"preferred": "headless", "headless_ok": True})
+        assert sender.prefer_visible() is False
+
+    def test_unknown_state_is_optimistic(self, tmp_path):
+        assert self._sender(tmp_path).prefer_visible() is False
+
+
+class TestHonestMessages:
+    def test_headless_failure_names_headless_first(self):
+        from fbworkspace.notify import WhatsAppWebSender
+
+        sender = WhatsAppWebSender(profile_dir="/tmp/wa", phone="081513839973")
+        assert sender.headless is True
+        # bukti dari mesin pengguna 9 Nov
+        note = (
+            "mode tanpa jendela (headless) ditolak WhatsApp Web di laptop ini"
+        )
+        assert "headless" in note
+        assert "--setup-profile" not in note
+
+    def test_diagnose_hides_phone_and_text(self):
+        from fbworkspace.notify import WhatsAppWebSender
+
+        sender = WhatsAppWebSender(profile_dir="/tmp/wa", phone="081513839973")
+
+        class Page:
+            url = "https://web.whatsapp.com/send?phone=6281513839973&text=rahasia"
+            title = "WhatsApp"
+
+            def inner_text(self, _sel):
+                return "halo"
+
+        detail = sender._diagnose(Page())
+        assert "6281513839973" not in detail
+        assert "rahasia" not in detail
+        assert "web.whatsapp.com" in detail
+
+
+def test_worker_uses_remembered_visible_mode(tmp_path):
+    """Setelah `--test --show` berhasil, worker tidak boleh mencoba headless dulu."""
+    from fbworkspace.notify import WhatsAppWebSender
+
+    profile = tmp_path / "wa_profile"
+    profile.mkdir(parents=True)
+    (tmp_path / "wa_mode.json").write_text(
+        json.dumps({"preferred": "visible", "headless_ok": False}), encoding="utf-8"
+    )
+    sender = WhatsAppWebSender(profile_dir=profile, phone="081513839973")
+    # worker: dibuat headless=True, lalu menyesuaikan
+    sender.headless = True
+    assert sender.prefer_visible() is True

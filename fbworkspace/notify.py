@@ -44,6 +44,12 @@ _WA_COMPOSER = (
 )
 _WA_QR = 'canvas[aria-label*="Scan"], canvas[aria-label*="scan"]'
 # Halaman error Chrome yang muncul bila WhatsApp Web menolak versi Chrome.
+def _is_headless_rejection(note: str) -> bool:
+    """True bila kegagalan berasal dari pesan \"perbarui Chrome\" WhatsApp Web."""
+    text = str(note or "").lower()
+    return "perbarui chrome" in text or "chrome 100" in text or "versi chrome" in text
+
+
 _WA_BROWSER_BLOCK_WORDS = (
     "perbarui chrome",
     "whatsapp dapat digunakan di google chrome",
@@ -189,11 +195,20 @@ class WhatsAppWebSender:
                         blocked = self._browser_blocked(page)
                         detail = self._diagnose(page)
                         if blocked:
+                            if self.headless:
+                                return False, (
+                                    "mode tanpa jendela (headless) ditolak WhatsApp Web di laptop "
+                                    "ini (\"perbarui Chrome\"). Solusinya: pakai jendela terlihat — "
+                                    "tambahkan FBW_WA_HEADLESS=false ke .env, atau jalankan "
+                                    ".\\.venv\\Scripts\\python.exe -m fbworkspace.notify --test --show. "
+                                    f"Detail: {detail}"
+                                )
                             return False, (
-                                "WhatsApp Web menolak versi Chrome bawaan Playwright. "
-                                "Jalankan sekali di PowerShell: "
-                                "\\.\\venv\\Scripts\\python.exe -m fbworkspace.notify --setup-profile "
-                                f"(lalu scan QR). Detail: {detail}"
+                                "WhatsApp Web menolak browser yang dipakai (\"perbarui Chrome\") "
+                                "meski jendela terlihat. Jalankan "
+                                ".\\.venv\\Scripts\\python.exe -m fbworkspace.notify --compare "
+                                "lalu kirimkan hasilnya. "
+                                f"Detail: {detail}"
                             )
                         return False, (
                             f"kotak tulis WhatsApp tidak ditemukan "
@@ -308,6 +323,7 @@ class WhatsAppWebSender:
 
     def _save_probe(self, **values) -> None:
         data = self._load_probe()
+        data["probe_times"] = int(data.get("probe_times") or 0) + 1
         data.update(values)
         data["checked_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
         try:
@@ -316,6 +332,45 @@ class WhatsAppWebSender:
                 json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
             )
         except OSError:
+            pass
+
+    def preferred_mode(self) -> str:
+        """Mode pengiriman yang terakhir TERBUKTI berhasil di laptop ini."""
+        return str(self._load_probe().get("preferred") or "")
+
+    def prefer_visible(self) -> bool:
+        """Pakai jendela terlihat lebih dulu?
+
+        Dua sumber bukti, yang terbaru menang:
+        - ``preferred``: mode yang terakhir berhasil dipakai;
+        - ``probe_times``: waktu percobaan headless yang gagal.
+        Kejadian nyata 9 Nov: ``--test --show`` berhasil, worker tetap headless
+        karena yang diingat hanya "headless gagal", jadi percobaan pertama selalu
+        membuang waktu.
+        """
+        probe = self._load_probe()
+        if not self.headless:
+            return True
+        preferred = str(probe.get("preferred") or "")
+        if preferred == "visible":
+            return True
+        if preferred == "headless":
+            return False
+        return probe.get("headless_ok", True) is False
+
+    def _remember_success(self, visible: bool, notes: list[str]) -> None:
+        """Catat mode yang berhasil, supaya pengiriman berikutnya langsung tepat."""
+        mode = "visible" if visible else "headless"
+        fields: dict[str, object] = {"preferred": mode}
+        if visible:
+            fields["headless_ok"] = False
+        else:
+            fields["headless_ok"] = True
+        if notes:
+            fields["reason"] = notes[0][:180]
+        try:
+            self._save_probe(**fields)
+        except Exception:  # noqa: BLE001
             pass
 
     def headless_works(self) -> bool:
@@ -340,7 +395,7 @@ class WhatsAppWebSender:
         tries = max(1, int(tries))
         # Sudah terbukti gagal headless di laptop ini (mis. "perbarui Chrome"):
         # langsung pakai jendela terlihat supaya notifikasi tidak terlambat.
-        start_visible = not self.headless_works() or not self.headless
+        start_visible = self.prefer_visible() or not self.headless
         for attempt in range(1, tries + 1):
             visible = start_visible or attempt >= 2
             sender = (
@@ -356,12 +411,13 @@ class WhatsAppWebSender:
             if ok:
                 if attempt > 1:
                     note = f"{note} (berhasil pada percobaan {attempt})"
-                if attempt >= 2 and not start_visible:
-                    self._save_probe(headless_ok=False, reason=notes[0][:180])
+                self._remember_success(visible, notes)
                 return True, note
             notes.append(f"coba {attempt}: {note}")
-            if not sender.headless and attempt >= 2 and "kotak tulis" in note.lower():
-                self._save_probe(headless_ok=False, reason=note[:180])
+            if visible and _is_headless_rejection(note):
+                # Bukti kuat: tanpa jendela ditolak, dengan jendela pun ditolak juga
+                # bukan karena mode -> ini masalah browser, bukan mode.
+                self._save_probe(headless_ok=True, reason=note[:180])
             if "belum login" in note.lower() or "scan qr" in note.lower():
                 break  # percobaan ulang tidak akan menolong
         return False, " | ".join(notes)[:600]
@@ -371,7 +427,16 @@ class WhatsAppWebSender:
         """Ringkasan keadaan halaman WhatsApp untuk laporan kegagalan."""
         parts = []
         try:
-            parts.append(f"url={page.url[:100]}")
+            # Jangan catat URL penuh: berisi nomor telepon + teks pesan
+            # (&text=...), dan perender log mengubahnya jadi tautan markdown.
+            from urllib.parse import urlsplit
+
+            split = urlsplit(page.url)
+            parts.append(f"url={split.scheme}://{split.netloc}{split.path[:40]}")
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            parts.append(f"jumlah_karakter_teks={len(page.inner_text('body'))}")
         except Exception:  # noqa: BLE001
             pass
         try:
@@ -522,7 +587,11 @@ def main(argv: list[str] | None = None) -> int:
         ok, note = sender.inspect(headless=not args.show)
         print(json.dumps({"ok": ok, "keterangan": note}, ensure_ascii=False, indent=2))
         return 0 if ok else 1
-    ok, note = sender.send(args.text, blocking=True)
+    ok, note = sender.send(args.text, blocking=True, attempt=2 if args.show else 1)
+    if ok:
+        # Ingat mode yang berhasil: perintah --test --show adalah cara pengguna
+        # membuktikan WA jalan, dan worker harus memakai mode yang sama.
+        sender._remember_success(not sender.headless, [])
     print(json.dumps({"ok": ok, "keterangan": note}, ensure_ascii=False, indent=2))
     if not ok:
         print("\n" + remedy_for(note))
