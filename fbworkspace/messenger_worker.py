@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import time
 import traceback
@@ -94,11 +95,9 @@ def run(
     max_cycles = max(0, int(config.get("max_cycles") or 0))  # 0 = tanpa batas
     # Mode "AI menulis sendiri": hanya bila diminta lewat job atau .env.
     ai_freeform = bool(config.get("ai_freeform", settings.messenger_ai_freeform))
-    style_config = (
-        OllamaConfig.from_settings(settings)
-        if (ai_style or ai_freeform) and getattr(settings, "ollama_enabled", False)
-        else None
-    )
+    ollama_enabled = bool(getattr(settings, "ollama_enabled", False))
+    general_chat_config = OllamaConfig.from_settings(settings) if ollama_enabled else None
+    style_config = general_chat_config if (ai_style or ai_freeform) else None
     ai_wrap = (settings.ai_prefix, settings.ai_suffix)
     ai_fallback_template = bool(
         config.get("ai_fallback_template", settings.messenger_ai_fallback_template)
@@ -196,6 +195,7 @@ def run(
                 gap=gap,
                 cooldown=cooldown,
                 style_config=style_config,
+                general_chat_config=general_chat_config,
                 ai_freeform=ai_freeform,
                 ai_wrap=ai_wrap,
                 ai_fallback_template=ai_fallback_template,
@@ -303,6 +303,7 @@ def _watch_cycle(
     gap: int,
     cooldown: int,
     style_config,
+    general_chat_config=None,
     log,
     sleep,
     push,
@@ -400,6 +401,7 @@ def _watch_cycle(
             sleep=sleep,
             entries=entries,
             style_config=style_config,
+            general_chat_config=general_chat_config,
             cooldown=cooldown,
             ai_freeform=ai_freeform,
             ai_wrap=ai_wrap,
@@ -472,6 +474,7 @@ def _handle_thread(
     sleep,
     entries,
     style_config=None,
+    general_chat_config=None,
     cooldown: int = 0,
     ai_freeform: bool = False,
     ai_wrap: tuple[str, str] = ("", ""),
@@ -558,6 +561,40 @@ def _handle_thread(
         # beri tahu pemilik alih-alih diam.
         _maybe_flag_lost_question(db, job_id, thread, counters, sender, dry_run, log)
         return new_messages
+
+    # Sesi obrolan umum Ollama punya pemicu dan riwayat terpisah dari mode jualan.
+    # Saat sesi aktif, proses pesan setelah pemicu secara kronologis (tertua dulu).
+    session = db.get_ollama_chat_session(thread.key)
+    general_target = None
+    if session.get("active"):
+        start_id = int(session.get("start_message_id") or 0)
+        general_pending = [row for row in pending if int(row.get("id") or 0) > start_id]
+        if general_pending:
+            general_target = general_pending[0]
+    else:
+        general_target = next(
+            (row for row in pending if _starts_ollama_chat(str(row.get("text") or ""))),
+            None,
+        )
+    if general_target is not None:
+        return _handle_ollama_chat(
+            db=db,
+            adapter=adapter,
+            sender=sender,
+            thread=thread,
+            job_id=job_id,
+            target=general_target,
+            session=session,
+            starting=not bool(session.get("active")),
+            new_messages=new_messages,
+            counters=counters,
+            dry_run=dry_run,
+            max_replies=max_replies,
+            log=log,
+            sleep=sleep,
+            gap=gap,
+            config=general_chat_config,
+        )
 
     target = _pick_target(read, pending)
     latest = pending[-1] if target is None else target
@@ -762,6 +799,172 @@ def _handle_thread(
 
     note = "dibalas" if sent_text else ("diam" if not plan.should_send else "gagal_kirim")
     db.mark_answered_many(thread.key, keys, sent_text, note=note)
+    return new_messages
+
+
+_OLLAMA_CHAT_START_RE = re.compile(r"^\s*hai\s+dypoi\b", re.IGNORECASE)
+_OLLAMA_CHAT_END_RE = re.compile(r"\bterimakasih\s+dypoi[\s.!?]*$", re.IGNORECASE)
+
+
+def _starts_ollama_chat(text: str) -> bool:
+    """Pemicu sesi umum hanya berlaku bila ada di awal pesan masuk."""
+    return bool(_OLLAMA_CHAT_START_RE.search(text or ""))
+
+
+def _ends_ollama_chat(text: str) -> bool:
+    """Pembeli mengakhiri sesi dengan frasa penutup di akhir pesannya."""
+    return bool(_OLLAMA_CHAT_END_RE.search((text or "").strip()))
+
+
+def _without_ollama_chat_end(text: str) -> str:
+    return _OLLAMA_CHAT_END_RE.sub("", (text or "").strip()).strip()
+
+
+def _handle_ollama_chat(
+    *,
+    db,
+    adapter,
+    sender,
+    thread,
+    job_id: int,
+    target: dict,
+    session: dict,
+    starting: bool,
+    new_messages: int,
+    counters: dict,
+    dry_run: bool,
+    max_replies: int,
+    log,
+    sleep,
+    gap: int,
+    config,
+) -> int:
+    """Tangani satu pesan dalam sesi Ollama umum, tanpa konteks mode jualan."""
+    from .notify import Escalation
+    from .reply_ai import generate_general_reply
+
+    original = str(target.get("text") or "")
+    closing = _ends_ollama_chat(original)
+    incoming = _without_ollama_chat_end(original) if closing else original
+    history = list(session.get("history") or []) if not starting else []
+    start_message_id = int(
+        target.get("id") or session.get("start_message_id") or 0
+    )
+    message_key = str(target.get("msg_key") or "")
+
+    log(
+        "info",
+        f"[{thread.name}] sesi Ollama umum {'dimulai' if starting else 'aktif'} "
+        "(tanpa konteks bisnis).",
+    )
+
+    if closing and not incoming:
+        if dry_run:
+            counters["dry_run"] += 1
+            log("info", f"[{thread.name}] uji kering: penutup sesi Ollama tidak diterapkan.")
+            return new_messages
+        db.close_ollama_chat_session(thread.key)
+        db.mark_answered_many(
+            thread.key, [message_key], "", note="sesi Ollama ditutup pembeli"
+        )
+        counters["silent"] += 1
+        log("info", f"[{thread.name}] sesi Ollama umum ditutup oleh pembeli.")
+        return new_messages
+
+    if max_replies > 0 and counters["replies"] >= max_replies:
+        counters["skipped_limit"] += 1
+        log("warning", f"[{thread.name}] sesi Ollama menunggu: batas balasan job tercapai.")
+        return new_messages
+
+    result = generate_general_reply(incoming=incoming, history=history, config=config)
+    user_turn = {"role": "user", "content": incoming[:2000]}
+    updated_history = history + [user_turn]
+    if result.ok:
+        log("info", f"[{thread.name}] balasan Ollama umum: {result.text[:160]}")
+        if dry_run:
+            counters["dry_run"] += 1
+            log(
+                "info",
+                f"[{thread.name}] uji kering, obrolan umum tidak dikirim: "
+                f"{result.text[:120]!r}",
+            )
+            return new_messages
+        ok, note = adapter.send_message(thread.url, result.text)
+        if not ok:
+            counters["errors"] += 1
+            log("error", f"[{thread.name}] gagal mengirim balasan Ollama umum: {note}")
+            db.mark_answered_many(
+                thread.key, [message_key], "", note="gagal mengirim balasan Ollama"
+            )
+            if closing:
+                db.close_ollama_chat_session(thread.key)
+            else:
+                db.save_ollama_chat_session(
+                    thread.key,
+                    start_message_id=start_message_id,
+                    history=updated_history,
+                )
+            return new_messages
+
+        counters["replies"] += 1
+        db.record_message(
+            thread.key,
+            f"out:{message_key}",
+            direction="out",
+            text=result.text,
+        )
+        updated_history.append({"role": "assistant", "content": result.text[:2000]})
+        if closing:
+            db.close_ollama_chat_session(thread.key)
+            log("info", f"[{thread.name}] sesi Ollama umum ditutup setelah balasan terakhir.")
+        else:
+            db.save_ollama_chat_session(
+                thread.key,
+                start_message_id=start_message_id,
+                history=updated_history,
+            )
+        db.mark_answered_many(thread.key, [message_key], result.text, note="dibalas")
+        log(
+            "info",
+            f"[{thread.name}] balasan Ollama terkirim: {result.text.replace(chr(10), ' / ')[:140]}",
+        )
+        if gap:
+            sleep(gap)
+        return new_messages
+
+    counters["ai_failed"] = int(counters.get("ai_failed") or 0) + 1
+    log(
+        "warning",
+        f"[{thread.name}] Ollama umum gagal ({result.reason}); tidak membalas pembeli, "
+        "mengirim notifikasi WhatsApp.",
+    )
+    _escalate(
+        db,
+        job_id,
+        thread,
+        Escalation(
+            chat_name=thread.name,
+            message=original,
+            reason=f"Ollama gagal di sesi obrolan umum: {result.reason}",
+            url=thread.url,
+            when=datetime.now().strftime("%d/%m %H:%M"),
+        ),
+        counters,
+        sender,
+        dry_run,
+        log,
+    )
+    if dry_run:
+        return new_messages
+    if closing:
+        db.close_ollama_chat_session(thread.key)
+    else:
+        db.save_ollama_chat_session(
+            thread.key,
+            start_message_id=start_message_id,
+            history=updated_history,
+        )
+    db.mark_answered_many(thread.key, [message_key], "", note="Ollama gagal")
     return new_messages
 
 

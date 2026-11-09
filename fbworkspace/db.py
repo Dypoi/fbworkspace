@@ -148,6 +148,15 @@ CREATE TABLE IF NOT EXISTS chat_messages (
 );
 CREATE INDEX IF NOT EXISTS idx_chat_messages_thread ON chat_messages(thread_key, id);
 
+-- Riwayat sesi obrolan umum Ollama terpisah dari percakapan bisnis/penjualan.
+CREATE TABLE IF NOT EXISTS ollama_chat_sessions (
+    thread_key         TEXT PRIMARY KEY,
+    active             INTEGER NOT NULL DEFAULT 0,
+    start_message_id   INTEGER,
+    history_json       TEXT NOT NULL DEFAULT '[]',
+    updated_at         TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS escalations (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     created_at TEXT NOT NULL,
@@ -676,6 +685,69 @@ class Database:
             row = conn.execute("SELECT * FROM chats WHERE thread_key=?", (thread_key,)).fetchone()
         return dict(row) if row else None
 
+    def get_ollama_chat_session(self, thread_key: str) -> dict[str, Any]:
+        """Ambil sesi chat umum saja; tidak pernah mencampur riwayat bisnis."""
+        with self.conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM ollama_chat_sessions WHERE thread_key=?", (thread_key,)
+            ).fetchone()
+        if row is None:
+            return {"active": False, "start_message_id": None, "history": []}
+        try:
+            history = json.loads(row["history_json"] or "[]")
+        except (TypeError, json.JSONDecodeError):
+            history = []
+        if not isinstance(history, list):
+            history = []
+        history = [
+            {"role": item["role"], "content": str(item["content"])}
+            for item in history
+            if isinstance(item, dict)
+            and item.get("role") in {"user", "assistant"}
+            and isinstance(item.get("content"), str)
+        ]
+        return {
+            "active": bool(row["active"]),
+            "start_message_id": row["start_message_id"],
+            "history": history,
+        }
+
+    def save_ollama_chat_session(
+        self,
+        thread_key: str,
+        *,
+        start_message_id: int,
+        history: list[dict[str, str]],
+    ) -> None:
+        """Simpan sesi aktif dan riwayatnya yang terisolasi dari mode jualan."""
+        now = utcnow_iso()
+        with self.conn() as conn:
+            conn.execute(
+                "INSERT INTO ollama_chat_sessions "
+                "(thread_key, active, start_message_id, history_json, updated_at) "
+                "VALUES(?, 1, ?, ?, ?) ON CONFLICT(thread_key) DO UPDATE SET "
+                "active=1, start_message_id=excluded.start_message_id, "
+                "history_json=excluded.history_json, updated_at=excluded.updated_at",
+                (
+                    thread_key,
+                    int(start_message_id),
+                    json.dumps(history[-24:], ensure_ascii=False),
+                    now,
+                ),
+            )
+
+    def close_ollama_chat_session(self, thread_key: str) -> None:
+        """Akhiri sesi dan hapus riwayat umum agar sesi berikutnya mulai bersih."""
+        now = utcnow_iso()
+        with self.conn() as conn:
+            conn.execute(
+                "INSERT INTO ollama_chat_sessions "
+                "(thread_key, active, start_message_id, history_json, updated_at) "
+                "VALUES(?, 0, NULL, '[]', ?) ON CONFLICT(thread_key) DO UPDATE SET "
+                "active=0, start_message_id=NULL, history_json='[]', updated_at=excluded.updated_at",
+                (thread_key, now),
+            )
+
     def record_message(
         self,
         thread_key: str,
@@ -949,6 +1021,7 @@ class Database:
         with self.conn() as conn:
             conn.execute("DELETE FROM chat_messages")
             conn.execute("DELETE FROM chats")
+            conn.execute("DELETE FROM ollama_chat_sessions")
             conn.execute("DELETE FROM escalations")
 
     # ------------------------------------------------------------------ stats

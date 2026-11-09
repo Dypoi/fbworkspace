@@ -21,12 +21,15 @@ Semua ini tidak mengubah risiko harga: model boleh menyebut harga, jadi
 
 from __future__ import annotations
 
+import json
 import re
+import urllib.request
 from dataclasses import dataclass, field
 from typing import Callable
 
 from .drafts import contains_forbidden_claim
 from .normalize import collapse_ws
+from .ollama_client import is_local_endpoint
 from .pricelist import PriceEntry, label_for
 from .replies import (
     LOCATION_TEXT,
@@ -61,13 +64,22 @@ _EXTRA_BANNED = ("garansi", "toko", "official store", "gratis ongkir")
 
 @dataclass(frozen=True)
 class AiReply:
-    """Hasil satu percobaan menulis balasan dengan AI."""
+    """Hasil satu percobaan menulis balasan bisnis dengan AI."""
 
     text: str
     ok: bool
     reason: str = ""
     raw_body: str = ""
     notes: tuple[str, ...] = field(default_factory=tuple)
+
+
+@dataclass(frozen=True)
+class GeneralChatReply:
+    """Hasil sesi obrolan umum tanpa aturan atau konteks bisnis."""
+
+    text: str
+    ok: bool
+    reason: str = ""
 
 
 def wrap(body: str) -> str:
@@ -223,6 +235,82 @@ def generate_reply(
             return AiReply("", False, f"harga di luar daftar: {', '.join(luar)}")
 
     return AiReply(wrap(body), True, "balasan AI", raw_body=body)
+
+
+_GENERAL_SYSTEM = (
+    "Kamu adalah asisten percakapan umum yang sedang mengobrol langsung dengan pengguna.\n"
+    "Gunakan bahasa yang dipakai pengguna, biasanya bahasa Indonesia. Jawab pertanyaan "
+    "tentang topik apa pun secara alami dan membantu.\n"
+    "Ini BUKAN percakapan toko/penjualan: jangan membawa harga, stok, lokasi, nomor "
+    "WhatsApp, atau informasi bisnis kecuali pengguna sendiri menyebutkannya dalam "
+    "sesi umum ini. Jangan mengaku bisa memakai browser, mengakses komputer, atau "
+    "melakukan tindakan di luar percakapan.\n"
+    'Kembalikan hanya JSON: {"balasan": "teks jawaban"}'
+)
+
+GENERAL_HISTORY_LIMIT = 12
+GENERAL_REPLY_MAX_CHARS = 2000
+
+
+def build_general_prompt(
+    *, incoming: str, history: list[dict[str, str]] | None = None
+) -> str:
+    """Prompt sesi umum. Tidak menerima pricelist atau riwayat mode jualan."""
+    parts = [_GENERAL_SYSTEM, "", "RIWAYAT SESI OLLAMA INI SAJA:"]
+    for item in (history or [])[-GENERAL_HISTORY_LIMIT:]:
+        role = "Pembeli" if item.get("role") == "user" else "Ollama"
+        content = collapse_ws(str(item.get("content") or ""))[:1600]
+        if content:
+            parts.append(f"{role}: {content}")
+    parts.extend(("", f"Pesan baru: {collapse_ws(incoming)[:2000]}", "JSON:"))
+    return "\n".join(parts)
+
+
+def _default_general_generate(config, prompt: str) -> str:
+    """Generate percakapan umum dengan kuota token chat, bukan kuota balasan template."""
+    payload = {
+        "model": config.model,
+        "prompt": prompt,
+        "stream": False,
+        "format": "json",
+        "think": bool(getattr(config, "think", False)),
+        "options": {"temperature": 0.7, "num_predict": 512, "num_ctx": 4096},
+    }
+    request = urllib.request.Request(
+        f"{config.base_url.rstrip('/')}/api/generate",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=float(config.timeout)) as response:
+        data = json.loads(response.read().decode("utf-8"))
+    return str(data.get("response", ""))
+
+
+def generate_general_reply(
+    *,
+    incoming: str,
+    history: list[dict[str, str]] | None = None,
+    config=None,
+    generate: Callable[[object, str], str] | None = None,
+) -> GeneralChatReply:
+    """Balas sesi umum Ollama; sengaja melewati semua validasi/konteks bisnis."""
+    if config is None:
+        return GeneralChatReply("", False, "Ollama tidak aktif")
+    if not is_local_endpoint(str(getattr(config, "base_url", ""))):
+        return GeneralChatReply("", False, "Ollama bukan localhost")
+    try:
+        raw = (generate or _default_general_generate)(
+            config, build_general_prompt(incoming=incoming, history=history)
+        )
+    except Exception as exc:  # noqa: BLE001 - kegagalan AI dilaporkan, bukan matikan worker
+        return GeneralChatReply("", False, f"Ollama gagal: {exc.__class__.__name__}")
+    body = collapse_ws(_parse(raw)).strip()
+    if not body:
+        return GeneralChatReply("", False, "balasan Ollama umum tidak terbaca")
+    if len(body) > GENERAL_REPLY_MAX_CHARS:
+        body = body[:GENERAL_REPLY_MAX_CHARS].rsplit(" ", 1)[0]
+    return GeneralChatReply(body, True, "balasan umum Ollama")
 
 
 def _unknown_prices(text: str, allowed: set[int]) -> list[str]:

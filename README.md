@@ -172,7 +172,7 @@ fbworkspace/
 │   └── check_extraction_dom.cjs # uji logika ekstraksi DOM (Node + jsdom, opsional)
 ├── data/demo_posts_DEMO.json   # data sintetis berlabel DEMO
 ├── docs/                       # instalasi, POC, batasan, Git, testing
-├── tests/                      # 761 tes otomatis
+├── tests/                      # 766 tes otomatis
 ├── requirements.txt
 ├── .env.example
 └── .gitignore
@@ -361,6 +361,18 @@ diberi tahu lewat WhatsApp (`FBW_MESSENGER_AI_FALLBACK_TEMPLATE=true` untuk
 memakai template). Catatan jujur: harga **tidak** dicocokkan ke daftar di mode
 ini, jadi AI bisa menyebut harga keliru.
 
+**Sesi obrolan umum Ollama (terpisah dari mode jualan).** Bila pesan pembeli
+**dimulai** dengan `hai dypoi`, seluruh pesan pemicu diteruskan ke Ollama dan
+sesi umum untuk chat tersebut aktif. Balasan berikutnya memakai hanya riwayat
+sesi umum itu—tanpa pricelist, lokasi, nomor WA, atau konteks bisnis—dan tidak
+ditambah pembuka/penutup bisnis. Pembeli mengakhiri sesi dengan mengirim pesan
+tepat `terimakasih dypoi` atau mengakhiri pesan lain dengan frasa itu. Jika pesannya hanya penutup, sesi
+berakhir tanpa balasan; jika ada isi sebelumnya, Ollama menjawab isi tersebut
+satu kali lalu sesi ditutup.
+Setelah sesi ditutup, chat kembali ke aturan mode jualan. Ini memberi percakapan
+bebas dengan model lokal; Ollama tetap tidak menjalankan perintah komputer atau
+memakai alat eksternal.
+
 **Pesan kita sendiri tidak pernah dijawab.** Arah pesan ditentukan dari label
 pengirim Facebook (`(author)`), dicocokkan **persis** — bukan dari potongan teks.
 Sebelumnya label panjang seperti `hai Dypoi, Iphone 8 64GB Rp 1.100.000 …`
@@ -546,7 +558,7 @@ Penghapusan data tersedia di tab **Pengaturan → 💾 Data** (postingan, log, p
 .\.venv\Scripts\python.exe -m pytest
 ```
 
-Hasil terakhir di lingkungan pengembangan: **761 tes lulus** (termasuk smoke test
+Hasil terakhir di lingkungan pengembangan: **766 tes lulus** (termasuk smoke test
 dashboard Streamlit untuk 4 tab, segmentasi hasil, filter ulang, daftar harga,
 penyusun balasan, worker balas DM dengan adapter palsu, format notifikasi
 WhatsApp, dan variasi AI yang menolak perubahan fakta), `ruff check` bersih. Detail: **[docs/TESTING.md](docs/TESTING.md)**.

@@ -230,6 +230,38 @@ class TestSchemaMigration:
         assert Database(path).list_prices()
 
 
+class TestOllamaChatSession:
+    def test_general_session_history_is_separate_and_cleared_on_close(self, db):
+        db.upsert_chat("t-general", name="Pembeli", url="https://x/messages/t/t-general")
+        db.record_message("t-general", "start", direction="in", text="hai dypoi, halo")
+        start_id = db.unanswered_incoming("t-general")[0]["id"]
+        history = [
+            {"role": "user", "content": "hai dypoi, halo"},
+            {"role": "assistant", "content": "Halo juga."},
+        ]
+        db.save_ollama_chat_session(
+            "t-general", start_message_id=start_id, history=history
+        )
+
+        session = db.get_ollama_chat_session("t-general")
+        assert session == {
+            "active": True,
+            "start_message_id": start_id,
+            "history": history,
+        }
+        db.close_ollama_chat_session("t-general")
+        assert db.get_ollama_chat_session("t-general") == {
+            "active": False,
+            "start_message_id": None,
+            "history": [],
+        }
+
+    def test_delete_chat_data_removes_general_session(self, db):
+        db.save_ollama_chat_session("t-general", start_message_id=1, history=[])
+        db.delete_chat_data()
+        assert not db.get_ollama_chat_session("t-general")["active"]
+
+
 class TestUnansweredMarks:
     """Bug nyata: uji kering menandai pesan terjawab walau tidak ada balasan."""
 

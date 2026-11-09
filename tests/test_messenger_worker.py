@@ -1480,14 +1480,14 @@ def test_worker_does_not_reply_to_its_own_message(tmp_path):
     assert adapter.sent == [], "pesan kita sendiri tidak boleh dibalas"
 
 
-def test_greeting_gets_short_template_and_bypasses_freeform_ai(tmp_path, monkeypatch):
+def test_hai_dypoi_trigger_starts_general_session(tmp_path, monkeypatch):
     import fbworkspace.reply_ai as ai
 
     calls = []
     monkeypatch.setattr(
         ai,
-        "generate_reply",
-        lambda **kw: calls.append(kw) or ai.AiReply("oops price", True, "test"),
+        "generate_general_reply",
+        lambda **kw: calls.append(kw) or ai.GeneralChatReply("Hai, ada yang bisa dibantu?", True),
     )
     db = Database(tmp_path / "chat.db")
     adapter = _AiAdapter(
@@ -1495,11 +1495,21 @@ def test_greeting_gets_short_template_and_bypasses_freeform_ai(tmp_path, monkeyp
         {THREAD_URL: [_UnreadMsg("m1", "in", "Hai Dypoi", unread=True)]},
     )
     job_id = _job(db, dry_run=False, cooldown_seconds=0)
+    settings = replace(
+        _settings(tmp_path),
+        ollama_enabled=True,
+        messenger_ai_style=False,
+        messenger_ai_freeform=False,
+    )
     run(job_id, adapter=adapter, sender=MemorySender(), database=db,
-        settings=_ai_settings(tmp_path), sleep=lambda s: None)
+        settings=settings, sleep=lambda s: None)
 
-    assert adapter.sent == [(THREAD_URL, "Hai kak, ada yang bisa dibantu?")]
-    assert calls == [], "sapaan harus dijawab pendek tanpa AI menambah harga/model"
+    assert adapter.sent == [(THREAD_URL, "Hai, ada yang bisa dibantu?")]
+    assert len(calls) == 1
+    assert calls[0]["incoming"] == "Hai Dypoi", "pemicu utuh diteruskan ke Ollama"
+    session = db.get_ollama_chat_session(THREAD_KEY)
+    assert session["active"] is True
+    assert session["history"][0] == {"role": "user", "content": "Hai Dypoi"}
 
 
 def test_ambiguous_pending_model_questions_asks_clarification(tmp_path, monkeypatch):
@@ -1563,3 +1573,70 @@ def test_question_starting_with_greeting_word_is_escalated_not_silently_closed(t
     assert called == [], "Ollama hanya dipakai untuk template yang boleh dijawab"
     assert len(sender.sent) == 1
     assert "kalau jembut dimakan" in sender.sent[0]
+
+
+def test_general_chat_session_keeps_only_its_own_context_and_closes_on_buyer_marker(
+    tmp_path, monkeypatch
+):
+    import fbworkspace.reply_ai as ai
+    from fbworkspace.browser.messenger import ChatMessage
+
+    calls = []
+
+    def fake_general(**kw):
+        calls.append(kw)
+        return ai.GeneralChatReply(f"jawaban {len(calls)}", True)
+
+    monkeypatch.setattr(ai, "generate_general_reply", fake_general)
+    db = Database(tmp_path / "chat.db")
+    thread = Thread(THREAD_KEY, "Pak Bagus", THREAD_URL)
+    adapter = _AiAdapter(
+        [thread],
+        {THREAD_URL: [_UnreadMsg("start", "in", "Hai Dypoi, apa kabar?", unread=True)]},
+    )
+    job_id = _job(db, dry_run=False, cooldown_seconds=0)
+    settings = _ai_settings(tmp_path)
+    sender = MemorySender()
+
+    run(job_id, adapter=adapter, sender=sender, database=db,
+        settings=settings, sleep=lambda s: None)
+    assert adapter.sent == [(THREAD_URL, "jawaban 1")]
+    assert calls[0]["incoming"] == "Hai Dypoi, apa kabar?"
+    assert db.get_ollama_chat_session(THREAD_KEY)["active"] is True
+
+    adapter.messages[THREAD_URL] = [
+        _UnreadMsg("start", "in", "Hai Dypoi, apa kabar?", unread=False),
+        ChatMessage("out1", "out", "jawaban 1"),
+        _UnreadMsg("turn2", "in", "Ceritakan soal luar angkasa", unread=True),
+    ]
+    run(job_id, adapter=adapter, sender=sender, database=db,
+        settings=settings, sleep=lambda s: None)
+    assert adapter.sent[-1] == (THREAD_URL, "jawaban 2")
+    assert calls[1]["incoming"] == "Ceritakan soal luar angkasa"
+    assert calls[1]["history"] == [
+        {"role": "user", "content": "Hai Dypoi, apa kabar?"},
+        {"role": "assistant", "content": "jawaban 1"},
+    ]
+    prompt = ai.build_general_prompt(**{
+        "incoming": calls[1]["incoming"], "history": calls[1]["history"]
+    })
+    assert "Kutabumi" not in prompt and "2.600.000" not in prompt
+
+    adapter.messages[THREAD_URL] = [
+        _UnreadMsg("start", "in", "Hai Dypoi, apa kabar?", unread=False),
+        ChatMessage("out1", "out", "jawaban 1"),
+        _UnreadMsg("turn2", "in", "Ceritakan soal luar angkasa", unread=False),
+        ChatMessage("out2", "out", "jawaban 2"),
+        _UnreadMsg(
+            "end", "in", "Satu hal lagi, ceritakan fakta menarik. terimakasih dypoi", unread=True
+        ),
+    ]
+    run(job_id, adapter=adapter, sender=sender, database=db,
+        settings=settings, sleep=lambda s: None)
+
+    assert adapter.sent[-1] == (THREAD_URL, "jawaban 3")
+    assert calls[2]["incoming"] == "Satu hal lagi, ceritakan fakta menarik."
+    assert len(calls) == 3
+    assert db.get_ollama_chat_session(THREAD_KEY) == {
+        "active": False, "start_message_id": None, "history": []
+    }

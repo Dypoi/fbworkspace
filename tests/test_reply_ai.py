@@ -8,7 +8,9 @@ from fbworkspace.pricelist import default_entries
 from fbworkspace.reply_ai import (
     CLOSING,
     OPENING,
+    build_general_prompt,
     build_prompt,
+    generate_general_reply,
     generate_reply,
     wrap,
 )
@@ -60,6 +62,30 @@ def test_prompt_summarizes_active_model_instead_of_full_history():
     assert "iPhone 8 ready?" not in prompt
     assert "obrolan lama yang tidak relevan" not in prompt
     assert "PESAN SEBELUMNYA:" not in prompt
+
+
+def test_general_prompt_has_no_business_or_sales_context():
+    prompt = build_general_prompt(
+        incoming="Hai Dypoi, apa kabar?",
+        history=[{"role": "user", "content": "cerita tentang musik"}],
+    )
+    assert "apa kabar" in prompt
+    assert "cerita tentang musik" in prompt
+    assert "DAFTAR HARGA" not in prompt
+    assert "Kutabumi, Tangerang" not in prompt
+    assert "081513839973" not in prompt
+
+
+def test_general_reply_is_not_wrapped_or_business_validated():
+    result = generate_general_reply(
+        incoming="Hai Dypoi, ceritakan hal menarik",
+        history=[],
+        config=_Config(),
+        generate=_gen("Saya bisa bantu membahas apa saja."),
+    )
+    assert result.ok is True
+    assert result.text == "Saya bisa bantu membahas apa saja."
+    assert "hai Dypoi" not in result.text
 
 
 def test_reply_is_wrapped_and_marked_ok():
