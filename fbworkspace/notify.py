@@ -221,7 +221,7 @@ class WhatsAppWebSender:
                         page.wait_for_timeout(400)
                     except Exception:  # noqa: BLE001
                         pass
-                    page.keyboard.type(text, delay=12)
+                    self._type_message(page, text)
                     page.wait_for_timeout(600)
                     page.keyboard.press("Enter")
                     page.wait_for_timeout(3000)
@@ -421,6 +421,28 @@ class WhatsAppWebSender:
             if "belum login" in note.lower() or "scan qr" in note.lower():
                 break  # percobaan ulang tidak akan menolong
         return False, " | ".join(notes)[:600]
+
+    @staticmethod
+    def _type_message(page, text: str) -> None:
+        """Ketik pesan multi-baris sebagai SATU pesan.
+
+        Di kotak tulis WhatsApp Web, ``Enter`` berarti **kirim**. Dulu pesan
+        notifikasi (6 baris) diketik apa adanya, sehingga tiap baris terkirim
+        sebagai pesan terpisah — kejadian nyata 9 Nov 11:58: satu notifikasi
+        masuk sebagai 6 pesan. Baris baru sekarang memakai ``Shift+Enter``.
+        """
+        lines = str(text).split("\n")
+        for index, line in enumerate(lines):
+            if line:
+                try:
+                    # insert_text tidak menghasilkan keystroke: aman untuk emoji
+                    # dan tidak memicu Enter.
+                    page.keyboard.insert_text(line)
+                except Exception:  # noqa: BLE001
+                    page.keyboard.type(line, delay=8)
+            if index < len(lines) - 1:
+                page.keyboard.press("Shift+Enter")
+                page.wait_for_timeout(120)
 
     @staticmethod
     def _diagnose(page) -> str:

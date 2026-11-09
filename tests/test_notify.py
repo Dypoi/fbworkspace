@@ -502,3 +502,62 @@ def test_worker_uses_remembered_visible_mode(tmp_path):
     # worker: dibuat headless=True, lalu menyesuaikan
     sender.headless = True
     assert sender.prefer_visible() is True
+
+
+class _FakeKeyboard:
+    """Mencatat keystroke; meniru WhatsApp: Enter mengirim, Shift+Enter = baris baru."""
+
+    def __init__(self):
+        self.events = []
+
+    def insert_text(self, text):
+        self.events.append(("text", text))
+
+    def type(self, text, delay=0):
+        self.events.append(("type", text))
+
+    def press(self, key):
+        self.events.append(("press", key))
+
+
+class _FakePageForTyping:
+    def __init__(self):
+        self.keyboard = _FakeKeyboard()
+        self.waits = []
+
+    def wait_for_timeout(self, ms):
+        self.waits.append(ms)
+
+
+class TestSingleMessage:
+    """Bukti 9 Nov 11:58: satu notifikasi masuk sebagai 6 pesan WhatsApp."""
+
+    def body(self):
+        return Escalation(
+            chat_name="Pak Bagus Sunaryo",
+            message="Nego",
+            reason="nego",
+            url="https://www.facebook.com/messages/e2ee/t/1154656660235198/",
+            when="09/11 11:57",
+        ).text()
+
+    def test_newlines_do_not_send_extra_messages(self):
+        page = _FakePageForTyping()
+        WhatsAppWebSender._type_message(page, self.body())
+
+        keys = [value for kind, value in page.keyboard.events if kind == "press"]
+        # Hanya baris baru lewat Shift+Enter; TIDAK ada Enter polos (yang = kirim).
+        assert keys == ["Shift+Enter"] * 5
+        assert "Enter" not in keys
+
+    def test_every_line_is_typed_once(self):
+        page = _FakePageForTyping()
+        body = self.body()
+        WhatsAppWebSender._type_message(page, body)
+        typed = [v for kind, v in page.keyboard.events if kind in {"text", "type"}]
+        assert typed == [line for line in body.split("\n") if line]
+
+    def test_single_line_message_has_no_shift_enter(self):
+        page = _FakePageForTyping()
+        WhatsAppWebSender._type_message(page, "cek facebook ada chat yang bukan ranah saya")
+        assert [v for k, v in page.keyboard.events if k == "press"] == []
