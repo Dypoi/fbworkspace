@@ -980,7 +980,10 @@ def filter_text_nodes(
             msg["direction"] = "in"
         msg.pop("no_box", None)
 
-    messages.sort(key=lambda m: m["y"])
+    # Label pengirim Facebook kadang menunjuk pesan yang tidak muncul sebagai
+    # node DOM; _pair_by_sender menambahkannya dengan y=None. Jangan bandingkan
+    # None dan angka saat sort (TypeError worker 9 Nov 13:17).
+    messages.sort(key=lambda m: (m.get("y") is None, m.get("y") or 0))
     messages = _merge_labels(messages, payload.get("labels") or [])
     # Nama pengirim per pesan (dari aria-label): membedakan "You" dan pembeli,
     # termasuk saat teksnya sama persis. Ini mencegah pesan masuk dianggap

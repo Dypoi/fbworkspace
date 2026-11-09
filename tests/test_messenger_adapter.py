@@ -1388,6 +1388,17 @@ class TestOurOwnMessages:
         assert len(ai_rows) == 1
         assert ai_rows[0]["direction"] == "out"
 
+    def test_sender_label_without_dom_node_does_not_crash_sort(self):
+        """Regresi worker 9 Nov 13:17: sender label y=None + node y=float."""
+        from fbworkspace.browser.messenger import filter_text_nodes
+
+        payload = self._payload(labels=False, senders=True)
+        payload["senders"] = [{"author": "You", "text": "pesan label saja"}]
+        messages, _, _ = filter_text_nodes(payload, chat_name="Pak Bagus Sunaryo")
+        hidden = [m for m in messages if m["text"] == "pesan label saja"]
+        assert len(hidden) == 1
+        assert hidden[0]["direction"] == "out"
+
     def test_buyer_greeting_stays_in(self):
         from fbworkspace.browser.messenger import filter_text_nodes
 
